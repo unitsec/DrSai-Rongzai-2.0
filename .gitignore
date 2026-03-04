@@ -30,6 +30,12 @@ files/*
 
 test_datesets/*
 # datasets/*
+*.gpx
+*.cif
+*.png
+*.lst
+*.txt
+*.csv
 
 tools/GSAS-II-master/GSASII/0data_test/*
 tools/GSAS-II-master/GSASII/RUN0021905_20250904/*
