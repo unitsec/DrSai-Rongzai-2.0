@@ -28,8 +28,8 @@ from autogen_core.model_context import (
     BufferedChatCompletionContext,)
 
 from dotenv import load_dotenv
-load_dotenv()
 import os
+load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
 data_dir = os.getenv("WORKER_SPACE", "")
 parent_path = os.path.dirname(os.path.abspath(__file__))
 appdir = os.path.join(parent_path, "tmp/drsai")
@@ -131,15 +131,12 @@ if __name__ == "__main__":
             permission='groups: rongzai; users: wanghao96@ihep.ac.cn, xiongdb@ihep.ac.cn, zhongjiajun@ihep.ac.cn; owner: wanghao96@ihep.ac.cn',
             description = "你的粉末中子衍射精修助手-by中国散裂中子源数据分析组",
             version = "0.1.0",
-            logo="/home/dur/rozai_agent_test/src/configs/resized_rzera_logo.png",
+            logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
             port = 42812, 
-            no_register=False,
-            enable_openwebui_pipeline=True, 
             history_mode = "backend",
-            use_api_key_mode = "backend",
             # 智能体数据库地址
             engine_uri = f"sqlite:////{appdir}/drsai.db",
             # 数据库及文件存储目录

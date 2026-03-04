@@ -1,7 +1,7 @@
 [
     {
         "name": "RongZai_Agent",
-        "url": "http://aiapi.ihep.ac.cn/apiv2",
+        "url": "https://aiapi.ihep.ac.cn/apiv2",
         "apiKey": "sk-qywwUDyCxrUQYyyxhUCNKZbasiRwAzszJSdIQXdsWdsjHOV",
         "mode": "remote",
         "description": "蓉仔——你的粉末中子衍射精修助手  by中国散裂中子源数据分析组",

@@ -5,7 +5,11 @@ Thumbs.db
 
 # 忽略日志文件
 *.log
-.env
+drsai_test.env
+model_status.yaml
+
+# 忽略临时文件
+tmp/
 
 # 忽略 Python 编译文件
 *.pyc
@@ -18,10 +22,6 @@ __pycache__/
 
 # 忽略测试文件
 test/
-
-# 忽略所有以.env 结尾的文件
-.env
-*.env
 
 .webui_secret_key
 

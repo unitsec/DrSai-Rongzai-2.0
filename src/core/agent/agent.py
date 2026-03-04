@@ -834,11 +834,10 @@ class RongZaiAgent(DrSaiAgent):
             
             
             # 将用户输入的消息加入到model_context中,此时我要标注是用户的输入
-            for message in messages:
-                message.content = f"用户的输入：{message.content};你现在的状态：{global_status.rongzai_status}"
+            messages[-1].content = f"用户的输入：{messages[-1].content};"
             await self._add_messages_to_context(
                 model_context=self._model_context,
-                messages=messages,
+                messages=[messages[-1]],
             )
 
             # 正式开始RongzaiAgent的工作
