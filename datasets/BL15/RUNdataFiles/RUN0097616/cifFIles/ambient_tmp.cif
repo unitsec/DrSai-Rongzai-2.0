@@ -1,0 +1,167 @@
+data_I
+_chemical_formula_sum                    'C1 D1 N1'
+_symmetry_cell_setting                   monoclinic
+_symmetry_space_group_name_H-M           'P 1 21 1'
+_symmetry_space_group_name_Hall          'P 2yb'
+_symmetry_Int_Tables_number              4
+
+loop_
+ _space_group_symop_id
+ _space_group_symop_operation_xyz
+ 1   x,y,z
+ 2   -x,y+1/2,-z
+
+_cell_length_a                           13.7170(13)
+_cell_length_b                           7.7292(8)
+_cell_length_c                           3.8759(4)
+_cell_angle_alpha                        90
+_cell_angle_beta                         95.442(14)
+_cell_angle_gamma                        90
+_cell_volume                             409.08(7)
+
+
+_cell_formula_units_Z                    1
+
+loop_
+ _atom_type_symbol
+ _atom_type_scat_length_neutron
+ _atom_type_scat_source
+ C     6.646 International_Tables_Vol_C
+ N     9.360 International_Tables_Vol_C
+ D     6.671 International_Tables_Vol_C
+
+loop_
+ _atom_site_label
+ _atom_site_type_symbol
+ _atom_site_fract_x
+ _atom_site_fract_y
+ _atom_site_fract_z
+ _atom_site_adp_type
+ _atom_site_U_iso_or_equiv
+ _atom_site_site_symmetry_multiplicity
+ _atom_site_occupancy
+ _atom_site_calc_flag
+ _atom_site_refinement_flags
+ _atom_site_disorder_assembly
+ _atom_site_disorder_group
+  C1 C 0.33209 -0.1833 0.0931 Uiso 0.0433 2 1 d . . .
+  C2 C 0.33233 -0.0144 0.2138 Uiso 0.0431 2 1 d . . .
+  C3 C 0.24702 0.0826 0.1607 Uiso 0.0405 2 1 d . . .
+  C4 C 0.16236 0.013 -0.011 Uiso 0.0397 2 1 d . . .
+  C5 C 0.1644 -0.1561 -0.1302 Uiso 0.0381 2 1 d . . .
+  C6 C 0.2488 -0.256 -0.0801 Uiso 0.0417 2 1 d . . .
+  C7 C 0.42 -0.2871 0.1493 Uiso 0.0702 2 1 d . . .
+  C8 C 0.2467 0.257 0.2919 Uiso 0.0618 2 1 d . . .
+  C9 C 0.0773 -0.2309 -0.3094 Uiso 0.0558 2 1 d . . .
+  N1 N 0.4893 -0.3663 0.1975 Uiso 0.1142 2 1 d . . .
+  N2 N 0.2465 0.3933 0.4012 Uiso 0.0958 2 1 d . . .
+  N3 N 0.0093 -0.2902 -0.4519 Uiso 0.0873 2 1 d . . .
+  D2 D 0.3907 0.03 0.341 Uiso 0 2 1 d . . .
+  D4 D 0.105 0.075 -0.062 Uiso 0 2 1 d . . .
+  D6 D 0.2448 -0.367 -0.159 Uiso 0 2 1 d . . .
+
+loop_
+ _atom_site_aniso_label
+ _atom_site_aniso_type_symbol
+ _atom_site_aniso_U_11
+ _atom_site_aniso_U_22
+ _atom_site_aniso_U_33
+ _atom_site_aniso_U_12
+ _atom_site_aniso_U_13
+ _atom_site_aniso_U_23
+ ? ? ? ? ? ? ? ?
+
+loop_
+ _jana_atom_site_ADP_C_label
+ _jana_atom_site_ADP_C_type_symbol
+ _jana_atom_site_ADP_C_111
+ _jana_atom_site_ADP_C_112
+ _jana_atom_site_ADP_C_113
+ _jana_atom_site_ADP_C_122
+ _jana_atom_site_ADP_C_123
+ _jana_atom_site_ADP_C_133
+ _jana_atom_site_ADP_C_222
+ _jana_atom_site_ADP_C_223
+ _jana_atom_site_ADP_C_233
+ _jana_atom_site_ADP_C_333
+ ? ? ? ? ? ? ? ? ? ? ? ?
+
+loop_
+ _jana_atom_site_ADP_D_label
+ _jana_atom_site_ADP_D_type_symbol
+ _jana_atom_site_ADP_D_1111
+ _jana_atom_site_ADP_D_1112
+ _jana_atom_site_ADP_D_1113
+ _jana_atom_site_ADP_D_1122
+ _jana_atom_site_ADP_D_1123
+ _jana_atom_site_ADP_D_1133
+ _jana_atom_site_ADP_D_1222
+ _jana_atom_site_ADP_D_1223
+ _jana_atom_site_ADP_D_1233
+ _jana_atom_site_ADP_D_1333
+ _jana_atom_site_ADP_D_2222
+ _jana_atom_site_ADP_D_2223
+ _jana_atom_site_ADP_D_2233
+ _jana_atom_site_ADP_D_2333
+ _jana_atom_site_ADP_D_3333
+ ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?
+
+loop_
+ _jana_atom_site_ADP_E_label
+ _jana_atom_site_ADP_E_type_symbol
+ _jana_atom_site_ADP_E_11111
+ _jana_atom_site_ADP_E_11112
+ _jana_atom_site_ADP_E_11113
+ _jana_atom_site_ADP_E_11122
+ _jana_atom_site_ADP_E_11123
+ _jana_atom_site_ADP_E_11133
+ _jana_atom_site_ADP_E_11222
+ _jana_atom_site_ADP_E_11223
+ _jana_atom_site_ADP_E_11233
+ _jana_atom_site_ADP_E_11333
+ _jana_atom_site_ADP_E_12222
+ _jana_atom_site_ADP_E_12223
+ _jana_atom_site_ADP_E_12233
+ _jana_atom_site_ADP_E_12333
+ _jana_atom_site_ADP_E_13333
+ _jana_atom_site_ADP_E_22222
+ _jana_atom_site_ADP_E_22223
+ _jana_atom_site_ADP_E_22233
+ _jana_atom_site_ADP_E_22333
+ _jana_atom_site_ADP_E_23333
+ _jana_atom_site_ADP_E_33333
+ ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?
+
+loop_
+ _jana_atom_site_ADP_F_label
+ _jana_atom_site_ADP_F_type_symbol
+ _jana_atom_site_ADP_F_111111
+ _jana_atom_site_ADP_F_111112
+ _jana_atom_site_ADP_F_111113
+ _jana_atom_site_ADP_F_111122
+ _jana_atom_site_ADP_F_111123
+ _jana_atom_site_ADP_F_111133
+ _jana_atom_site_ADP_F_111222
+ _jana_atom_site_ADP_F_111223
+ _jana_atom_site_ADP_F_111233
+ _jana_atom_site_ADP_F_111333
+ _jana_atom_site_ADP_F_112222
+ _jana_atom_site_ADP_F_112223
+ _jana_atom_site_ADP_F_112233
+ _jana_atom_site_ADP_F_112333
+ _jana_atom_site_ADP_F_113333
+ _jana_atom_site_ADP_F_122222
+ _jana_atom_site_ADP_F_122223
+ _jana_atom_site_ADP_F_122233
+ _jana_atom_site_ADP_F_122333
+ _jana_atom_site_ADP_F_123333
+ _jana_atom_site_ADP_F_133333
+ _jana_atom_site_ADP_F_222222
+ _jana_atom_site_ADP_F_222223
+ _jana_atom_site_ADP_F_222233
+ _jana_atom_site_ADP_F_222333
+ _jana_atom_site_ADP_F_223333
+ _jana_atom_site_ADP_F_233333
+ _jana_atom_site_ADP_F_333333
+ ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?
+

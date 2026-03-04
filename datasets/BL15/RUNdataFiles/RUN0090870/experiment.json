@@ -1,0 +1,68 @@
+{
+  "institute": "CSNS",
+  "user_name": "Wang Hao",
+  "d_rebin": {
+    "mode": "uniform",
+    "group2": [
+      0.4,
+      20.2,
+      2000
+    ],
+    "group3": [
+      0.23,
+      6,
+      3000
+    ],
+    "group4": [
+      0.12,
+      3.95,
+      1600
+    ],
+    "group5": [
+      0.1,
+      2.82,
+      1600
+    ],
+    "group6": [
+      0.08,
+      2.3,
+      2400
+    ],
+    "group7": [
+      0.06,
+      2.19,
+      2600
+    ]
+  },
+  "beamline": "BL16",
+  "norm_by_pc": false,
+  "sample_run": [
+    "RUN0023568"
+  ],
+  "v_run": [
+    "RUN0023567"
+  ],
+  "sampleBG_run": [
+    "RUN0023566"
+  ],
+  "vBG_run": [
+    "RUN0023566"
+  ],
+  "sample_correction": {
+    "sample_name": "Si:1",
+    "mass": 1.644,
+    "volume": {
+      "type": "cylinder",
+      "height": 3.0,
+      "radius": 0.445,
+      "beam_height": 3.0,
+      "thickness": 0
+    },
+    "scale": 1,
+    "density_num": 0.01888099427096319
+  },
+  "wave_min": 0.1,
+  "wave_max": 4.5,
+  "start_time": "2024-10-16 20:58:32",
+  "end_time": "2024-10-17 20:24:29"
+}

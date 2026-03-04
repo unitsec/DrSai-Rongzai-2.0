@@ -1,0 +1,19 @@
+[
+    {
+        "name": "RongZai_Agent",
+        "url": "http://aiapi.ihep.ac.cn/apiv2",
+        "apiKey": "sk-qywwUDyCxrUQYyyxhUCNKZbasiRwAzszJSdIQXdsWdsjHOV",
+        "mode": "remote",
+        "description": "蓉仔——你的粉末中子衍射精修助手  by中国散裂中子源数据分析组",
+        "agent_config":{
+            "quick refinement":"openai/gpt-4.1",
+            "deep refinement":"openai/gpt-5"},
+        "default_config_name": "quick refinement",
+        "version": "0.1.0",
+        "examples":["帮我把BLX的RUNX的groupX的衍射谱精修好，cif文件是X.cif"],
+        "author": "wanghao96@ihep.ac.cn",
+        "logo": "https://aiapi.ihep.ac.cn/apiv2/files/file-61518e9f7e8f45049739d7ae58abe35a/preview",
+        "owner": "wanghao96@ihep.ac.cn",
+        "id": "edf80f28"
+    }
+]

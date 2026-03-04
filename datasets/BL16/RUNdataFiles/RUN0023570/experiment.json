@@ -1,0 +1,59 @@
+{
+    "sample_run": [
+        "RUN0023570"
+    ],
+    "v_run": [
+        "RUN0023571"
+    ],
+    "sampleBG_run": [
+        "RUN0023566"
+    ],
+    "vBG_run": [
+        "RUN0023504",
+        "RUN0023572"
+    ],
+    "norm_by_pc": false,
+    "wave_max": 4.5,
+    "wave_min": 0.1,
+    "d_rebin": {
+        "group2": [
+            0.5,
+            13,
+            2000
+        ],
+        "group3": [
+            0.23,
+            5.6,
+            3000
+        ],
+        "group4": [
+            0.2,
+            4.5,
+            1600
+        ],
+        "group5": [
+            0.1,
+            2.6,
+            1600
+        ],
+        "group6": [
+            0.1,
+            2.1,
+            2400
+        ],
+        "group7": [
+            0.2,
+            2.19,
+            2600
+        ]
+    },
+    "start_time": "2024-10-17 22:34:22",
+    "end_time": "2024-10-18 00:38:26",
+    "sample_correction": {
+        "sample_name": "Ni:1",
+        "mass": 2.322
+    },
+    "user_name": null,
+    "institute": null,
+    "beamline": "BL16"
+}

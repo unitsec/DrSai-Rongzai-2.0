@@ -1,0 +1,36 @@
+# GSAS-II settings, perhaps to be moved
+config.py
+
+# local code for debugging
+debug_setup.py.example
+debug_setup.py
+
+# created on MacOS by makeMacApp.py
+GSAS-II.app/
+GSAS-II.py
+
+# created by gitstrap.py
+GSASII-bin
+
+# created by docs/build/conf.py
+version.rst
+vars.rst
+docs/build/
+
+# cruft from Python
+__pycache__
+
+# cruft from MacOS
+.DS_Store
+
+# from Spyder
+.spyproject
+# GSAS binaries
+GSASII/bindist
+
+# Local dev env files
+.vscode
+
+*.gpx
+*.lst
+
