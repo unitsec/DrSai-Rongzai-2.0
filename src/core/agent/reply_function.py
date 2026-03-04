@@ -121,6 +121,7 @@ def get_data_handle_info(
             GSAS工具会根据你给的refine_idx，在执行精修或初始化后，保存一个备份的gpx文件，命名格式为"{原始gpx文件名}_{refine_idx}.gpx"，方便你精修失败后回退，重新指定精修策略。
         gpx_path: 
             准备返回给用户或者GSASII工具的gpx文件路径，用户输入类型2以及GSASII工具输入的时候才需要
+            一定注意检查这个路径是对的！
         info: 
             你对你利用这个get_data_handle_info函数做出的输出的理由说明.
             仅在"refine_pause"时，你需要：
@@ -260,6 +261,9 @@ def validate_gsas_refine_params(refine_params: Dict) -> Dict:
 def verify_data_handle_info(
         data_handle_info: Dict[str, str],
         data_dir: str,
+    user_id: str = "",
+    uploaded_file_names: List[str] | None = None,
+    upload_user_files_root: str = "",
 ) -> Dict[str, Any]:
     """
     验证数据处理信息是否合法
@@ -278,220 +282,137 @@ def verify_data_handle_info(
         data = {}
         # 直接使用传入的data_handle_info，在其基础上补充信息
         verified_info = data_handle_info.copy()
+        uploaded_file_names = uploaded_file_names or []
 
-        ## 检查run_id, beamline, group名称是否存在
-        beamline = data_handle_info.get("beamline")
-        run_id = data_handle_info.get("run_id")
+        def find_uploaded_file(file_name: str) -> str:
+            if not file_name or not user_id:
+                return ""
+            if os.path.isabs(file_name) and os.path.exists(file_name):
+                return file_name
 
-        if not beamline:
-            status = "error"
-            message = "我没有获取到谱仪名称，请指定，如BL16、BL18、BL09、BL15等"
-            return {"status": status, "message": message, "data": data}
+            root = upload_user_files_root
+            if not root:
+                project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
+                root = os.path.join(project_root, "tmp/drsai_ui/files/user")
 
-        if not run_id:
-            status = "error"
-            message = "我没有获取到RUN号，请指定"
-            return {"status": status, "message": message, "data": data}
+            user_upload_dir = os.path.join(root, user_id)
+            if not os.path.exists(user_upload_dir):
+                return ""
 
-        #根据谱仪与run_id构建路径,查询是否能找到这个RUN
-        # 支持查找包含run_id的任何文件夹名称
-        run_data_dir = os.path.join(data_dir, f"{beamline}/RUNdataFiles")
-        run_dir = None
-        
-        if os.path.exists(run_data_dir):
-            # 遍历RUNdataFiles目录，查找包含run_id的文件夹
-            for folder in os.listdir(run_data_dir):
-                if run_id.lower() in folder.lower():
-                    run_dir = os.path.join(run_data_dir, folder)
-                    break
-        
-        if run_dir is None or not os.path.exists(run_dir):
-            status = "error"
-            message = f"我关于谱仪{beamline}的数据库中没有{run_id},请确认你提供的谱仪名称和RUN号是否正确，或将数据上传"
-            return {"status": status, "message": message, "data": data}
-        else:
-            pass
-            # data["run_dir"] = run_dir
+            target_name = os.path.basename(file_name).lower()
+            for current_root, _, files in os.walk(user_upload_dir):
+                for file in files:
+                    if file.lower() == target_name:
+                        return os.path.join(current_root, file)
+            return ""
 
-        ## 检查experiment.json是否存在
-        if not os.path.exists(os.path.join(run_dir, "experiment.json")):
-            status = "error"
-            message = f"在{run_id}里面没有找到实验信息文件"
-            return {"status": status, "message": message, "data": data}
+        # gsa_path / inst_path 只要有值，就按“上传文件”优先查找
+        uploaded_gsa_path = find_uploaded_file(data_handle_info.get("gsa_path", ""))
+        uploaded_inst_path = find_uploaded_file(data_handle_info.get("inst_path", ""))
 
-        experiment_info = get_experiment_info(run_dir)
-        verified_info["instrument_user_info"] = experiment_info
-        
-        run_file_list = get_run_data(run_dir)
+        # cifs 需要防串：只有本轮上传名单里的文件名才允许走上传目录
+        uploaded_name_set = {os.path.basename(x).lower() for x in uploaded_file_names if x}
 
-
-        # print(f"DEBUG: 接收到的数据信息: {json.dumps(verified_info, indent=2, ensure_ascii=False)}")
-        # print(data_handle_info.get("groups",None))
-        ## 检查cif_files是否存在 TODO:从material_project_id获取cif文件
-        cif_file_dir = os.path.join(run_dir,"cifFiles")
-        if not os.path.exists(cif_file_dir):
-            status = "error"
-            message = f"在{run_id}下没有找到cif文件目录, 请上传"
-            return {"status": status, "message": message, "data": data}
-        
-        # 检查detector是否存在
-        detector = data_handle_info.get("detector", None)
-        if detector is None:
-            status = "error"
-            message = "我没有获取到探测器编号，请告诉我"
-            return {"status": status, "message": message, "data": data}
-        else:
-            #根据detector和beamline和runno获取对应的gsa文件
-            gsa_file = os.path.join(run_dir, f"{os.path.basename(run_dir).upper()}_{detector}.gsa")
-            if not os.path.exists(gsa_file):
-                status = "error"
-                message = f"我没有在{run_id}下找到{os.path.basename(run_dir).upper()}_{detector}.gsa文件，请检查探测器编号是否正确，或数据是否上传完整"
-                return {"status": status, "message": message, "data": data}
-            else:
-                verified_info["gsa_path"] = gsa_file
-            
-            # 根据detector和beamline获取对应的instrument文件
-            pattern = os.path.join(os.path.join(data_dir, beamline, "instrumentFiles"), f"*{detector}*.instprm")
-            matches = glob.glob(pattern)
-            if matches:
-                instprm_file = matches[0]
-                verified_info["instprm_path"] = instprm_file
-        
         cifs = data_handle_info.get("cifs", None)
         if cifs is None or len(cifs) == 0:
             status = "error"
             message = "我没有获取到cif文件列表, 请告诉我是哪些cif文件"
             return {"status": status, "message": message, "data": data}
+
+        # 默认值，上传模式下可能没有实验信息
+        verified_info["instrument_user_info"] = ""
+
+        # 先收集可用上传cif
+        uploaded_cif_paths: Dict[str, str] = {}
+        for cif_file in cifs:
+            cif_name = os.path.basename(cif_file)
+            if cif_name.lower() in uploaded_name_set:
+                uploaded_cif_path = find_uploaded_file(cif_name)
+                if uploaded_cif_path and os.path.exists(uploaded_cif_path):
+                    uploaded_cif_paths[cif_name.lower()] = uploaded_cif_path
+
+        unresolved_cifs = [c for c in cifs if os.path.basename(c).lower() not in uploaded_cif_paths]
+        need_db_lookup = (not uploaded_gsa_path) or (not uploaded_inst_path) or bool(unresolved_cifs)
+
+        run_dir = None
+        beamline = data_handle_info.get("beamline")
+        run_id = data_handle_info.get("run_id")
+        cif_file_dir = ""
+
+        if need_db_lookup:
+            if not beamline:
+                status = "error"
+                message = "我没有获取到谱仪名称，请指定，如BL16、BL18、BL09、BL15等"
+                return {"status": status, "message": message, "data": data}
+            if not run_id:
+                status = "error"
+                message = "我没有获取到RUN号，请指定"
+                return {"status": status, "message": message, "data": data}
+
+            run_data_dir = os.path.join(data_dir, f"{beamline}/RUNdataFiles")
+            if os.path.exists(run_data_dir):
+                for folder in os.listdir(run_data_dir):
+                    if run_id.lower() in folder.lower():
+                        run_dir = os.path.join(run_data_dir, folder)
+                        break
+
+            if run_dir is None or not os.path.exists(run_dir):
+                status = "error"
+                message = f"我关于谱仪{beamline}的数据库中没有{run_id},请确认你提供的谱仪名称和RUN号是否正确，或将数据上传"
+                return {"status": status, "message": message, "data": data}
+
+            exp_json_path = os.path.join(run_dir, "experiment.json")
+            if os.path.exists(exp_json_path):
+                verified_info["instrument_user_info"] = get_experiment_info(run_dir)
+
+            cif_file_dir = os.path.join(run_dir, "cifFiles")
+
+        detector = data_handle_info.get("detector", None)
+        if detector is None:
+            status = "error"
+            message = "我没有获取到探测器编号，请告诉我"
+            return {"status": status, "message": message, "data": data}
+
+        # gsa：上传优先，否则走数据库
+        if uploaded_gsa_path and os.path.exists(uploaded_gsa_path):
+            verified_info["gsa_path"] = uploaded_gsa_path
         else:
-            cif_files = []
-            for cif_file in cifs:
+            gsa_file = os.path.join(run_dir, f"{os.path.basename(run_dir).upper()}_{detector}.gsa")
+            if not os.path.exists(gsa_file):
+                status = "error"
+                message = f"我没有在{run_id}下找到{os.path.basename(run_dir).upper()}_{detector}.gsa文件，请检查探测器编号是否正确，或数据是否上传完整"
+                return {"status": status, "message": message, "data": data}
+            verified_info["gsa_path"] = gsa_file
+
+        # instprm：上传优先，否则走数据库
+        if uploaded_inst_path and os.path.exists(uploaded_inst_path):
+            verified_info["instprm_path"] = uploaded_inst_path
+        else:
+            pattern = os.path.join(os.path.join(data_dir, beamline, "instrumentFiles"), f"*{detector}*.instprm")
+            matches = glob.glob(pattern)
+            if matches:
+                verified_info["instprm_path"] = matches[0]
+            else:
+                status = "error"
+                message = f"我没有找到{detector}对应的仪器参数文件(.instprm)，请上传或检查探测器编号"
+                return {"status": status, "message": message, "data": data}
+
+        # cif：本轮上传名单中的文件才允许走上传目录，其他走数据库
+        cif_paths = []
+        for cif_file in cifs:
+            cif_name = os.path.basename(cif_file)
+            if cif_name.lower() in uploaded_cif_paths:
+                cif_paths.append(uploaded_cif_paths[cif_name.lower()])
+            else:
                 cif_file_path = os.path.join(cif_file_dir, cif_file)
                 if os.path.exists(cif_file_path):
-                    cif_files.append(cif_file_path)
+                    cif_paths.append(cif_file_path)
                 else:
                     status = "error"
                     message = f"cif_file {cif_file}不存在或路径不正确"
                     return {"status": status, "message": message, "data": data}
-            verified_info["cif_paths"] = cif_files
+        verified_info["cif_paths"] = cif_paths
 
-
-        ### 检查handle_pdf,是否做PDF，接下来判断：
-        if data_handle_info.get("handle_pdf", False):
-            pdf_cifs = data_handle_info.get("pdf_cifs", None)
-            if pdf_cifs is None:
-                status = "error"
-                message = "处理PDF数据时，必须明确指定需要处理的PDF数据的CIF文件列表和精修参数设置"
-                return {"status": status, "message": message, "data": data}
-            else:
-                pdf_files = []
-                data_handle_info["pdf_files"] = {}
-                for cif_file in pdf_cifs:
-                    cif_file_path = os.path.join(cif_file_dir, cif_file)
-                    if os.path.exists(cif_file_path):
-                        pdf_files.append(cif_file_path)
-                    else:
-                        status = "error"
-                        message = f"cif_file {cif_file}不存在或路径不正确"
-                        return {"status": status, "message": message, "data": data}
-                data_handle_info["pdf_files"]["cif_files"] = pdf_files
-                ### 检查是否有G_r_*.txt命名规则的文件
-                g_r_files = [os.path.join(run_dir, file) for file in run_file_list["files"] if re.match(r"G_r_.*\.txt", file)]
-                if not g_r_files:
-                    status = "error"
-                    message = f"没有找到G_r_{run_id}.txt文件，请检查是否存在PDF精修文件"
-                    return {"status": status, "message": message, "data": data}
-                else:
-                    data_handle_info["pdf_files"]["g_r_files"] = g_r_files
-                ### 检查是pdf_params是否存在
-                pdf_params = data_handle_info.get("pdf_params", None)
-                print(f"DEBUG: pdf_params: {pdf_params}")
-                if pdf_params is None:
-                    status = "error"
-                    message = "处理PDF数据时，必须明确指定需要处理的PDF数据的精修参数设置"
-                    return {"status": status, "message": message, "data": data}
-                else:
-                    if not all(key in pdf_params for key in ["qmax", "qdamp", "rmax", "rmin"]):
-                        status = "error"
-                        message = "处理PDF数据时，精修参数设置必须包括qmax、qdamp、rmax、rmin四个参数"
-                        return {"status": status, "message": message, "data": data}
-                    else:
-                        data_handle_info["pdf_files"]["pdf_params"] = pdf_params
-
-                verified_info["pdf_files"] = data_handle_info["pdf_files"]
-
-        ### 检查handle_AIndex,是否需要用AI预测空间群，接下来判断：
-        if data_handle_info.get("handle_AIndex", False):
-            AIndex_files = {}
-            ## 首先判断是否有group
-            groups = data_handle_info.get("groups",None)
-            # print(f"DEBUG: 接收到的数据信息3: {groups}")
-            if not groups or len(groups) == 0:
-                status = "error"
-                message = "通过AI预测中子衍射数据时，必须明确指定需要处理的探测器组"
-                return {"status": status, "message": message, "data": data}
-
-            ## 构建txt文件
-            txt_files = []
-            for group in groups:
-                # group_files = {}
-                pattern = os.path.join(run_dir,f"*{group}*.txt")
-                matching_files = glob.glob(pattern)
-                # print("5:",matching_files)
-                if not matching_files:
-                    status = "error"
-                    message = f"没有找到{group}对应的txt文件"
-                    return {"status": status, "message": message, "data": data}
-                else:
-                    txt_files.append(matching_files[0])
-
-            AIndex_files["txt_files"] = txt_files
-            AIndex_files["groups"] = groups
-            ### 重新整理衍射数据数据
-            verified_info["AIndex_files"] = AIndex_files
-
-        ### 检查handle_NPD_Simulator,是否需要模拟中子衍射谱，接下来判断：
-        if data_handle_info.get("handle_NPD_Simulator", False):
-            NPD_Simulator_files = {}
-            ## 首先判断是否有group
-            groups = data_handle_info.get("groups",None)
-            # print(f"DEBUG: 接收到的数据信息3: {groups}")
-            if not groups or len(groups) == 0:
-                status = "error"
-                message = "模拟晶体结构的中子衍射谱时，必须明确指定需要处理的探测器组"
-                return {"status": status, "message": message, "data": data}
-            NPD_Simulator_files["groups"] = groups
-            
-            # 根据group获取对应的instrument文件
-            instrument_files = []
-            for group in groups:
-                instprm_file = os.path.join(data_dir, f"{beamline}/instrumentFiles/RT_{group}.instprm")
-                if not os.path.exists(instprm_file):
-                    status = "error"
-                    message = f"没有找到{group}对应的instrument文件"
-                    return {"status": status, "message": message, "data": data}
-                else:
-                    instrument_files.append(instprm_file)
-            NPD_Simulator_files["instprm_files"] = instrument_files
-
-            # 判断是否有cif文件
-            cif_files = data_handle_info.get("cifs",None)
-            if not cif_files or len(cif_files) == 0:
-                status = "error"
-                message = "模拟晶体结构的中子衍射谱时，必须明确指定需要处理的CIF文件"
-                return {"status": status, "message": message, "data": data}
-            cif_files_abs = []
-            for cif_file in cif_files:
-                cif_file_path = os.path.join(cif_file_dir, cif_file)
-                if not os.path.exists(cif_file_path):
-                    status = "error"
-                    message = f"cif_file {cif_file}不存在或路径不正确"
-                    return {"status": status, "message": message, "data": data}
-                else:
-                    cif_files_abs.append(cif_file_path)
-            NPD_Simulator_files["cif_files"] = cif_files_abs
-
-            ### 重新整理
-            verified_info["NPD_Simulator_files"] = NPD_Simulator_files
     except Exception as e:
         import traceback
         status = "error"

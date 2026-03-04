@@ -836,6 +836,11 @@ class RongZaiAgent(DrSaiAgent):
             # 将用户输入的消息加入到model_context中,此时我要标注是用户的输入
             metadata = messages[-1].metadata or {}
             attached_files_info = json.loads(metadata.get("attached_files", "[]"))
+            uploaded_file_names = [
+                file_info.get("name", "")
+                for file_info in attached_files_info
+                if isinstance(file_info, dict)
+            ]
             attachment_text = ""
             if attached_files_info:
                 file_names = [file_info["name"] for file_info in attached_files_info]
@@ -917,14 +922,18 @@ class RongZaiAgent(DrSaiAgent):
                         raise RuntimeError(f"Failed to save user input: {response.message}")
                     
                     # 检查用户输入，并且重构格式以适用gsas工具
-                    verified_dict = verify_data_handle_info(data_handle_info = user_handle_info, data_dir=self._data_dir)
+                    verified_dict = verify_data_handle_info(
+                        data_handle_info=user_handle_info,
+                        data_dir=self._data_dir,
+                        user_id=self._user_id,
+                        uploaded_file_names=uploaded_file_names,
+                    )
                     
                     #判断检查是否通过
                     if verified_dict['status'] == 'success':
                         # 通过，根据蓉仔的决策，更新tools_status并同步到状态库，然后继续后续处理
                         global_status.gsas_ii_input = json.dumps(self.get_tools_args('handle_diffraction',verified_dict['data']))
                         global_status.verified_dict = json.dumps(verified_dict['data'])
-                        global_status.rongzai_status = verified_dict['data']['rongzai_status']
                         global_status.report_content = verified_dict['data']["instrument_user_info"]
                         response: DBResponse = self._db_manager.upsert(global_status)
                         if not response.status or not response.data:
@@ -980,8 +989,6 @@ class RongZaiAgent(DrSaiAgent):
                     else:
                         raise ValueError("状态库读取失败！")
                     
-                    
-                    global_status.rongzai_status = ToolsRunStatus.RUNNING
                     response: DBResponse = self._db_manager.upsert(global_status)
                     if not response.status or not response.data:
                         raise RuntimeError(f"Failed to save user input: {response.message}")
@@ -998,7 +1005,6 @@ class RongZaiAgent(DrSaiAgent):
                                     messages=[TextMessage(
                                         content=f"精修过程中出现错误，原因：{error_message}",
                                         source=self.name)])
-                        global_status.rongzai_status = ToolsRunStatus.COMPLETE
                         self._db_manager.upsert(global_status)
                         return
                     else:
@@ -1043,8 +1049,6 @@ class RongZaiAgent(DrSaiAgent):
                     )
                 
                 elif user_handle_info['require_type'] == 'refine_pause':
-                    #更新蓉仔状态
-                    global_status.rongzai_status = user_handle_info['rongzai_status']
                     response: DBResponse = self._db_manager.upsert(global_status)
                     if not response.status or not response.data:
                         raise RuntimeError(f"Failed to save user input: {response.message}")
@@ -1098,7 +1102,6 @@ class RongZaiAgent(DrSaiAgent):
                     else:
                         raise ValueError("整理报告时未发现相关精修数据！")
                     
-                    global_status.rongzai_status = user_handle_info['rongzai_status']
                     response: DBResponse = self._db_manager.upsert(global_status)
                     if not response.status or not response.data:
                         raise RuntimeError(f"Failed to save user input: {response.message}")
@@ -1140,7 +1143,6 @@ class RongZaiAgent(DrSaiAgent):
                     # 根据蓉仔的决策，更新tools_status并同步到状态库，然后继续后续处理
                     user_handle_info['cif_paths'] = json.loads(global_status.verified_dict)['cif_paths'] # 获取original_cif_paths
                     global_status.gsas_ii_input = json.dumps(self.get_tools_args('handle_diffraction',user_handle_info))
-                    global_status.rongzai_status = user_handle_info['rongzai_status']
                     response: DBResponse = self._db_manager.upsert(global_status)
                     if not response.status or not response.data:
                         raise RuntimeError(f"Failed to save user input: {response.message}")
@@ -1226,7 +1228,7 @@ class RongZaiAgent(DrSaiAgent):
                             multimodal_message = MultiModalMessage(
                                 source=self.name,
                                 content=[
-                                    f"GSAS-II的输入: (1){gsas_ii_refine_info}；(2)lst: {lst_message}；(3)精修日志: {refinement_log}；（4）精修图片也附给你了，请关注图片中的所有细节，作为你接下来精修决策的依据之一;。你现在的状态：{global_status.rongzai_status}; ",
+                                    f"GSAS-II的输入: (1){gsas_ii_refine_info}；(2)lst: {lst_message}；(3)精修日志: {refinement_log}；（4）精修图片也附给你了，请关注图片中的所有细节，作为你接下来精修决策的依据之一; ",
                                     image
                                 ])
 
