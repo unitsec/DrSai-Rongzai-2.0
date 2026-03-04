@@ -834,7 +834,24 @@ class RongZaiAgent(DrSaiAgent):
             
             
             # 将用户输入的消息加入到model_context中,此时我要标注是用户的输入
-            messages[-1].content = f"用户的输入：{messages[-1].content};"
+            metadata = messages[-1].metadata or {}
+            attached_files_info = json.loads(metadata.get("attached_files", "[]"))
+            attachment_text = ""
+            if attached_files_info:
+                file_names = [file_info["name"] for file_info in attached_files_info]
+                attachment_text = f"用户上传文件：{'、'.join(file_names)}"
+
+            content = messages[-1].content
+            if isinstance(content, list):
+                text_content = "".join(x for x in content if isinstance(x, str))
+            else:
+                text_content = str(content)
+
+            text_content = " ".join(text_content.replace("\n", " ").split())
+            if attachment_text:
+                messages[-1].content = f"用户输入：{text_content} {attachment_text}".strip()
+            else:
+                messages[-1].content = f"用户输入：{text_content}".strip()
             await self._add_messages_to_context(
                 model_context=self._model_context,
                 messages=[messages[-1]],
@@ -887,7 +904,7 @@ class RongZaiAgent(DrSaiAgent):
                 # if not response.status or not response.data:
                 #     raise RuntimeError(f"Failed to save user input: {response.message}")
                     
-                # print("user_handle_info:",user_handle_info)
+                print("user_handle_info:",user_handle_info)
                 # 开始判断下一步工作类型
                 if user_handle_info['require_type'] == 'refine_init':
                     #告知用户开始工作

@@ -75,11 +75,12 @@ import warnings
 
 def get_data_handle_info(
         require_type: str|None = None,
-        rongzai_status: str|None = None,
         beamline: str|None = None,
         run_id: str|None = None,
         detector: str|None = None,
         cifs: List[str]|None=None,
+        gsa_path: str = "",
+        inst_path: str = "",
         gpx_path: str = "",
         refine_params: Dict = {},
         refine_idx: int = 0,
@@ -93,24 +94,33 @@ def get_data_handle_info(
                 “refine”会启动GSAS工具，用你决定的精修参数，在你指定的gpx文件中进行一次精修，然后返回精修结果给你
                 “refine_pause”会暂停精修并将当前精修结果返回给用户，等待用户下一步指令
                 “refine_finish”会结束精修并将最终精修结果形成报告返回给用户
-        rongzai_status: 
-            你的状态需要改变为哪个, 有“complete”、“running”、“awaiting_input”三种
+            一般流程是：
+            1.你要先返回“refine_init”初始化精修;
+            2.然后返回“refine”开始精修;
+            3.然后多次返回“refine”,根据GSASII反馈的结果、你的精修知识来继续精修；
+            4.当你认为已经无法精修的更好的时候，返回“refine_pause”暂停精修,等待用户指令；
+            5.根据用户指令返回第3步进行“refine”精修，或者“refine_finish”结束精修。
+                
         beamline:
-            谱仪名称, 如BL16、BL18、BL09、BL15，BL08,BL13等。一般从用户输入中获取用来定位精修所需文件
+            谱仪名称, 如BL16、BL18、BL09、BL15，BL08,BL13等。从用户输入中获取用来定位精修所需文件
         run_id: 
-            需要处理的实验RUN号, 如RUN0021905; 如果用户写成run21905等格式,或者写错(如ru21905等), 需要转换成RUN0021905格式。一般从用户输入中获取用来定位精修所需文件
+            需要处理的实验RUN号, 如RUN0021905; 如果用户写成run21905等格式,或者写错(如ru21905等), 需要转换成RUN0021905格式。从用户输入中获取用来定位精修所需文件
         detector: 
-            用户需要处理的探测器编号,如"group5",“bank14”,"module11203"等。一般从用户输入中获取用来定位精修所需文件
+            用户需要处理的探测器编号,如"group5",“bank14”,"module11203"等。从用户输入中获取用来定位精修所需文件
         cifs: 
-            用户衍射精修需要处理的CIF文件列表，如["a.cif", "b.cif"];这里尽量严格按照用户输入的文件名来获取cif文件
+            用户衍射精修需要使用的CIF文件的列表，如["a.cif", "b.cif"];cif文件名可能来自用户上传，也可能来自用户输入。
+        gsa_path: 
+            用户上传的衍射数据文件的文件名。如果用户没有上传，这里返回空字符串。
+        inst_path:
+            用户上传的仪器参数文件的文件名。如果用户没有上传，这里返回空字符串。
         refine_params: 
             你认为需要继续精修的参数或者用户要求你继续精修的参数,是个字典，这是你决策的关键参数，详细格式会在后面给出。
             注意如果你返回的refine_params为空的话是什么都不会精修的。 
         refine_idx: 
-            下一次精修是第几轮次。你返回refine_init时这里你应该设0,后续依次递增。用户输入类型2以及GSASII工具输入的时候才需要。
-            GSAS工具会根据你给的refine_idx，在执行精修或初始化后，保存一个备份的gpx文件，命名格式为"{原始gpx文件名}_{refine_idx}.gpx"，方便你随时回退。
+            下一次精修是第几轮次。你返回refine_init时这里你应该设0,后续依次递增。用户输入类型1、类型2以及GSASII工具输入的时候才需要。
+            GSAS工具会根据你给的refine_idx，在执行精修或初始化后，保存一个备份的gpx文件，命名格式为"{原始gpx文件名}_{refine_idx}.gpx"，方便你精修失败后回退，重新指定精修策略。
         gpx_path: 
-            准备返回给用户或者GSASII工具的gpx文件路径，用户输入类型2、类型3以及GSASII工具输入的时候才需要
+            准备返回给用户或者GSASII工具的gpx文件路径，用户输入类型2以及GSASII工具输入的时候才需要
         info: 
             你对你利用这个get_data_handle_info函数做出的输出的理由说明.
             仅在"refine_pause"时，你需要：
@@ -189,11 +199,12 @@ def get_data_handle_info(
     '''
     return {
         "require_type": require_type,
-        "rongzai_status": rongzai_status,
         "beamline":beamline,
         "run_id": run_id,
         "detector":detector,
         "cifs":cifs,
+        "gsa_path": gsa_path,
+        "inst_path": inst_path,
         "refine_params": refine_params,
         "refine_idx": refine_idx,
         "gpx_path": gpx_path,
