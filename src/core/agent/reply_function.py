@@ -78,7 +78,8 @@ def get_data_handle_info(
         beamline: str|None = None,
         run_id: str|None = None,
         detector: str|None = None,
-        cifs: List[str]|None=None,
+        cifs_upload: List[str]|None=None,
+        cifs_datasets: List[str]|None=None,
         gsa_path: str = "",
         inst_path: str = "",
         gpx_path: str = "",
@@ -107,8 +108,9 @@ def get_data_handle_info(
             需要处理的实验RUN号, 如RUN0021905; 如果用户写成run21905等格式,或者写错(如ru21905等), 需要转换成RUN0021905格式。从用户输入中获取用来定位精修所需文件
         detector: 
             用户需要处理的探测器编号,如"group5",“bank14”,"module11203"等。从用户输入中获取用来定位精修所需文件
-        cifs: 
-            用户衍射精修需要使用的CIF文件的列表，如["a.cif", "b.cif"];cif文件名可能来自用户上传，也可能来自用户输入。
+        cifs_upload 和 cifs_datasets: 
+            这两个都是cif文件列表，如["a.cif", "b.cif"];
+            用户输入类型1时才会需要。你将cif文件放到cifs_upload里，意味着你要从用户作为附件上传的文件里找这个cif文件;放到cifs_datasets里，意味着你要从数据库里找这个cif文件。你需要根据用户的输入来判断用户指定的cif文件从哪找。
         gsa_path: 
             用户上传的衍射数据文件的文件名。如果用户没有上传，这里返回空字符串。
         inst_path:
@@ -204,7 +206,8 @@ def get_data_handle_info(
         "beamline":beamline,
         "run_id": run_id,
         "detector":detector,
-        "cifs":cifs,
+        "cifs_upload":cifs_upload,
+        "cifs_datasets": cifs_datasets,
         "gsa_path": gsa_path,
         "inst_path": inst_path,
         "refine_params": refine_params,
@@ -311,11 +314,10 @@ def verify_data_handle_info(
         uploaded_gsa_path = find_uploaded_file(data_handle_info.get("gsa_path", ""))
         uploaded_inst_path = find_uploaded_file(data_handle_info.get("inst_path", ""))
 
-        # cifs 需要防串：只有本轮上传名单里的文件名才允许走上传目录
-        uploaded_name_set = {os.path.basename(x).lower() for x in uploaded_file_names if x}
-
-        cifs = data_handle_info.get("cifs", None)
-        if cifs is None or len(cifs) == 0:
+        # cifs_upload / cifs_datasets 分开处理
+        cifs_upload = data_handle_info.get("cifs_upload", None) or []
+        cifs_datasets = data_handle_info.get("cifs_datasets", None) or []
+        if len(cifs_upload) == 0 and len(cifs_datasets) == 0:
             status = "error"
             message = "我没有获取到cif文件列表, 请告诉我是哪些cif文件"
             return {"status": status, "message": message, "data": data}
@@ -323,24 +325,16 @@ def verify_data_handle_info(
         # 默认值，上传模式下可能没有实验信息
         verified_info["instrument_user_info"] = ""
 
-        # 先收集可用上传cif
-        uploaded_cif_paths: Dict[str, str] = {}
-        for cif_file in cifs:
-            cif_name = os.path.basename(cif_file)
-            if cif_name.lower() in uploaded_name_set:
-                uploaded_cif_path = find_uploaded_file(cif_name)
-                if uploaded_cif_path and os.path.exists(uploaded_cif_path):
-                    uploaded_cif_paths[cif_name.lower()] = uploaded_cif_path
-
-        unresolved_cifs = [c for c in cifs if os.path.basename(c).lower() not in uploaded_cif_paths]
-        need_db_lookup = (not uploaded_gsa_path) or (not uploaded_inst_path) or bool(unresolved_cifs)
+        # gsa/数据库cif 走数据库时才依赖 run_id；instprm 仅依赖 beamline + detector
+        need_run_lookup = (not uploaded_gsa_path) or bool(cifs_datasets)
+        need_inst_lookup = not uploaded_inst_path
 
         run_dir = None
         beamline = data_handle_info.get("beamline")
         run_id = data_handle_info.get("run_id")
         cif_file_dir = ""
 
-        if need_db_lookup:
+        if need_run_lookup:
             if not beamline:
                 status = "error"
                 message = "我没有获取到谱仪名称，请指定，如BL16、BL18、BL09、BL15等"
@@ -368,8 +362,14 @@ def verify_data_handle_info(
 
             cif_file_dir = os.path.join(run_dir, "cifFiles")
 
+        # 仅查找仪器参数文件时不需要 run_id，但需要 beamline
+        if need_inst_lookup and not beamline:
+            status = "error"
+            message = "我没有获取到谱仪名称，请指定，如BL16、BL18、BL09、BL15等"
+            return {"status": status, "message": message, "data": data}
+
         detector = data_handle_info.get("detector", None)
-        if detector is None:
+        if need_inst_lookup and  not detector:
             status = "error"
             message = "我没有获取到探测器编号，请告诉我"
             return {"status": status, "message": message, "data": data}
@@ -378,6 +378,10 @@ def verify_data_handle_info(
         if uploaded_gsa_path and os.path.exists(uploaded_gsa_path):
             verified_info["gsa_path"] = uploaded_gsa_path
         else:
+            if run_dir is None:
+                status = "error"
+                message = "需要从数据库查找衍射数据文件时，必须提供正确的RUN号"
+                return {"status": status, "message": message, "data": data}
             gsa_file = os.path.join(run_dir, f"{os.path.basename(run_dir).upper()}_{detector}.gsa")
             if not os.path.exists(gsa_file):
                 status = "error"
@@ -398,20 +402,32 @@ def verify_data_handle_info(
                 message = f"我没有找到{detector}对应的仪器参数文件(.instprm)，请上传或检查探测器编号"
                 return {"status": status, "message": message, "data": data}
 
-        # cif：本轮上传名单中的文件才允许走上传目录，其他走数据库
+        # cif_upload：仅从上传目录解析
         cif_paths = []
-        for cif_file in cifs:
+        for cif_file in cifs_upload:
             cif_name = os.path.basename(cif_file)
-            if cif_name.lower() in uploaded_cif_paths:
-                cif_paths.append(uploaded_cif_paths[cif_name.lower()])
+            uploaded_cif_path = find_uploaded_file(cif_name)
+            if uploaded_cif_path and os.path.exists(uploaded_cif_path):
+                cif_paths.append(uploaded_cif_path)
             else:
-                cif_file_path = os.path.join(cif_file_dir, cif_file)
-                if os.path.exists(cif_file_path):
-                    cif_paths.append(cif_file_path)
-                else:
-                    status = "error"
-                    message = f"cif_file {cif_file}不存在或路径不正确"
-                    return {"status": status, "message": message, "data": data}
+                status = "error"
+                message = f"上传的cif文件 {cif_file} 不存在或未找到，请确认是否已上传"
+                return {"status": status, "message": message, "data": data}
+
+        # cif_datasets：仅从数据库解析
+        if cifs_datasets and not cif_file_dir:
+            status = "error"
+            message = "需要从数据库查找cif文件时，必须提供正确的RUN号"
+            return {"status": status, "message": message, "data": data}
+
+        for cif_file in cifs_datasets:
+            cif_file_path = os.path.join(cif_file_dir, cif_file)
+            if os.path.exists(cif_file_path):
+                cif_paths.append(cif_file_path)
+            else:
+                status = "error"
+                message = f"数据库cif文件 {cif_file} 不存在或路径不正确"
+                return {"status": status, "message": message, "data": data}
         verified_info["cif_paths"] = cif_paths
 
     except Exception as e:

@@ -873,7 +873,7 @@ class RongZaiAgent(DrSaiAgent):
             attachment_text = ""
             if attached_files_info:
                 file_names = [file_info["name"] for file_info in attached_files_info]
-                attachment_text = f"用户上传文件：{'、'.join(file_names)}"
+                attachment_text = f"用户上传了附件文件：{'、'.join(file_names)}"
 
             content = messages[-1].content
             if isinstance(content, list):
@@ -1148,15 +1148,18 @@ class RongZaiAgent(DrSaiAgent):
                     if not response.status or not response.data:
                         raise RuntimeError(f"Failed to save report content: {response.message}")
                     ## 将报告保存为文件
-                    first_user_handle_info = json.loads(global_status.first_user_handle_info)
-                    run_id = first_user_handle_info.get("run_id", "")
-                    beamline = first_user_handle_info.get("beamline","")
-                    report_file_name = f"{beamline}/RUNdataFiles/{run_id}/output/{self._user_id}_{self._thread_id}_report.md"
-                    report_file_path = os.path.join(self._data_dir, report_file_name)
-                    with open(report_file_path, "w", encoding="utf-8") as f:
-                        f.write(report_to_user)
-                    report_file_url = self.upload_file(report_file_path)
-                    report_to_user += f"\n\n报告文件已上传至{report_file_url}"
+                    try:
+                        first_user_handle_info = json.loads(global_status.first_user_handle_info)
+                        run_id = first_user_handle_info.get("run_id", "")
+                        beamline = first_user_handle_info.get("beamline","")
+                        report_file_name = f"{beamline}/RUNdataFiles/{run_id}/output/{self._user_id}_{self._thread_id}_report.md"
+                        report_file_path = os.path.join(self._data_dir, report_file_name)
+                        with open(report_file_path, "w", encoding="utf-8") as f:
+                            f.write(report_to_user)
+                        report_file_url = self.upload_file(report_file_path)
+                        report_to_user += f"\n\n报告文件已上传至{report_file_url}"
+                    except:
+                        pass
                     
                     for cif_path in self.cif_paths:
                         cif_base64 = self.get_file_base64(cif_path)
