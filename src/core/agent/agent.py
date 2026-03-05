@@ -18,6 +18,7 @@ from loguru import logger
 import uuid
 import json
 import os
+import base64
 import ast
 import shutil
 
@@ -44,28 +45,36 @@ from autogen_core.models import (
     RequestUsage
 )
 
+
 from autogen_agentchat.agents._assistant_agent import AssistantAgentConfig
 from autogen_agentchat.base import Handoff as HandoffBase
 from autogen_agentchat.base import Response, TaskResult
 from autogen_agentchat.messages import (
-    BaseAgentEvent,
-    BaseChatMessage,
     AgentEvent,
     ChatMessage,
     HandoffMessage,
     MemoryQueryEvent,
-    ModelClientStreamingChunkEvent,
-    TextMessage,
     StopMessage,
     ToolCallExecutionEvent,
     ToolCallRequestEvent,
     ToolCallSummaryMessage,
     UserInputRequestedEvent,
-    ThoughtEvent,
-    StructuredMessageFactory,
-    MultiModalMessage,
-    Image,
+    StructuredMessageFactory
 )
+from drsai.modules.managers.messages import (
+    BaseChatMessage,
+    BaseAgentEvent,
+    TaskEvent, 
+    AgentLogEvent,
+    ModelClientStreamingChunkEvent,
+    ThoughtEvent,
+    TextMessage,
+    MultiModalMessage,
+    FileInfo,
+    FilesContent,
+    FilesEvent,
+    Image,
+    )
 from autogen_ext.tools.mcp import StdioServerParams, mcp_server_tools
 
 from drsai import HepAIChatCompletionClient
@@ -158,6 +167,10 @@ class RongZaiAgent(DrSaiAgent):
         self._AIndex_Workbench = kwargs.get("AIndex_Workbench", None)
         self._NPD_Simulator_Workbench = kwargs.get("NPD_Simulator_Workbench", None)
         self._sleep_time = kwargs.get("sleep_time", 10)
+
+        #保存最新的精修后cif文件和gpx文件路径，用于最后的导出
+        self.cif_paths = []
+        self.gpx_path = ""
 
     async def pause(self) -> None:
         """Pause the agent by setting the paused state."""
@@ -388,7 +401,23 @@ class RongZaiAgent(DrSaiAgent):
         
         return need_further_refinement, refinement_message
         
-
+    def get_file_base64(self, file_path: str):
+        """获取知识库文件的base64编码"""
+        try:
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as file:
+                    file_base64 = base64.b64encode(file.read()).decode('utf-8')
+                # file_obj = upload_to_hepai_filesystem(file_path=file_path)
+                return file_base64
+            else:
+                print(f"警告: 文件 {file_path} 不存在")
+                return None
+        except Exception as e:
+            print(f"读取文件时出错: {e}")
+            return None
+    
+    
+    
     # TODO: 改成CLS和@classmethod
     async def on_agent_stream(
         self, 
@@ -1128,6 +1157,48 @@ class RongZaiAgent(DrSaiAgent):
                         f.write(report_to_user)
                     report_file_url = self.upload_file(report_file_path)
                     report_to_user += f"\n\n报告文件已上传至{report_file_url}"
+                    
+                    for cif_path in self.cif_paths:
+                        cif_base64 = self.get_file_base64(cif_path)
+                
+                        base64_file = FileInfo(
+                            name = os.path.basename(cif_path),
+                            base64_content = cif_base64,
+                            description=f"cif file {os.path.basename(cif_path)} from final refinement",
+                            download_method="base64"
+                            )
+                        
+                        files=FilesContent(
+                            files=[base64_file],
+                            title="cif files",
+                            description="cif files from final refinement",
+                            )
+                        
+                        yield FilesEvent(
+                            source=self.name,
+                            content=files.model_dump(),
+                            )
+                        
+                    gpx_base64 = self.get_file_base64(self.gpx_path)
+                    
+                    base64_file = FileInfo(
+                            name = os.path.basename(self.gpx_path),
+                            base64_content = gpx_base64,
+                            description=f"gpx file {os.path.basename(self.gpx_path)} from final refinement",
+                            download_method="base64"
+                            )
+                        
+                    files=FilesContent(
+                        files=[base64_file],
+                        title="gpx file",
+                        description=f"gpx file from final refinement",
+                        )
+                    
+                    yield FilesEvent(
+                        source=self.name,
+                        content=files.model_dump(),
+                        )
+                    
                     yield ModelClientStreamingChunkEvent(content=report_to_user, source=self.name)
                     yield Response(
                         chat_message=TextMessage(
@@ -1213,12 +1284,12 @@ class RongZaiAgent(DrSaiAgent):
                             gsa_path = verified_dict.get('gsa_path', '')
                             gpx_path = gsas_ii_output_json.get('gpx_path', '')
                             if gsa_path and gpx_path and os.path.exists(gpx_path):
-                                new_gpx_path = self.copy_gpx_to_gsa_folder(gpx_path, gsa_path)
+                                self.gpx_path = self.copy_gpx_to_gsa_folder(gpx_path, gsa_path)
                             
                             # 复制精修后的 cif 文件到 gsa 文件夹
                             cif_paths_list = gsas_ii_output_json.get("refinement_results", {}).get("refined_cif_files", [])
                             if gsa_path and cif_paths_list:
-                                new_cif_paths = self.copy_cif_files_to_gsa_folder(cif_paths_list, gsa_path)
+                                self.cif_paths = self.copy_cif_files_to_gsa_folder(cif_paths_list, gsa_path)
                             
                             gsas_ii_refine_info = "gpx after refine: " + gsas_ii_output_json['gpx_path']
                             lst_message = prune_lst_keep_main(gsas_ii_output_json['lst_path'])

@@ -724,7 +724,7 @@ def flexible_neutron_refinement(gpx, hist, phases, output_dir, gpx_file='', refi
         for phase in phases:
             try:
                 # 设置尺寸精修
-                phase.set_HAP_refinements({hist.name: {"Size": ["isotropic", True]}})
+                phase.set_HAP_refinements({"Size": {"type": "isotropic", "refine": True}}, [hist.name])
             except Exception as e:
                 logger.warning(f"  设置尺寸精修失败: {str(e)}")
 
@@ -734,7 +734,7 @@ def flexible_neutron_refinement(gpx, hist, phases, output_dir, gpx_file='', refi
         for phase in phases:
             try:
                 # 设置微应变精修
-                phase.set_HAP_refinements({hist.name: {"Mustrain": ["isotropic", True]}})
+                phase.set_HAP_refinements({"Mustrain": {"type": "isotropic", "refine": True}}, [hist.name])
             except Exception as e:
                 logger.warning(f"  设置微应变精修失败: {str(e)}")
 
@@ -743,7 +743,7 @@ def flexible_neutron_refinement(gpx, hist, phases, output_dir, gpx_file='', refi
         logger.info("添加相分数参数到精修字典")
         for phase in phases:
             try:
-                phase.set_HAP_refinements({hist.name: {"Scale": True}})
+                phase.set_HAP_refinements({"Scale": True}, [hist.name])
             except Exception as e:
                 logger.warning(f"  设置相分数精修失败: {str(e)}")
 
