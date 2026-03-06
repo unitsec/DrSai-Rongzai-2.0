@@ -128,7 +128,7 @@ if __name__ == "__main__":
             # 智能体注册信息
             agent_name="RongZai_Agent",
             author="wanghao96@ihep.ac.cn",
-            permission='groups: rongzai; users: durong@ihep.ac.cn,wanghao96@ihep.ac.cn, xiongdb@ihep.ac.cn, zhongjiajun@ihep.ac.cn; owner: wanghao96@ihep.ac.cn',
+            permission='groups: rongzai; users: durong@ihep.ac.cn,wanghao96@ihep.ac.cn, xiongdb@ihep.ac.cn, zhongjiajun@ihep.ac.cn, gaodx@ihep.ac.cn; owner: wanghao96@ihep.ac.cn',
             description = "你的粉末中子衍射精修助手-by中国散裂中子源数据分析组",
             version = "0.1.0",
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
