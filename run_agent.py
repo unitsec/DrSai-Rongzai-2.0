@@ -128,7 +128,7 @@ if __name__ == "__main__":
             # 智能体注册信息
             agent_name="RongZai_Agent",
             author="wanghao96@ihep.ac.cn",
-            permission='groups: rongzai; users: durong@ihep.ac.cn,wanghao96@ihep.ac.cn, xiongdb@ihep.ac.cn, zhongjiajun@ihep.ac.cn, gaodx@ihep.ac.cn, xujuping@ihep.ac.cn, chenhuaican@ihep.ac.cn, xiayg@ihep.ac.cn, chengzy@ihep.ac.cn, liut@ihep.ac.cn, yinwen@ihep.ac.cn, jiwh@ihep.ac.cn, tanzh@ihep.ac.cn, baolx@ihep.ac.cn, xiewu@ihep.ac.cn, miaoping@ihep.ac.cn; owner: wanghao96@ihep.ac.cn',
+            permission='groups: rongzai; users: durong@ihep.ac.cn,wanghao96@ihep.ac.cn,xiongdb@ihep.ac.cn,zhongjiajun@ihep.ac.cn,gaodx@ihep.ac.cn,xujuping@ihep.ac.cn,chenhuaican@ihep.ac.cn,xiayg@ihep.ac.cn,chengzy@ihep.ac.cn,liut@ihep.ac.cn,yinwen@ihep.ac.cn,jiwh@ihep.ac.cn,tanzh@ihep.ac.cn,baolx@ihep.ac.cn,xiewu@ihep.ac.cn,miaoping@ihep.ac.cn; owner: wanghao96@ihep.ac.cn',
             description = "你的粉末中子衍射精修助手-by中国散裂中子源数据分析组",
             version = "0.1.0",
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
@@ -146,7 +146,7 @@ if __name__ == "__main__":
             # 是否注册为OpenWebUI的pipeline
             enable_openwebui_pipeline=True, 
             # 使用backend/frontend的api_key
-            use_api_key_mode = "frontend"
+            use_api_key_mode = "frontend",
         )
     )
 

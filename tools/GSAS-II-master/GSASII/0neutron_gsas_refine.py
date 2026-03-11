@@ -46,58 +46,69 @@ def initialize_project(neutron_data, neutron_inst, cif_files, output_dir):
         raise ValueError("必须提供中子数据和仪器参数文件")
 
     logger.info("步骤 2/8: 清理数据文件中的NaN值")
-    # 清理数据文件中的NaN值和文件头 - 失败则终止程序
+    # 对 GSAS 原生格式文件（.gsa/.gda/.raw）保持原样，避免丢失 BANK/头信息。
+    # 对纯文本三列数据（x y e）执行 NaN 过滤后再导入。
     try:
         if isinstance(neutron_data, (str, Path)):
+            neutron_data = str(neutron_data)
+            ext = Path(neutron_data).suffix.lower()
+
+            if ext in {'.gsa', '.gda', '.raw'}:
+                logger.info(f"  检测到GSAS原生格式({ext})，跳过重写，仅做文件可读性检查")
+                if not Path(neutron_data).exists():
+                    raise ValueError(f"数据文件不存在: {neutron_data}")
+                if Path(neutron_data).stat().st_size <= 0:
+                    raise ValueError(f"数据文件为空: {neutron_data}")
+            else:
             # 读取原始文件
-            logger.info(f"  读取原始数据文件: {neutron_data}")
-            with open(neutron_data, 'r') as f:
-                lines = f.readlines()
+                logger.info(f"  读取原始数据文件: {neutron_data}")
+                with open(neutron_data, 'r') as f:
+                    lines = f.readlines()
 
-            logger.info(f"  文件总行数: {len(lines)}")
+                logger.info(f"  文件总行数: {len(lines)}")
 
-            # 寻找有效数据开始位置并过滤NaN值
-            valid_data_lines = []
-            data_started = False
+                # 寻找有效数据开始位置并过滤NaN值
+                valid_data_lines = []
+                data_started = False
 
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-
-                # 检查是否为数据行（包含数字）
-                parts = line.split()
-                if len(parts) >= 3:  # 至少需要3列数据
-                    try:
-                        # 尝试解析所有列为浮点数
-                        values = [float(part) for part in parts[:3]]  # 只取前3列
-                        # 检查是否包含NaN
-                        if not any(np.isnan(values)):
-                            valid_data_lines.append(line)
-                            data_started = True
-                    except ValueError:
-                        # 如果转换失败，可能是文件头，继续寻找数据
-                        if data_started:
-                            # 如果已经开始数据部分但遇到非数值行，可能是数据结束
-                            break
+                for line in lines:
+                    line = line.strip()
+                    if not line:
                         continue
 
-            if not valid_data_lines:
-                raise ValueError("GSA文件中未找到任何有效数据行")
+                    # 检查是否为数据行（包含数字）
+                    parts = line.split()
+                    if len(parts) >= 3:  # 至少需要3列数据
+                        try:
+                            # 尝试解析所有列为浮点数
+                            values = [float(part) for part in parts[:3]]  # 只取前3列
+                            # 检查是否包含NaN
+                            if not any(np.isnan(values)):
+                                valid_data_lines.append(line)
+                                data_started = True
+                        except ValueError:
+                            # 如果转换失败，可能是文件头，继续寻找数据
+                            if data_started:
+                                # 如果已经开始数据部分但遇到非数值行，可能是数据结束
+                                break
+                            continue
 
-            logger.info(f"  从原始文件中提取了 {len(valid_data_lines)} 行有效数据")
+                if not valid_data_lines:
+                    raise ValueError("输入文件中未找到任何有效三列数据行")
 
-            # 创建临时文件保存有效数据
-            temp_dir = Path(output_dir) / 'temp'
-            temp_dir.mkdir(exist_ok=True)
-            clean_data_file = temp_dir / 'cleaned_neutron_data.dat'
+                logger.info(f"  从原始文件中提取了 {len(valid_data_lines)} 行有效数据")
 
-            with open(clean_data_file, 'w') as f:
-                for line in valid_data_lines:
-                    f.write(line + '\n')
+                # 创建临时文件保存有效数据。使用 .xye 扩展名以匹配文本读取器。
+                temp_dir = Path(output_dir) / 'temp'
+                temp_dir.mkdir(exist_ok=True)
+                clean_data_file = temp_dir / 'cleaned_neutron_data.xye'
 
-            neutron_data = str(clean_data_file)
-            logger.info(f"  已创建清理后的数据文件: {clean_data_file}")
+                with open(clean_data_file, 'w') as f:
+                    for line in valid_data_lines:
+                        f.write(line + '\n')
+
+                neutron_data = str(clean_data_file)
+                logger.info(f"  已创建清理后的数据文件: {clean_data_file}")
 
     except Exception as e:
         logger.error(f"GSA文件数据处理失败: {str(e)}")
