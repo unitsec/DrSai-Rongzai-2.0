@@ -47,7 +47,12 @@ bash start_tools.sh &
 python run_agent.py
 drsai ui # 打开前端
 ```
-
+## 4.remote_agents.json配置
+里面的url，如果是走DDF,是"https://aiapi.ihep.ac.cn/apiv2"
+如果是走本地，没有速率限制，是"http://10.1.252.95:42812/apiv2"
+前后端api切换方法：
+走前端api时，将remote_agents.json中的url改为"https://aiapi.ihep.ac.cn/apiv2"，然后run_agent.py中将HepAIChatCompletionClient的api_key= api_key or os.environ.get("HEPAI_API_KEY"),然后将run_worker中的use_api_key_mode = "frontend",重启前后端
+走后端api时，将remote_agents.json中的url改为"http://10.1.252.95:42812/apiv2",然后run_agent.py中将HepAIChatCompletionClient的api_key= os.environ.get("HEPAI_API_KEY"),然后将run_worker中的use_api_key_mode = "backend"，重启前后端
 
 ## 注意：
     - 1.请确保设备参数和数据文件以RT_GROUP*.instprm和RUN***_group*.gsa的格式保存在每个组的工作目录下。
@@ -78,3 +83,4 @@ pip install open-webui
 pipeline的密钥：```0p3n-w3bu!```，将密钥和pipeline后端服务的地址：```http://localhost:42808/pipelines```加入OpenWebUI的```管理员面板-设置-外部连接-管理OpenAI API连接```中。
 
 
+\
