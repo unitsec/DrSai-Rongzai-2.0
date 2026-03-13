@@ -50,19 +50,25 @@ async def get_GSASII_Workbench() -> StaticWorkbench:
     )))
     return StaticWorkbench(tools)
 
-async def create_agent() -> RongZaiAgent:
+async def create_agent(
+        api_key: str | None = None,
+        thread_id: str | None = None,
+        user_id: str | None = None,
+        db_manager: DatabaseManager | None = None,
+        defult_config_name: str | None = "default",
+    ) -> RongZaiAgent:
+    selected_mode = defult_config_name or "default"
+    selected_model = llm_mode_config.get(selected_mode, llm_mode_config["default"])
+    print(
+        f"[LLM_SELECT] mode={selected_mode}, model={selected_model}, "
+        f"thread_id={thread_id}, user_id={user_id}",
+        flush=True,
+    )
 
-    llm_mode_config = {
-    "quick refinement": "openai/gpt-4.1",
-    "deep refinement": "openai/gpt-5",
-    "default": "openai/gpt-4.1"
-    }
-    
-    
     model_client = HepAIChatCompletionClient(
         # model="deepseek-ai/deepseek-r1",
-        model=llm_mode_config.get("default","openai/gpt-4.1"),
-        api_key= os.environ.get("HEPAI_API_KEY"),
+        model=selected_model,
+        api_key=os.environ.get("HEPAI_API_KEY"),
         base_url="https://aiapi.ihep.ac.cn/apiv2",
     )
 
@@ -83,7 +89,10 @@ async def create_agent() -> RongZaiAgent:
         model_context=BufferedChatCompletionContext(buffer_size = 50), # 限制最多2、50条消息
         data_dir = data_dir,
         GSASII_Workbench = GSASII_Workbench,
-        sleep_time = 3
+        sleep_time = 3,
+        thread_id=thread_id,
+        db_manager=db_manager,
+        user_id=user_id,
     )
 
 
@@ -140,6 +149,8 @@ if __name__ == "__main__":
             engine_uri = f"sqlite:////{appdir}/drsai.db",
             # 数据库及文件存储目录
             base_dir = appdir, 
+            agent_config = llm_mode_config,
+            defult_config_name = "default",
             # 是否注册到HepAI智能体平台
             no_register=False,
             # 是否注册为OpenWebUI的pipeline

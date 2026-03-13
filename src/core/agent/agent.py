@@ -912,7 +912,7 @@ class RongZaiAgent(DrSaiAgent):
                             message.chat_message.metadata["internal"] = "yes"
                             yield message.chat_message
                         elif isinstance(message.chat_message, HandoffMessage):
-                            yield ModelClientStreamingChunkEvent(content=message.chat_message.content, source=self.name)
+                            # yield ModelClientStreamingChunkEvent(content=message.chat_message.content, source=self.name)
                             await self._add_messages_to_context(
                                     model_context=self._model_context,
                                     messages=[message.chat_message])
