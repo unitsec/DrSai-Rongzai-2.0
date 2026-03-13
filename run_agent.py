@@ -50,17 +50,19 @@ async def get_GSASII_Workbench() -> StaticWorkbench:
     )))
     return StaticWorkbench(tools)
 
-async def create_agent(
-        api_key: str|None = None, 
-        thread_id: str|None = None, 
-        user_id: str|None = None, 
-        db_manager: DatabaseManager|None = None,
-        defult_config_name: str|None = "deepseek-r1",) -> RongZaiAgent:
+async def create_agent() -> RongZaiAgent:
 
+    llm_mode_config = {
+    "quick refinement": "openai/gpt-4.1",
+    "deep refinement": "openai/gpt-5",
+    "default": "openai/gpt-4.1"
+    }
+    
+    
     model_client = HepAIChatCompletionClient(
         # model="deepseek-ai/deepseek-r1",
-        model=llm_mode_config.get(defult_config_name, "openai/gpt-4.1"),
-        api_key=api_key or os.environ.get("HEPAI_API_KEY"),
+        model=llm_mode_config.get("default","openai/gpt-4.1"),
+        api_key= os.environ.get("HEPAI_API_KEY"),
         base_url="https://aiapi.ihep.ac.cn/apiv2",
     )
 
@@ -81,10 +83,7 @@ async def create_agent(
         model_context=BufferedChatCompletionContext(buffer_size = 50), # 限制最多2、50条消息
         data_dir = data_dir,
         GSASII_Workbench = GSASII_Workbench,
-        sleep_time = 3,
-        thread_id=thread_id,
-        db_manager=db_manager,
-        user_id=user_id
+        sleep_time = 3
     )
 
 
@@ -146,7 +145,7 @@ if __name__ == "__main__":
             # 是否注册为OpenWebUI的pipeline
             enable_openwebui_pipeline=True, 
             # 使用backend/frontend的api_key
-            use_api_key_mode = "frontend",
+            use_api_key_mode = "backend"
         )
     )
 
