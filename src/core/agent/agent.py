@@ -908,6 +908,7 @@ class RongZaiAgent(DrSaiAgent):
                             
                             # 万一模型返回了一个字符串，则需要将其转换为字典
                             if isinstance(user_handle_info, str):
+                                
                                 user_handle_info = ast.literal_eval(user_handle_info) 
                             message.chat_message.metadata["internal"] = "yes"
                             yield message.chat_message

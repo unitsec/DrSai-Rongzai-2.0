@@ -34,11 +34,28 @@ data_dir = os.getenv("WORKER_SPACE", "")
 parent_path = os.path.dirname(os.path.abspath(__file__))
 appdir = os.path.join(parent_path, "tmp/drsai")
 os.makedirs(appdir, exist_ok=True)
+VIP_USER_LIST = os.getenv("VIP_USER_LIST", "").split(",") if os.getenv("VIP_USER_LIST") else []
+
+
+def _normalize_users(users: list[str]) -> list[str]:
+    return [u.strip() for u in users if u and u.strip()]
+
+
+PERMISSION_USERS = list(dict.fromkeys(_normalize_users(VIP_USER_LIST)))
+PERMISSION = (
+    f"groups: rongzai; users: {','.join(PERMISSION_USERS)}; "
+    "owner: wanghao96@ihep.ac.cn"
+)
+print(f"PERMISSION: {PERMISSION}")
 
 llm_mode_config = {
     "quick refinement": "openai/gpt-4.1",
     "deep refinement": "openai/gpt-5",
-    "default": "openai/gpt-4.1"
+    "qwen3 Max": "aliyun/qwen3-max",
+    "qwen3 Coder+": "aliyun/qwen3-coder-plus",
+    "minimax": "minimax/minimax-m2.7",
+    "磐石": "scienceone/s1-base-ultra",
+    "default": "openai/gpt-5"
 }
 
 async def get_GSASII_Workbench() -> StaticWorkbench:
@@ -65,12 +82,21 @@ async def create_agent(
         flush=True,
     )
 
-    model_client = HepAIChatCompletionClient(
-        # model="deepseek-ai/deepseek-r1",
-        model=selected_model,
-        api_key=os.environ.get("HEPAI_API_KEY"),
-        base_url="https://aiapi.ihep.ac.cn/apiv2",
-    )
+    # backend mode may not pass api_key into agent_factory; keep a local fallback.
+    is_vip_user = bool(user_id and user_id in PERMISSION_USERS)
+
+    if is_vip_user:
+        model_client = HepAIChatCompletionClient(
+            model=selected_model,
+            api_key="sk-qywwUDyCxrUQYyyxhUCNKZbasiRwAzszJSdIQXdsWdsjHOV",
+            base_url="https://aiapi.ihep.ac.cn/apiv2",
+        )
+    else:
+        model_client = HepAIChatCompletionClient(
+            model=selected_model,
+            api_key=api_key,
+            base_url="https://aiapi.ihep.ac.cn/apiv2",
+        )
 
     try:
         GSASII_Workbench = await asyncio.wait_for(get_GSASII_Workbench(), timeout=60)
@@ -95,49 +121,15 @@ async def create_agent(
         user_id=user_id,
     )
 
-
-async def test():
-
-    drsaiapp = DrSaiAPP(agent_factory=create_agent)
-    stream =  drsaiapp.a_drsai_ui_completions(
-        messages = [TextMessage(
-            # content="我需要对BL16的RUN0023568的group5的PDF数据进行精修处理，PDF数据精修对应的CIF文件为mp-149.cif，精修参数设置qmax=30，qdamp=0.01，rmax=20,rmin=1.5", 
-            # content="我需要对BL16的RUN0023568的group5的PDF数据进行精修处理，PDF数据精修对应的CIF文件为mp-149.cif和Ni.cif，精修参数设置qmax=30，qdamp=0.01，rmax=20,rmin=1.5", 
-            # content="需要对BL16的RUN0025914的group5的中子衍散数据进行精修处理，精修的CIF文件为SrAgSb.cif和SrAg.cif",
-            # content="需要对BL09的RUN0000719的groupHA和groupMA的中子衍散数据进行精修, 精修的CIF文件为zeolite.cif。",
-            # content="需要对BL16的RUN0023568的group5的中子衍散数据进行精修处理，精修的CIF文件为mp-149.cif",
-            # content="需要对BL16的RUN0023568的group2的中子衍散数据使用AI进行晶系、空间群、晶胞参数预测。", 
-            # content="我需要对BL16的RUN0023568的group5的中子衍射数据进行模拟, 晶体结构是Si.cif", 
-            source="user", 
-            metadata={"timestamp": "1626713600"}).model_dump(mode="json")],
-        stream=True,
-        use_api_key_mode = "frontend",  # Use frontend API key mode
-        api_key = os.environ.get("HEPAI_API_KEY"),
-        chat_id = "test_chat_id",
-        )
-
-    text_messages = []
-    async for message in stream:
-        json_str = message.lstrip('data: ')
-        oai_json = json.loads(json_str)
-        if oai_json.get("type", "") == "ModelClientStreamingChunkEvent":
-            textchunck = oai_json.get("content", "")
-            sys.stdout.write(textchunck)
-            sys.stdout.flush()
-        else:
-            text_messages.append(oai_json)
-    print(text_messages)
-
 if __name__ == "__main__":
-    # asyncio.run(test())
     
     asyncio.run(
         run_worker(
             # 智能体注册信息
             agent_name="RongZai_Agent",
             author="wanghao96@ihep.ac.cn",
-            permission='groups: rongzai; users: durong@ihep.ac.cn,wanghao96@ihep.ac.cn,xiongdb@ihep.ac.cn,zhongjiajun@ihep.ac.cn,gaodx@ihep.ac.cn,xujuping@ihep.ac.cn,chenhuaican@ihep.ac.cn,xiayg@ihep.ac.cn,chengzy@ihep.ac.cn,liut@ihep.ac.cn,yinwen@ihep.ac.cn,jiwh@ihep.ac.cn,tanzh@ihep.ac.cn,baolx@ihep.ac.cn,xiewu@ihep.ac.cn,miaoping@ihep.ac.cn; owner: wanghao96@ihep.ac.cn',
-            description = "你的粉末中子衍射精修助手-by中国散裂中子源数据分析组",
+            permission=PERMISSION,
+            description = "蓉仔——你的粉末中子衍射精修助手  by中国散裂中子源数据分析组",
             version = "0.1.0",
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
             # 智能体实体
@@ -156,22 +148,7 @@ if __name__ == "__main__":
             # 是否注册为OpenWebUI的pipeline
             enable_openwebui_pipeline=True, 
             # 使用backend/frontend的api_key
-            use_api_key_mode = "backend"
+            use_api_key_mode = "frontend"
         )
     )
 
-    # Deprecated
-    # asyncio.run(run_console(
-    #     agent_factory=create_agent, 
-    #     # task="需要对RUN0021905衍散数据进行精修处理，精修的CIF文件为mp-165，主要对晶胞参数精修执行2次， 不执行尺寸和应变精修"
-    #     task="需要对RUN0021905衍散数据和PDF数据进行精修处理，精修的CIF文件为bl16_21905.cif，PDF的精修参数设置qmax=30，qdamp=0.01，rmax=20,rmin=1.5"
-    #     ))
-    # pipelines_dir = str(here.joinpath("src/pipelines"))
-    # asyncio.run(run_backend(
-    #     agent_factory=create_agent, 
-    #     history_mode = "frontend",
-    #     port = 42808,
-    #     enable_openwebui_pipeline=True,
-    #     model_name = "RoZai_agent",
-    #     pipelines_dir = pipelines_dir
-    #     ))
