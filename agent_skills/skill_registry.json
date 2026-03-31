@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "skills": [
+    {
+      "name": "rietveld_refinement",
+      "description": "中子粉末衍射 Rietveld 自动精修流程，支持文件定位与迭代精修。",
+      "body": "skill_bodies/rietveld_refinement.md",
+      "toolchains": [
+        "find_refinement_files_tool",
+        "run_rietveld_refinement_tool"
+      ],
+      "mcp_servers": []
+    }
+  ]
+}

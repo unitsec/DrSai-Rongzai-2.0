@@ -12,105 +12,119 @@ from typing import (
     Self,
     Mapping,
     )
-
-import asyncio
-from loguru import logger
-import uuid
-import json
-import os
-import base64
-import ast
-import shutil
-
+import os, json, sys, uuid, shutil
+import asyncio, traceback
 from pydantic import BaseModel
+from pathlib import Path
+from loguru import logger
 
-from autogen_core import CancellationToken, FunctionCall
-from autogen_core.tools import (
-    BaseTool, 
-    Workbench,
-    StaticWorkbench,
-    FunctionTool,
-    ToolSchema)
-from autogen_core.memory import Memory
-from autogen_core.model_context import ChatCompletionContext
-from autogen_core.models import (
-    ChatCompletionClient,
+from drsai import CancellationToken, FunctionCall
+from drsai.modules.baseagent import (
+    DrSaiAgent, 
+    HandoffBase, 
+    Response, 
+    TaskResult, 
     CreateResult,
     FunctionExecutionResultMessage,
     FunctionExecutionResult,
-    LLMMessage,
-    UserMessage,
     AssistantMessage,
+    UserMessage,
     SystemMessage,
-    RequestUsage
+    LLMMessage
+    )
+from drsai.modules.baseagent.drsaiagent import DrSaiAgentConfig
+from drsai.modules.baseagent import CodeExecutorAgent, CodeExecutor
+from drsai.modules.agents.drsai_worker_agent import HepAIWorkerAgent
+from drsai.modules.components import (
+    ComponentModel,
 )
-
-
-from autogen_agentchat.agents._assistant_agent import AssistantAgentConfig
-from autogen_agentchat.base import Handoff as HandoffBase
-from autogen_agentchat.base import Response, TaskResult
-from autogen_agentchat.messages import (
+from drsai.modules.components.model_client import ChatCompletionClient, HepAIChatCompletionClient
+from drsai.modules.components.model_context import (
+    ChatCompletionContext,
+    DrSaiChatCompletionContext,
+)
+from drsai.modules.components.memory import Memory
+from drsai.modules.components.tool import (
+    BaseTool, 
+    FunctionTool, 
+    Workbench,
+    ToolSchema,
+    ParametersSchema,
+    StdioServerParams,
+    SseServerParams,
+    mcp_server_tools
+    )
+from drsai.modules.managers.messages import (
+    BaseAgentEvent,
+    BaseChatMessage,
     AgentEvent,
     ChatMessage,
     HandoffMessage,
     MemoryQueryEvent,
+    ModelClientStreamingChunkEvent,
+    TextMessage,
     StopMessage,
     ToolCallExecutionEvent,
     ToolCallRequestEvent,
     ToolCallSummaryMessage,
     UserInputRequestedEvent,
-    StructuredMessageFactory
-)
-from drsai.modules.managers.messages import (
-    BaseChatMessage,
-    BaseAgentEvent,
-    TaskEvent, 
-    AgentLogEvent,
-    ModelClientStreamingChunkEvent,
     ThoughtEvent,
-    TextMessage,
+    AgentLogEvent,
+    StructuredMessage,
+    StructuredMessageFactory,
     MultiModalMessage,
-    FileInfo,
-    FilesContent,
-    FilesEvent,
     Image,
-    )
-from autogen_ext.tools.mcp import StdioServerParams, mcp_server_tools
-
-from drsai import HepAIChatCompletionClient
+    
+)
 from drsai.modules.managers.database import DatabaseManager
-from drsai.modules.baseagent import DrSaiAgent
-# from drsai.configs import CONST
-from drsai.modules.managers.datamodel import (
-    # UserInput,
-    Thread,
+from drsai.configs.constant import RUNS_DIR
+from drsai.modules.agents.skills_agent.managers import (
+    UserProfileManager,
+    TodoManager,
+    get_operator_funcs,
 )
-from drsai.modules.managers.datamodel.types import Response as DBResponse
-
-from ...configs.constants import tools_dir
-from ...configs.prompt import intention_system_message
-
-# tools
-from .reply_function import (
-    get_data_handle_info,
-    verify_data_handle_info,
-    cif_3D_visualization,
-
+from drsai.modules.components.skills import SkillLoader
+from drsai.utils.utils import download_file_from_url_or_base64
+from drsai.modules.agents.skills_agent.managers.get_managers_tools import (
+    get_agent_skills_tool,
+    get_subagent_tools,
+    get_todo_manager_tool,
+    create_local_venv,
 )
 
-# database
-from ..datasets.datamodel import ToolsStatus, ToolsRunStatus
-
-# read lst
-from src.utils.read_lst import prune_lst_keep_main
-
-here = os.path.dirname(os.path.abspath(__file__))
+class DrSaiAssistantConfig(DrSaiAgentConfig):
+    skills_dir: Optional[str | List[str]]
+    work_dir: str | None
+    only_in_workspace: bool
+    extra_work_dirs: List[str]
+    executor: ComponentModel
+    sub_agent_config: Dict
+    max_turn_count: int
+    token_limit: int
+    rag_flow_url: str
+    rag_flow_token: str
+    memory_dataset_id: str
+    learning_dataset_id: str
 
 class RongZaiAgent(DrSaiAgent):
-    """通过多工具进行优化"""
+    """
+    专业中子科学数据智能分析智能体
+
+    TODO: 核心能力:
+    1. 用户个人画像/提示词/其他配置的动态更新
+    2. 任务规划与分解
+    3. 多任务进度管理
+    4. 智能工具/Skills/子智能体调用与动态更新
+    5. 记忆注入机制与长期记忆
+    6. 自我被动学习与skill转化
+    7. 错误处理与用户交互
+    """
+
+
     def __init__(
         self,
         name: str,
+        *,
         model_client: ChatCompletionClient = None,
         tools: List[BaseTool[Any, Any] | Callable[..., Any] | Callable[..., Awaitable[Any]]] | None = None,
         workbench: Workbench | None = None,
@@ -123,19 +137,36 @@ class RongZaiAgent(DrSaiAgent):
         model_client_stream: bool = True,
         reflect_on_tool_use: bool | None = None,
         tool_call_summary_format: str = "{result}",
+        tool_call_summary_prompt: str| None = None,
         output_content_type: type[BaseModel] | None = None,
         output_content_type_format: str | None = None,
         memory: Sequence[Memory] | None = None,
         metadata: Dict[str, str] | None = None,
-        memory_function: Callable = None,
-        # allow_reply_function: bool = False,
-        reply_function: Callable = None,
-        db_manager: DatabaseManager = None,
-        **kwargs,
-            ):
+        # drsaiAgent specific
+        memory_function: Callable | None = None,
+        reply_function: Callable | None = None,
+        db_manager: DatabaseManager | None = None,
+        thread_id: str | None = None,
+        user_id: str | None = None,
+        set_model_client: Callable | None = None,
+        llm_mode_config: Dict = {},
+        # skills and executor
+        skills_dir: Optional[str | List[str]] = None,
+        work_dir: str | None = None,
+        only_in_workspace: bool = True,
+        extra_work_dirs: List[str] | None = None,
+        executor: CodeExecutor | None = None,
+        sub_agent_config: Dict = {},
+        max_turn_count: int = 20,
+        token_limit: int = 50000,
+        rag_flow_url: str | None = None,
+        rag_flow_token: str | None = None,
+        memory_dataset_id: str | None = None,
+        learning_dataset_id: str| None = None,
+        ):
         
         super().__init__(
-            name=name, 
+            name=name,
             model_client=model_client,
             tools=tools,
             workbench=workbench,
@@ -146,6 +177,7 @@ class RongZaiAgent(DrSaiAgent):
             model_client_stream=model_client_stream,
             reflect_on_tool_use=reflect_on_tool_use,
             tool_call_summary_format=tool_call_summary_format,
+            tool_call_summary_prompt=tool_call_summary_prompt,
             output_content_type=output_content_type,
             output_content_type_format=output_content_type_format,
             memory=memory,
@@ -153,670 +185,302 @@ class RongZaiAgent(DrSaiAgent):
             memory_function=memory_function,
             reply_function=reply_function,
             db_manager=db_manager,
-            **kwargs,
-            )
-
-        # 工作目录
-        self._data_dir = kwargs.get("data_dir", None)
-        if self._data_dir is None:
-            raise ValueError("需要提供RUN和CIF文件所在data目录.")
-        
-        # 其他初始化
-        self._GSASII_Workbench = kwargs.get("GSASII_Workbench", None)
-        self._PDF_Workbench = kwargs.get("PDF_Workbench", None)
-        self._AIndex_Workbench = kwargs.get("AIndex_Workbench", None)
-        self._NPD_Simulator_Workbench = kwargs.get("NPD_Simulator_Workbench", None)
-        self._sleep_time = kwargs.get("sleep_time", 10)
-
-        #保存最新的精修后cif文件和gpx文件路径，用于最后的导出
-        self.cif_paths = []
-        self.gpx_path = ""
-
-    async def pause(self) -> None:
-        """Pause the agent by setting the paused state."""
-        logger.info(f"Pausing {self.name}...")
-
-        self.is_paused = True
-        # self._paused.set()
-
-    async def resume(self) -> None:
-        """Resume the agent by clearing the paused state."""
-        self.is_paused = False
-        # self._paused.clear()
-
-    async def close(self) -> None:
-        """Clean up resources used by the agent.
-
-        This method:
-          ...
-        """
-        logger.info(f"Closing {self.name}...")
-        
-        # Close the model client.
-        await self._model_client.close()
-
-        # TODO: 进一步开发save_state
-        AgentState: Mapping[str, Any] = await self.save_state()
-        # 保存状态到数据库
-        response: Response = self._db_manager.get(
-            Thread, 
-            filters={"user_id": self._user_id,"thread_id": self._thread_id},
-            return_json=False
-            )
-        if response.status and response.data:
-            thread: Thread = response.data[0]
-            thread.state = json.dumps(AgentState)
-            response: DBResponse = self._db_manager.upsert(thread)
-            if not response.status:
-                raise RuntimeError(f"Failed to create thread: {response.message}")
-    
-    def upload_file(self, file_path: str, purpose: str = "user_data") -> str:
-        """上传文件到图床接口
-        Args:
-            file_path (str): 文件路径
-            purpose (str): 上传用途，默认为"user_data"
-
-        Returns:
-            str: 上传后的URL
-        """
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=self._model_client._client.api_key,
-            base_url="https://aiapi.ihep.ac.cn/apiv2"
+            thread_id=thread_id,
+            user_id=user_id,
+            set_model_client=set_model_client,
+            llm_mode_config=llm_mode_config,
         )
 
-        file_obj = client.files.create(
-                file=open(file_path, "rb"),
-                purpose=purpose
-            )
-        return f"https://aiapi.ihep.ac.cn/apiv2/files/{file_obj.id}/preview"
+        self._developer_system_message = system_message
 
-    def copy_gpx_to_gsa_folder(self, gpx_path: str, gsa_path: str) -> str:
-        """将 gpx 文件复制到 gsa 文件所在文件夹并重命名
-        Args:
-            gpx_path (str): gpx 文件的路径
-            gsa_path (str): gsa 文件的路径
-
-        Returns:
-            str: 复制后的 gpx 文件路径
-        """
-        try:
-            # 获取 gsa 文件的目录
-            gsa_dir = os.path.dirname(gsa_path)
-            # 获取 gsa 文件的名称（不包含扩展名）
-            gsa_name = os.path.splitext(os.path.basename(gsa_path))[0]
-            # 构建新的 gpx 文件路径
-            new_gpx_path = os.path.join(gsa_dir, f"{gsa_name}.gpx")
-            # 复制文件
-            shutil.copy2(gpx_path, new_gpx_path)
-            logger.info(f"已将 gpx 文件复制到: {new_gpx_path}")
-            return new_gpx_path
-        except Exception as e:
-            logger.error(f"复制 gpx 文件失败: {e}")
-            return gpx_path
-
-    def copy_cif_files_to_gsa_folder(self, cif_paths_list: List[str], gsa_path: str) -> List[str]:
-        """将精修后的 cif 文件复制到 gsa 文件所在文件夹
-        Args:
-            cif_paths_list (List[str]): 精修后的 cif 文件路径列表
-            gsa_path (str): gsa 文件的路径
-
-        Returns:
-            List[str]: 复制后的 cif 文件路径列表
-        """
-        new_cif_paths = []
-        try:
-            # 获取 gsa 文件的目录
-            gsa_dir = os.path.dirname(gsa_path)
-            
-            for cif_file in cif_paths_list:
-                if not os.path.exists(cif_file):
-                    logger.warning(f"CIF 文件不存在: {cif_file}")
-                    new_cif_paths.append(cif_file)
-                    continue
-                
-                # 获取 cif 文件的原始文件名
-                cif_filename = os.path.basename(cif_file)
-                # 构建新的 cif 文件路径
-                new_cif_path = os.path.join(gsa_dir, cif_filename)
-                
-                # 复制文件
-                shutil.copy2(cif_file, new_cif_path)
-                logger.info(f"已将 CIF 文件复制到: {new_cif_path}")
-                new_cif_paths.append(new_cif_path)
-        except Exception as e:
-            logger.error(f"复制 CIF 文件失败: {e}")
-            # 如果出错，返回原始路径列表
-            return cif_paths_list
-        
-        return new_cif_paths
-
-    def get_fetch_file_Workbench(self) -> StaticWorkbench:
-        if hasattr(get_data_handle_info, "__doc__") and get_data_handle_info.__doc__ is not None:
-            description = get_data_handle_info.__doc__
+        # === workspace for assistant ===
+        if not work_dir:
+            if self._db_manager:
+                DEFAULT_RUN_DIR: Path = self._db_manager.schema_manager.base_dir / "runs"
+                self._work_dir = DEFAULT_RUN_DIR / self._user_id
+            else:
+                self._work_dir = Path(RUNS_DIR) / self._user_id
         else:
-            description = ""
-        return StaticWorkbench([FunctionTool(get_data_handle_info, description=description)])
-    
-    def get_tools_args(self, tool_type: str, file_args: Dict):
+            self._work_dir = Path(work_dir) / self._user_id
+        if not self._work_dir.exists():
+            self._work_dir.mkdir(parents=True)
+
+        # === initial UserProfileManager ===
+        self._user_profile_manager = UserProfileManager(
+            agent_name=self._name,
+            work_dir=self._work_dir,
+            user_id=self._user_id,
+            thread_id=self._thread_id,
+        )
+        self._update_user_config_tools = [self._user_profile_manager.get_user_config_tool()]
+        
+        # === basic tools ===
+        self._only_in_workspace = only_in_workspace
+        self._extra_work_dirs = extra_work_dirs
+        self._basic_funcs: List[Callable] = get_operator_funcs(
+            work_dir, 
+            only_in_workspace=self._only_in_workspace,
+            extra_dirs = self._extra_work_dirs,
+            )
+        self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
+        for func in self._basic_funcs:
+            self._tools.append(FunctionTool(func, description=func.__doc__))
+
+        # === model context ===
+        self._token_limit = token_limit
+        self._rag_flow_url = rag_flow_url
+        self._rag_flow_token = rag_flow_token
+        self._memory_dataset_id = memory_dataset_id
+        self._learning_dataset_id = learning_dataset_id or memory_dataset_id
+        self._memory_document_id = self._user_profile_manager.get_document_ids(self._thread_id)
+        self._learning_document_id = self._user_profile_manager.get_document_ids(self._user_id)
+        # memory manager
+        self._model_context = DrSaiChatCompletionContext(
+            agent_name=self._user_profile_manager.agent_name,
+            model_client=self._model_client,
+            user_id=self._user_id,
+            thread_id=self._thread_id,
+            work_dir=self._work_dir,
+            token_limit=self._token_limit,
+            rag_flow_url=self._rag_flow_url,
+            rag_flow_token=self._rag_flow_token,
+            dataset_id=self._memory_dataset_id,
+            document_id=self._memory_document_id,
+            learning_dataset_id=self._learning_dataset_id,
+            learning_document_id=self._learning_document_id,
+        )
+        if not self._model_context._rag_flow_manager:
+            raise ValueError("RAGFlowManager is not initialized in DrSaiChatCompletionContext")
+        funcs = [self._model_context.retrieve_from_memory, self._model_context.summry_conversation_to_memory]
+        for func in funcs:
+            self._tools.append(FunctionTool(func, description=func.__doc__))
+                
+        # === skills ===
+        self._skills_dir = skills_dir
+        if self._user_profile_manager.first_time_setup and self._skills_dir:
+            src_dirs = self._skills_dir if isinstance(self._skills_dir, list) else [self._skills_dir]
+            dst_root = self._user_profile_manager.skills_dir
+            for src_dir in src_dirs:
+                src_path = Path(src_dir)
+                for skill_folder in src_path.iterdir():
+                    if skill_folder.is_dir():
+                        dst = dst_root / skill_folder.name
+                        if not dst.exists():
+                            shutil.copytree(skill_folder, dst)
+        self._agent_skills_tools = []
+
+        # === executor ===
+        self._local_executor = executor
+        
+        # === sub_agent_config ===
+        self._sub_agent_config = sub_agent_config
+        self._user_sub_agents = {}
+        self._user_sub_agents.update(sub_agent_config)
+        self._subagent_tools = []
+
+        # === todo manager ===
+        self._todo_manager = TodoManager()
+        self._todo_tools = [get_todo_manager_tool()]
+
+        # 初始化实例变量供edge_agent_core使用
+        # self._current_plan = None
+        # self._task_planner = None
+        # self._memory_manager = None
+
+        # max_turn_count
+        self._max_turn_count = max_turn_count
+
+        # config file mtime cache for lazy reloading
+        self._config_mtimes: Dict[str, float] = {}
+        self._cached_tools_prompt: str = ""
+        self._cached_skills_loader = None
+
+    def _file_changed(self, path: Path) -> bool:
+        """Check if a file/dir has been modified since last check, updating the cached mtime."""
         try:
-            if tool_type == "handle_diffraction":
-                gsas_ii_args = {}
-                # print("file_args:",file_args)
-                gsas_ii_args['gsa_path'] = file_args.get('gsa_path', '')
-                gsas_ii_args['instprm_path'] = file_args.get('instprm_path', '')
-                gsas_ii_args['cif_paths'] = file_args.get('cif_paths', [])
-                gsas_ii_args['refine_params'] = file_args.get('refine_params', {})
-                gsas_ii_args['refine_idx'] = file_args.get('refine_idx', 0)
-                gsas_ii_args['gpx_path'] = file_args.get('gpx_path', '')
-                gsas_ii_args['task_id'] = str(uuid.uuid4())
-                gsas_ii_args['thread_id'] = self._thread_id + "_" + self._user_id
-                gsas_ii_args['use_constraints'] = True
-                return gsas_ii_args
-            elif tool_type == "handle_pdf":
-                pdf_args = {
-                    "data_file": file_args["g_r_files"][0],
-                    "structure_files": file_args["cif_files"],
-                    "task_id": str(uuid.uuid4()),
-                    "thread_id": self._thread_id + "_" + self._user_id,
-                }
-                pdf_args.update(file_args["pdf_params"])
-                return pdf_args
-            elif tool_type == "handle_AIndex":
-                AIndex_args = {}
-                for i in range(len(file_args["groups"])):
-                    group_id = file_args["groups"][i]
-                    arguments = {
-                            "pattern_file": file_args["txt_files"][i],
-                            "task_id": str(uuid.uuid4()),
-                            "thread_id": self._thread_id + "_" + self._user_id,
-                        }
-                    AIndex_args[group_id] = arguments
-                return AIndex_args
-            elif tool_type == "handle_NPD_Simulator":
-                NPD_Simulator_args = {}
-                for i in range(len(file_args["groups"])):
-                    group_id = file_args["groups"][i]
-                    arguments = {
-                            "structure_file": file_args["cif_files"][0],
-                            "instprm_path": file_args["instprm_files"][i],
-                            "task_id": str(uuid.uuid4()),
-                            "thread_id": self._thread_id + "_" + self._user_id,
-                    }
-                    NPD_Simulator_args[group_id] = arguments
-                return NPD_Simulator_args
-            else:
-                raise ValueError(f"Unsupported tool type: {tool_type}")
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
+            mtime = path.stat().st_mtime
+        except FileNotFoundError:
+            return True
+        key = str(path)
+        if self._config_mtimes.get(key) != mtime:
+            self._config_mtimes[key] = mtime
+            return True
+        return False
 
-    def get_gsas_ii_info(self, diffraction_outputs: Dict) -> str:
-        diffraction = f"## 中子衍射精修结果\n\n"
-        rwp = diffraction_outputs["refinement_results"]["rwp"]
-        cell_parameters = diffraction_outputs["refinement_results"]["cell_parameters"]
-        length_a = cell_parameters[0]["length_a"]
-        length_b = cell_parameters[0]["length_b"]
-        length_c = cell_parameters[0]["length_c"]
-        angle_alpha = cell_parameters[0]["angle_alpha"]
-        angle_beta = cell_parameters[0]["angle_beta"]
-        angle_gamma = cell_parameters[0]["angle_gamma"]
-        volume = cell_parameters[0]["volume"]
-        refine_cif_files = diffraction_outputs["refinement_results"]["refined_cif_files"]
-        refine_cif_urls = {}
-        for i, refine_cif_file in enumerate(refine_cif_files):
-            refine_cif_url = self.upload_file(file_path=refine_cif_file)
-            refine_cif_file_png = cif_3D_visualization(refine_cif_file)
-            refine_cif_file_png_url = self.upload_file(file_path=refine_cif_file_png[0])
-            refine_cif_urls["refine_cif_url"] = refine_cif_file_png_url
-        output_files = diffraction_outputs["output_files"]
-        neutron_refinement_plot_url = self.upload_file(diffraction_outputs["plot_path"])
-        diffraction += f"### 精修后的结构文件\n\n"
-        for refine_cif_url, refine_cif_file_png_url in refine_cif_urls.items():
-            diffraction += f"{i+1}. {refine_cif_url}:\n\n![image.png]({refine_cif_file_png_url})\n\n"
-        diffraction += f"### 精修后的晶格参数\n\n"
-        diffraction += f"a: {length_a}\n"
-        diffraction += f"b: {length_b}\n"
-        diffraction += f"c: {length_c}\n"
-        diffraction += f"α: {angle_alpha}\n"
-        diffraction += f"β: {angle_beta}\n"
-        diffraction += f"γ: {angle_gamma}\n"
-        diffraction += f"体积: {volume}\n\n"
-        diffraction += f"### 精修后的Rwp\n\n{rwp}\n\n"
-        diffraction += f"### 精修后的中子衍射图像\n\n![image.png]({neutron_refinement_plot_url})\n\n"
-        return diffraction
+    def update_system_prompt(self, additional_prompt: str = "") -> str:
+        """获取agent描述、用户画像并更新系统消息"""
+        user_context = self._user_profile_manager.get_agent_system_prompt()
+        enhanced_system_message = self._developer_system_message
+        if user_context and self._developer_system_message:
+            # 合并系统消息和用户上下文
+            enhanced_system_message = f"""{self._developer_system_message}
 
-    def assess_gsas_ii_results(self, current_result):
-        need_further_refinement = False
-        refinement_message = ""
-        if current_result.status == "error":
-            refinement_message = f"## 中子衍射第{current_result.group_id}组精修失败，请检查输入参数。\n\n"
+{user_context}
+
+Current Session_ID is {self._thread_id}
+"""
+        enhanced_system_message += additional_prompt
+        self._system_messages = [SystemMessage(content=enhanced_system_message)]
+    
+    def update_user_skills(self) -> SkillLoader:
+        """加载/更新用户技能"""
+        skills_loader = None
+        # 首先尝试从用户的skills目录加载
+        user_skills_dir = self._user_profile_manager.skills_dir
+        if user_skills_dir.exists() and list(user_skills_dir.glob("*/SKILL.md")):
+            skills_loader = SkillLoader(skills_dir=str(user_skills_dir))
+        # # 再从指定的skills目录加载
+        # if self._skills_dir:
+        #     if not skills_loader:
+        #         skills_loader = SkillLoader(skills_dir=self._skills_dir)
+        #     else:
+        #         skills_loader.add_skills_by_dir(skills_dir=self._skills_dir)
+        # 获取技能描述
+        if skills_loader and skills_loader.skills:
+            self._agent_skills_tools = [get_agent_skills_tool(descriptions=skills_loader.get_descriptions())]
         else:
-            rwp = current_result.refinement_results["rwp"]
-            if rwp > 0.1:
-                need_further_refinement = True
-                refinement_message = f"## 精修后的Rwp大于0.1，可能需要进一步精修。\n\n"
-            else:
-                refinement_message = f"## 精修后的Rwp为{rwp:.4f}，精修效果良好。\n\n"
-        
-        return need_further_refinement, refinement_message
-        
-    def get_file_base64(self, file_path: str):
-        """获取知识库文件的base64编码"""
-        try:
-            if os.path.exists(file_path):
-                with open(file_path, 'rb') as file:
-                    file_base64 = base64.b64encode(file.read()).decode('utf-8')
-                # file_obj = upload_to_hepai_filesystem(file_path=file_path)
-                return file_base64
-            else:
-                print(f"警告: 文件 {file_path} 不存在")
-                return None
-        except Exception as e:
-            print(f"读取文件时出错: {e}")
-            return None
+            self._agent_skills_tools = []
+        return skills_loader
     
-    
-    
-    # TODO: 改成CLS和@classmethod
-    async def on_agent_stream(
-        self, 
-        cancellation_token: CancellationToken,
-        system_messages: List[SystemMessage] = [],
-        workbench: StaticWorkbench | None = None,
-        model_client: HepAIChatCompletionClient | None = None,
-        message_queue: asyncio.Queue = None,
-    ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | Response, None]:
-        """
-        Process the incoming messages with the assistant agent and yield events/responses as they happen.
-        """
-
-        try:
-            # Gather all relevant state here
-            agent_name = self.name
-            model_context = self._model_context
-            memory = self._memory
-            # system_messages = system_messages
-            # workbench = workbench
-            handoff_tools = self._handoff_tools
-            handoffs = self._handoffs
-            # model_client = self._model_client
-            model_client_stream = self._model_client_stream
-            reflect_on_tool_use = self._reflect_on_tool_use
-            tool_call_summary_format = self._tool_call_summary_format
-            output_content_type = self._output_content_type
-            format_string = self._output_content_type_format
-
-            # # STEP 1: Add new user/handoff messages to the model context
-            # await self._add_messages_to_context(
-            #     model_context=model_context,
-            #     messages=messages,
-            # )
-
-            # # STEP 2: Update model context with any relevant memory
-            inner_messages: List[BaseAgentEvent | BaseChatMessage] = []
-            for event_msg in await self._update_model_context_with_memory(
-                memory=memory,
-                model_context=model_context,
-                agent_name=agent_name,
-            ):
-                inner_messages.append(event_msg)
-                if message_queue is not None:
-                    await message_queue.put(event_msg)
+    async def update_user_tools(self) -> str:
+        """将用户的自定义配置工具接入到agent中"""
+        user_mcp_tools = []
+        user_local_tools = []
+        tools_config = self._user_profile_manager.load_user_tools_config()
+        for tool in tools_config:
+            try:
+                if tool.get("type") == "mcp-std":
+                    config = tool.get("config")
+                    if "command" in config and "args" in config:
+                        std_mcp_tools = await mcp_server_tools(StdioServerParams(
+                            command=config["command"],
+                            args=config["args"]
+                        ))
+                        user_mcp_tools.extend(std_mcp_tools)
+                elif tool.get("type") == "mcp-sse":
+                    config = tool.get("config")
+                    if "url" in config:
+                        sse_mcp_tools = await mcp_server_tools(SseServerParams(
+                            url=config["url"],
+                            headers = config.get("headers", None),
+                            timeout=config.get("timeout", float(20)),
+                            sse_read_timeout=config.get("sse_read_timeout", float(300)),
+                        ))
+                        user_mcp_tools.extend(sse_mcp_tools)
                 else:
-                    yield event_msg
+                    user_local_tools.append(str(config)+"\n")
 
-            # STEP 3: Run the first inference
-            model_result = None
-            async for inference_output in self._call_llm(
-                model_client=model_client,
-                model_client_stream=model_client_stream,
-                system_messages=system_messages,
-                model_context=model_context,
-                workbench=workbench,
-                handoff_tools=handoff_tools,
-                agent_name=agent_name,
-                cancellation_token=cancellation_token,
-                output_content_type=output_content_type,
-            ):
-                if self.is_paused or cancellation_token.is_cancelled():
-                    raise asyncio.CancelledError()
-                
-                if isinstance(inference_output, CreateResult):
-                    model_result = inference_output
-                else:
-                    # Streaming chunk event
-                    if message_queue is not None:
-                        await message_queue.put(inference_output)
-                    else:
-                        yield inference_output
-
-            assert model_result is not None, "No model result was produced."
-
-            # --- NEW: If the model produced a hidden "thought," yield it as an event ---
-            if model_result.thought:
-                thought_event = ThoughtEvent(content=model_result.thought, source=agent_name)
-                if message_queue is not None:
-                        await message_queue.put(thought_event)
-                else:
-                    yield thought_event
-                inner_messages.append(thought_event)
-
-            # Add the assistant message to the model context (including thought if present)
-            await model_context.add_message(
-                AssistantMessage(
-                    content=model_result.content,
-                    source=agent_name,
-                    thought=getattr(model_result, "thought", None),
-                )
-            )
-
-            # STEP 4: Process the model output
-            async for output_event in self._process_model_result(
-                model_result=model_result,
-                inner_messages=inner_messages,
-                cancellation_token=cancellation_token,
-                agent_name=agent_name,
-                system_messages=system_messages,
-                model_context=model_context,
-                workbench=workbench,
-                handoff_tools=handoff_tools,
-                handoffs=handoffs,
-                model_client=model_client,
-                model_client_stream=model_client_stream,
-                reflect_on_tool_use=reflect_on_tool_use,
-                tool_call_summary_format=tool_call_summary_format,
-                tool_call_summary_prompt=self._tool_call_summary_prompt,
-                output_content_type=output_content_type,
-                format_string=format_string,
-            ):
-                if self.is_paused or cancellation_token.is_cancelled():
-                    raise asyncio.CancelledError()
-                if message_queue is not None:
-                        await message_queue.put(output_event)
-                else:
-                    yield output_event
-
-        except asyncio.CancelledError:
-            # If the task is cancelled, we respond with a message.
-            cancellederror = Response(
-                chat_message=TextMessage(
-                    content="The task was cancelled by the user.",
-                    source=self.name,
-                    metadata={"internal": "yes"},
-                ),
-                inner_messages=inner_messages,
-            )
-            if message_queue is not None:
-                await message_queue.put(cancellederror)
-            else:
-                yield cancellederror
-        except Exception as e:
-            logger.error(f"Error in {self.name}: {e}")
-
-            # yield StopMessage(source=self.name, content=f"An error occurred while executing the task: {e}",)
-            # add to chat history
-            await model_context.add_message(
-                AssistantMessage(
-                    content=f"An error occurred while executing the task: {e}",
-                    source=self.name
-                )
-            )
-            error_response = Response(
-                chat_message=StopMessage(
-                    content=f"An error occurred while executing the task: {e}",
-                    source=self.name,
-                    metadata={"internal": "no"},
-                ),
-                inner_messages=inner_messages,
-            )
-            if message_queue is not None:
-                await message_queue.put(error_response)
-            else:
-                yield error_response
-        finally:
-            pass
-
-    async def get_mcp_json_result(self, tool_name: str, arguments: Dict, workbench: StaticWorkbench) -> Dict:
-        # print('arguments:', arguments)
-        ToolResult = await workbench.call_tool(
-            name = tool_name,
-            arguments = arguments)
-        # ToolResult_json = json.loads(ToolResult.result[0].content)[0]["text"]
-        try:
-            print("Hello,I'm trying.")
-            json_results = json.loads(ToolResult.result[0].content)
-            if isinstance(json_results, list):
-                json_result = json_results[0]
-                if isinstance(json_result, dict) and 'type' in json_result:
-                    if json_result['type'] == 'text':
-                        text_content = json_result['text']
-                        # 检查text内容是否为有效JSON
-                        if text_content.strip().startswith('{') or text_content.strip().startswith('['):
-                            try:
-                                ToolResult_json = json.loads(text_content)
-                            except json.JSONDecodeError:
-                                # 如果不是有效JSON，当作错误信息处理
-                                ToolResult_json = {"state": "completed", "status": "error", "result": text_content}
-                        else:
-                            # 不是JSON格式，当作错误信息处理
-                            ToolResult_json = {"state": "completed", "status": "error", "result": text_content}
-                    else:
-                        ToolResult_json = {"state": "completed", "status": "error", "result": "Unexpected response type"}
-                else:
-                    ToolResult_json = {"state": "completed", "status": "error", "result": "Invalid response format"}
-            else:
-                ToolResult_json = {"state": "completed", "status": "error", "result": "Response is not a list"}
-        except Exception as e:
-            print("Sorry, It failed.")
-            import traceback
-            traceback.print_exc()
-            ToolResult_json = {"state": "completed", "status": "error", "result": str(e)}
-        return ToolResult_json
-    
-    async def on_tools_stream(
-        self, 
-        cancellation_token: CancellationToken,
-        workbench: StaticWorkbench | None = None,
-        tool_name: str | None = None,
-        tool_type: str|None = None,
-        tool_args: Dict[str, Any] | None = None,
-        message_queue: asyncio.Queue = None,
-        sleep_time: int = 10,
-    ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | Response, None]:
-        """
-        Process the incoming messages with the assistant agent and yield events/responses as they happen.
-        """
-
-        try:
-            if not tool_args:
-                raise ValueError(f"未为{tool_type}提供参数")
-            
-            model_context = self._model_context
-            thread_id = self._thread_id
-            user_id = self._user_id
-            agent_name = self.name
-
-            complete_response = ""
-            inner_messages: List[BaseAgentEvent | BaseChatMessage] = []
-
-            ## 查询状态库，得到GSAS-II的状态
-            global_status : ToolsStatus | None = None
-            response: DBResponse = self._db_manager.get(
-                ToolsStatus, 
-                filters={"user_id": user_id,"thread_id": thread_id},
-                return_json=False
-                )
-            if response.status and response.data:
-                global_status: ToolsStatus = response.data[0]
-            else:
-                raise RuntimeError(f"Failed to read global status: {response.message}")
-            
-            while True: 
-                # 通过 MCP workbench 提交任务,并等待输出
-                if global_status.gsas_ii_status == ToolsRunStatus.AWAITING_INPUT:
-                    # 检测到GSAS-II空闲，提交任务并改变其状态
-                    global_status.gsas_ii_status = ToolsRunStatus.RUNNING
-                    response: DBResponse = self._db_manager.upsert(global_status)
-                    if not response.status or not response.data:
-                        raise RuntimeError(f"Failed to save user input: {response.message}")
-                    
-                    ToolResults = {}
-                    if tool_type == "handle_diffraction":
-                        if self.is_paused or cancellation_token.is_cancelled():
-                            raise asyncio.CancelledError()
-                        ToolResult_json = await self.get_mcp_json_result(tool_name = tool_name, arguments = tool_args, workbench = workbench)
-                        message = f"中子衍射数据精修任务已提交...\n\n"
-                        yield ModelClientStreamingChunkEvent(content=message, source=agent_name)
-                        complete_response += message
-
-                        # 将GSAS-II的输出存入状态库
-                        global_status.gsas_ii_output = json.dumps(ToolResult_json['result'])
-                        response: DBResponse = self._db_manager.upsert(global_status)
-                        if not response.status or not response.data:
-                            raise RuntimeError(f"Failed to save gsas_ii output: {response.message}")
-
-                    elif tool_type == "handle_pdf":
-                        if self.is_paused or cancellation_token.is_cancelled():
-                            raise asyncio.CancelledError()
-                        ToolResult_json = await self.get_mcp_json_result(tool_name = tool_name, arguments = tool_args, workbench = workbench)
-                        print("ToolResult_json:", ToolResult_json)
-                        ToolResults = {
-                            "arguments": tool_args,
-                            "ToolResult_json": ToolResult_json, 
-                            "state": ToolResult_json["state"]}
-                        message = f"中子精修任务已提交，精修PDF参数为：qmax:{tool_args['qmax']}, qdamp:{tool_args['qdamp']}, rmax:{tool_args['rmax']}, rmin:{tool_args['rmin']}...\n\n"
-                        yield ModelClientStreamingChunkEvent(content=message, source=agent_name)
-                        complete_response += message
-
-                    elif tool_type == "handle_AIndex":
-                        for group_id, arguments in tool_args.items():
-                            if self.is_paused or cancellation_token.is_cancelled():
-                                raise asyncio.CancelledError()
-                            ToolResult_json = await self.get_mcp_json_result(tool_name = tool_name, arguments = arguments, workbench = workbench)
-                            ToolResults[group_id] = {
-                                "arguments": arguments,
-                                "ToolResult_json": ToolResult_json, 
-                                "state": ToolResult_json["state"]}
-                            message = f"{group_id}组的中子衍射AIndex预测任务已提交...\n\n"
-                            yield ModelClientStreamingChunkEvent(content=message, source=agent_name)
-                            complete_response += message
-
-                    elif tool_type == "handle_NPD_Simulator":
-                        for group_id, arguments in tool_args.items():
-                            if self.is_paused or cancellation_token.is_cancelled():
-                                raise asyncio.CancelledError()
-                            ToolResult_json = await self.get_mcp_json_result(tool_name = tool_name, arguments = arguments, workbench = workbench)
-                            ToolResults[group_id] = {
-                                "arguments": arguments,
-                                "ToolResult_json": ToolResult_json, 
-                                "state": ToolResult_json["state"]}
-                            message = f"{group_id}组的中子粉末衍射模拟任务已提交...\n\n"
-                            yield ModelClientStreamingChunkEvent(content=message, source=agent_name)
-                        complete_response += message
-            
-                # 通过循环检查是否有执行结束的
-                if global_status.gsas_ii_status == ToolsRunStatus.RUNNING:
-                    # 检测到GSAS-II运行中，查询
-                    ToolResult_json = await self.get_mcp_json_result(tool_name = tool_name, arguments = tool_args, workbench = workbench)
-                    if ToolResult_json["state"] == "completed":
-                        # 将GSAS-II的输出存入状态库
-                        # print("看看有没有cif:", ToolResult_json['result']['refinement_results']['refined_cif_files'])
-                        global_status.gsas_ii_output = json.dumps(ToolResult_json["result"])
-                        response: DBResponse = self._db_manager.upsert(global_status)
-                        if not response.status or not response.data:
-                            raise RuntimeError(f"Failed to save gsas_ii output: {response.message}")
-                        break
-                
-                await asyncio.sleep(sleep_time)
-
-            global_status.gsas_ii_status = ToolsRunStatus.AWAITING_INPUT
-            response: DBResponse = self._db_manager.upsert(global_status)
-            if not response.status or not response.data:
-                raise RuntimeError(f"Failed to save user input: {response.message}")
-
-        except asyncio.CancelledError:
-            # If the task is cancelled, we respond with a message.
-            cancellederror = Response(
-                chat_message=TextMessage(
-                    content="The task was cancelled by the user.",
-                    source=self.name,
-                    metadata={"internal": "yes"},
-                ),
-                inner_messages=inner_messages,
-            )
-            if message_queue is not None:
-                await message_queue.put(cancellederror)
-            else:
-                yield cancellederror
-        except Exception as e:
-            logger.error(f"Error in {self.name}: {e}")
-            import traceback
-            traceback.print_exc()
-            # add to chat history
-            await model_context.add_message(
-                AssistantMessage(
-                    content=f"An error occurred while executing the task: {e}",
-                    source=self.name
-                )
-            )
-            error_response = Response(
-                chat_message=TextMessage(
-                    content=f"An error occurred while executing the task: {e}",
-                    source=self.name,
-                    metadata={"internal": "no"},
-                ),
-                inner_messages=inner_messages,
-            )
-            if message_queue is not None:
-                await message_queue.put(error_response)
-            else:
-                yield error_response
-        finally:
-            pass
-    
-    async def processor_coroutine(
-            self, 
-            cancellation_token: CancellationToken, 
-            workbench: StaticWorkbench,
-            system_message: str,
-            inner_messages: List[BaseAgentEvent | BaseChatMessage],
-            message_queue: asyncio.Queue):
-        """独立协程处理subAgent，使用message_queue参数"""
-        try:
-            # 调用on_agent_stream并传入message_queue
-            async for _ in self.on_agent_stream(
-                cancellation_token,
-                system_messages=self._system_messages+[SystemMessage(content=system_message, source=self.name)],
-                workbench=workbench,
-                model_client=self._model_client,
-                message_queue=message_queue,  # 关键：传入队列参数
-            ):
-                # 这里不需要处理，因为所有消息都会自动放入队列
+            except Exception as e:
+                # print(f"Error loading tool: {e}")
                 pass
-        except Exception as e:
-            # 发生异常时将异常信息放入队列
-            error_response = Response(
-                chat_message=TextMessage(
-                    content=f"PDF处理异常: {str(e)}",
-                    source=self.name,
-                    metadata={"internal": "no"},
-                ),
-                inner_messages=inner_messages,
-            )
-            await message_queue.put(error_response)
-        finally:
-            # 处理完成后放入结束标志
-            await message_queue.put(None)  # None作为结束标志
 
+        self._workbench._tools = self._tools + user_mcp_tools
+        self._tools_names = [tool.name for tool in self._workbench._tools ]
+
+        if user_local_tools:
+            user_local_tools_prompt = "The info about the user's local function is as follows. When needed, you can execute it on the command line using `run_bash` tool\n\n"
+            user_local_tools_prompt += "\n".join(user_local_tools)
+        else:
+            user_local_tools_prompt = ""
+        return user_local_tools_prompt
+    
+    def get_subagent_descriptions(self, sub_agent_config: dict) -> str:
+        """Generate agent type descriptions for system prompt."""
+        return "\n".join(
+            f"- {name}: {cfg['description']}"
+            for name, cfg in sub_agent_config.items()
+        )
+    
+    def update_user_subagents(self):
+        """Update user subagents."""
+        subagents_config = self._user_profile_manager.load_subagents_config()
+        self._user_sub_agents.update(subagents_config)
+
+        if self._user_sub_agents:
+            self._sub_agent_descriptions = self.get_subagent_descriptions(sub_agent_config = self._user_sub_agents)
+            self._subagent_tools = [
+                get_subagent_tools(
+                    sub_agents=list(self._user_sub_agents.keys()),
+                    description=self._sub_agent_descriptions)]
+        else:
+            self._sub_agent_descriptions = ""
+            self._subagent_tools = []
+
+    async def run_stream(
+        self,
+        *,
+        task: str | BaseChatMessage | Sequence[BaseChatMessage] | None = None,
+        cancellation_token: CancellationToken | None = None,
+    ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | TaskResult, None]:
+        """Run the agent with the given task and return a stream of messages
+        and the final task result as the last item in the stream."""
+        if cancellation_token is None:
+            cancellation_token = CancellationToken()
+        self._cancellation_token = cancellation_token
+        input_messages: List[BaseChatMessage] = []
+        output_messages: List[BaseAgentEvent | BaseChatMessage] = []
+        if task is None:
+            pass
+        elif isinstance(task, str):
+            text_msg = TextMessage(content=task, source="user", metadata={"internal": "yes"})
+            # text_msg = TextMessage(content=task, source="user")
+            input_messages.append(text_msg)
+            output_messages.append(text_msg)
+            yield text_msg
+        elif isinstance(task, BaseChatMessage):
+            task.metadata["internal"] = "yes"
+            input_messages.append(task)
+            output_messages.append(task)  
+            yield task
+        else:
+            if not task:
+                raise ValueError("Task list cannot be empty.")
+            for msg in task:
+                if isinstance(msg, BaseChatMessage):
+                    msg.metadata["internal"] = "yes"
+                    input_messages.append(msg)
+                    output_messages.append(msg)
+                    try:
+                        attached_files_json = msg.metadata.get("attached_files")
+                        if attached_files_json:
+                            attached_files = json.loads(attached_files_json)
+                            for file in attached_files:
+                                download_file_from_url_or_base64(
+                                    file_info = file, 
+                                    save_path = f"{self._user_profile_manager.download_dir}/{file['name']}")
+                        settings_config = msg.metadata.get("settings_config")
+                        if settings_config:
+                            settings_config = json.loads(settings_config)
+                            default_config_name = settings_config.get("defult_config_name")
+                            llm_name = self._llm_mode_config.get(default_config_name)
+                            if llm_name != self._model_client._create_args["model"] and self._set_model_client:
+                                self._model_client = self._set_model_client(default_config_name)
+                    except Exception as e:
+                        logger.error(f"Error processing message metadata: {e}")
+                    yield msg
+                else:
+                    raise ValueError(f"Invalid message type in sequence: {type(msg)}")
+        async for message in self.on_messages_stream(input_messages, cancellation_token):
+            if isinstance(message, Response):
+                yield message.chat_message
+                output_messages.append(message.chat_message)
+                yield TaskResult(messages=output_messages)
+            else:
+                yield message
+                if isinstance(message, ModelClientStreamingChunkEvent):
+                    # Skip the model client streaming chunk events.
+                    continue
+                output_messages.append(message)
+                
     async def on_messages_stream(
         self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken
-        ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | Response, None]:
+    ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | Response, None]:
         """
         Process the incoming messages with the assistant agent and yield events/responses as they happen.
         """
+
         # monitor the pause event
-        if self.is_paused or cancellation_token.is_cancelled():
+        if self.is_paused:
             yield Response(
                 chat_message=TextMessage(
                     content=f"The {self.name} is paused.",
@@ -826,544 +490,736 @@ class RongZaiAgent(DrSaiAgent):
             )
             return
 
-        # # Set up background task to monitor the pause event and cancel the task if paused.
-        # async def monitor_pause() -> None:
-        #     await self._paused.wait()
-        #     self.is_paused = True
-
-        # monitor_pause_task = asyncio.create_task(monitor_pause())
-
+        inner_messages: List[BaseAgentEvent | BaseChatMessage] = []
         try:
-            
-            # 获取我当前的工作状态和GSAS-II的状态，获取不到就是初始状态:我没有工作，COMPLETE状态，GSAS-II没有工作，AWAITING_INPUT状态
-            response: DBResponse = self._db_manager.get(
-                ToolsStatus, 
-                filters={"user_id": self._user_id,"thread_id": self._thread_id},
-                return_json=False
-                )
-            if response.status and response.data:
-                global_status: ToolsStatus = response.data[0]
-            else:
-                global_status = ToolsStatus(
+
+            # initialize the learning memory document
+            if self._user_profile_manager.first_time_setup:
+                self._learning_document_id = await self._model_context.create_new_session_document(dataset_id = self._learning_dataset_id, create_type="learning_memory" )
+                self._user_profile_manager.update_document_ids(thread_id=self._user_id, document_id=self._learning_document_id)
+            # create the new session document
+            if self._memory_document_id is None:
+                self._memory_document_id = await self._model_context.create_new_session_document(
                     user_id = self._user_id,
                     thread_id = self._thread_id,
-                    )
-                global_status.gsas_ii_status = ToolsRunStatus.AWAITING_INPUT
-                global_status.rongzai_status = ToolsRunStatus.COMPLETE
-                self._db_manager.upsert(global_status)
+                    work_dir = self._work_dir,
+                )
+                self._user_profile_manager.update_document_ids(thread_id=self._thread_id, document_id=self._memory_document_id)
+                self._model_context._document_id = self._memory_document_id
 
-            ###################################################################
-            ### 仅测试用：打印用户输入的原始信息
-            logger.info("=== 用户输入的原始信息 ===")
-            for i, msg in enumerate(messages):
-                logger.info(f"消息 {i + 1} - 类型: {type(msg).__name__}")
-                logger.info(f"内容: {msg.content}")
-                logger.info("-" * 50)
-            ###################################################################
+
+            # load/update tools only if TOOLS_CONFIG.json changed
+            tools_changed = self._file_changed(self._user_profile_manager.tools_config_path)
+            if tools_changed:
+                self._cached_tools_prompt = await self.update_user_tools()
+
+            # update system prompt if AGENTS.md or tools prompt changed
+            if tools_changed or self._file_changed(self._user_profile_manager.agents_md):
+                self.update_system_prompt(additional_prompt=self._cached_tools_prompt)
+
+            # load/update skills only if skills directories changed
+            skills_changed = self._file_changed(self._user_profile_manager.skills_dir)
+            if self._skills_dir:
+                extra_dirs = self._skills_dir if isinstance(self._skills_dir, list) else [self._skills_dir]
+                skills_changed = skills_changed or any(self._file_changed(Path(d)) for d in extra_dirs)
+            if skills_changed or self._cached_skills_loader is None:
+                self._cached_skills_loader = self.update_user_skills()
+            skills_loader = self._cached_skills_loader
+
+            # load/update subagents only if SUBAGENT_CONFIG.json changed
+            if self._file_changed(self._user_profile_manager.subagent_config_path):
+                self.update_user_subagents()
+
+            # manager ToolSchema
+            manager_tools = self._update_user_config_tools+self._agent_skills_tools+self._subagent_tools+self._todo_tools
+
+            # count the number of tools
+            if isinstance(self._model_context, DrSaiChatCompletionContext):
+                self._model_context._tool_schema = await self._workbench.list_tools()
+                self._model_context._tool_schema += manager_tools
+
+            # Gather all relevant state here
+            agent_name = self._user_profile_manager.agent_name
+            model_context = self._model_context
+            memory = self._memory
+            system_messages = self._system_messages
+            workbench = self._workbench
+            handoff_tools = self._handoff_tools
+            handoffs = self._handoffs
+            model_client = self._model_client
+            model_client_stream = self._model_client_stream
+            reflect_on_tool_use = self._reflect_on_tool_use
+            tool_call_summary_format = self._tool_call_summary_format
+            output_content_type = self._output_content_type
+            format_string = self._output_content_type_format
             
-            
-            # 将用户输入的消息加入到model_context中,此时我要标注是用户的输入
-            metadata = messages[-1].metadata or {}
-            attached_files_info = json.loads(metadata.get("attached_files", "[]"))
-            uploaded_file_names = [
-                file_info.get("name", "")
-                for file_info in attached_files_info
-                if isinstance(file_info, dict)
-            ]
-            attachment_text = ""
-            if attached_files_info:
-                file_names = [file_info["name"] for file_info in attached_files_info]
-                attachment_text = f"用户上传了附件文件：{'、'.join(file_names)}"
-
-            content = messages[-1].content
-            if isinstance(content, list):
-                text_content = "".join(x for x in content if isinstance(x, str))
-            else:
-                text_content = str(content)
-
-            text_content = " ".join(text_content.replace("\n", " ").split())
-            if attachment_text:
-                messages[-1].content = f"用户输入：{text_content} {attachment_text}".strip()
-            else:
-                messages[-1].content = f"用户输入：{text_content}".strip()
+            # Add new user/handoff messages to the model context
             await self._add_messages_to_context(
-                model_context=self._model_context,
-                messages=[messages[-1]],
+                model_context=model_context,
+                messages=messages,
             )
 
-            # 正式开始RongzaiAgent的工作
-            inner_messages: List[BaseAgentEvent | BaseChatMessage] = [] # 这个用不到，先放在这；这个每次对话都会重置
-            while True: # 这里进入一个无限循环，直到大模型认为需要返回给用户信息
-                # 由蓉仔根据用户的输入和当前它的状态、GSAS-II的状态来决定要做什么
-                async for message in self.on_agent_stream(
-                    cancellation_token,
-                    system_messages=self._system_messages+[SystemMessage(content=intention_system_message)],
-                    workbench=self.get_fetch_file_Workbench(),
-                    model_client=self._model_client,
-                    ):
-                    if isinstance(message, Response):
-                        inner_messages.append(message.chat_message)
-                        if isinstance(message.chat_message, ToolCallSummaryMessage):
-                            user_handle_info = message.chat_message.content
-                            
-                            # 万一模型返回了一个字符串，则需要将其转换为字典
-                            if isinstance(user_handle_info, str):
-                                
-                                user_handle_info = ast.literal_eval(user_handle_info) 
-                            message.chat_message.metadata["internal"] = "yes"
-                            yield message.chat_message
-                        elif isinstance(message.chat_message, HandoffMessage):
-                            # yield ModelClientStreamingChunkEvent(content=message.chat_message.content, source=self.name)
-                            await self._add_messages_to_context(
-                                    model_context=self._model_context,
-                                    messages=[message.chat_message])
-                            yield message
-                            return
-                        elif isinstance(message.chat_message, StopMessage):
-                            yield ModelClientStreamingChunkEvent(content=message.chat_message.content, source=self.name)
-                            yield message
-                            return 
-                        else:
-                            yield message
-                            return
+            # TODO: Update model context with any relevant memory -> When? How?
 
-                    else:
-                        yield message
-                                 
-                # 到这一步，说明蓉仔已经返回了结构化的输出user_handle_info,这意味后续要进行专业的数据处理，不是简单的回复信息了
+            turn_count = 0
+            max_empty_turn = 3 
+            empty_turn_count = 0
+            while turn_count < self._max_turn_count:
                 
-                # #将user_handle_info更新到数据库
-                # print("user_handle_info:",user_handle_info)
-                # tools_status.user_handle_info = json.dumps(user_handle_info)
-                # response: DBResponse = self._db_manager.upsert(tools_status)
-                # if not response.status or not response.data:
-                #     raise RuntimeError(f"Failed to save user input: {response.message}")
+                model_result = None
+                async for inference_output in self._call_llm(
+                    model_client=model_client,
+                    model_client_stream=model_client_stream,
+                    system_messages=system_messages,
+                    model_context=model_context,
+                    workbench=workbench,
+                    handoff_tools=handoff_tools,
+                    manager_tools=manager_tools,
+                    agent_name=agent_name,
+                    cancellation_token=cancellation_token,
+                    output_content_type=output_content_type,
+                ):
+                    if self.is_paused:
+                        raise asyncio.CancelledError()
                     
-                print("user_handle_info:",user_handle_info)
-                # 开始判断下一步工作类型
-                if user_handle_info['require_type'] == 'refine_init':
-                    #告知用户开始工作
-                    yield ModelClientStreamingChunkEvent(content=f"{user_handle_info['info']}\n\n", source=self.name)
-                    
-                    # 保存用户初始输入到状态库为了后续生成报告时读取run_id等信息
-                    global_status.first_user_handle_info = json.dumps(user_handle_info)
-                    response: DBResponse = self._db_manager.upsert(global_status)
-                    if not response.status or not response.data:
-                        raise RuntimeError(f"Failed to save user input: {response.message}")
-                    
-                    # 检查用户输入，并且重构格式以适用gsas工具
-                    verified_dict = verify_data_handle_info(
-                        data_handle_info=user_handle_info,
-                        data_dir=self._data_dir,
-                        user_id=self._user_id,
-                        uploaded_file_names=uploaded_file_names,
-                    )
-                    
-                    #判断检查是否通过
-                    if verified_dict['status'] == 'success':
-                        # 通过，根据蓉仔的决策，更新tools_status并同步到状态库，然后继续后续处理
-                        global_status.gsas_ii_input = json.dumps(self.get_tools_args('handle_diffraction',verified_dict['data']))
-                        global_status.verified_dict = json.dumps(verified_dict['data'])
-                        global_status.report_content = verified_dict['data']["instrument_user_info"]
-                        response: DBResponse = self._db_manager.upsert(global_status)
-                        if not response.status or not response.data:
-                            raise RuntimeError(f"Failed to save user input: {response.message}")
+                    if isinstance(inference_output, CreateResult):
+                        model_result = inference_output
                     else:
-                        # 未通过，告知用户错误原因，结束本次处理
-                        yield Response(
-                            chat_message=TextMessage(
-                                content=f"{verified_dict['message']}",
-                                source=self.name,
-                                metadata={"internal": "no"},
-                            ),
+                        # Streaming chunk event
+                        yield inference_output
+
+                assert model_result is not None, "No model result was produced."
+
+                # --- NEW: If the model produced a hidden "thought," yield it as an event ---
+                if model_result.thought:
+                    thought_event = ThoughtEvent(content=model_result.thought, source=agent_name)
+                    yield thought_event
+                    inner_messages.append(thought_event)
+
+                # Add the assistant message to the model context (including thought if present)  
+                await model_context.add_message(
+                    AssistantMessage(
+                        content=model_result.content,
+                        source=self._name,
+                        thought=getattr(model_result, "thought", None),
+                    )
+                )
+                
+                # If direct text response (string)
+                if isinstance(model_result.content, str):
+
+                    if not model_result.content and empty_turn_count < max_empty_turn:
+                        empty_turn_count += 1
+                        await self._model_context.add_message(
+                            UserMessage(
+                                content=f"Your reply is empty. Please continue with the task above.",
+                                source="user"
+                            )
+                        )
+                        continue
+                    elif not model_result.content and empty_turn_count >= max_empty_turn:
+                        model_result.content = "The response is empty. Please try again or create a new session."
+                    else:
+                        empty_turn_count = 0
+
+                    reponse = await self.handle_str_reponse(
+                        model_result = model_result,
+                        agent_name = agent_name,
+                        format_string = format_string,
+                        inner_messages = inner_messages,
+                        output_content_type = output_content_type,)
+                    if self._user_profile_manager.first_time_setup:
+                        yield TextMessage(
+                            content="\n\n(●'◡'●)如果您需要调整我的名称、我对您的称呼、您涉及领域，请告诉我，我来调整(If you need to adjust my name, how I address you, or your field of expertise, please let me know, and I will make the changes).",
+                            source=agent_name,
+                            metadata={"internal": "no"},
+                        )
+                        self._user_profile_manager.first_time_setup = False
+                    yield reponse
+                    break
+
+                # Otherwise, we have function calls
+                assert isinstance(model_result.content, list) and all(
+                    isinstance(item, FunctionCall) for item in model_result.content
+                )
+                
+                # handle tool call
+                pending_stop_message: StopMessage | None = None
+                for i in range(len(model_result.content)):
+                    argument = json.loads(model_result.content[i].arguments)
+                    tool_name = model_result.content[i].name
+                    call_id = model_result.content[i].id
+                    if tool_name == "TodoWrite":
+                        async for message in self.handle_todo_write(
+                            argument = argument,
+                            tool_name = tool_name,
+                            call_id = call_id,
+                            agent_name = agent_name, 
+                            model_context = model_context):
+                            if isinstance(message, StopMessage):
+                                if pending_stop_message is None:
+                                    pending_stop_message = message
+                                break
+                            yield message
+                    elif tool_name == "Task":
+                        async for message in self.handle_subagent_repsonse(
+                            agent_name = agent_name,
+                            model_client = model_client,
+                            model_client_stream = model_client_stream,
+                            model_context = model_context,
+                            argument = argument,
+                            tool_name = tool_name,
+                            call_id = call_id,
+                            cancellation_token = cancellation_token,
+                            output_content_type = output_content_type,
+                        ):
+                            if isinstance(message, StopMessage):
+                                if pending_stop_message is None:
+                                    pending_stop_message = message
+                                break
+                            yield message
+                    elif tool_name == "Skill":
+                        skill_content = skills_loader.run_skill(argument["skill"])
+                        await model_context.add_message(FunctionExecutionResultMessage(
+                            content=[FunctionExecutionResult(
+                                content = f"Skill for {argument['skill']}:\n\n {skill_content}",
+                                name = tool_name,
+                                call_id = call_id,
+                                is_error = False,
+                            ),]
+                        ))
+                        yield AgentLogEvent(
+                            title=f"I am reading skill: {argument['skill']}.",
+                            source=agent_name, 
+                            content=str(argument), 
+                            content_type="tools")
+                        yield ToolCallSummaryMessage(
+                            content=f"<think>Skill for {argument['skill']}:\n\n {skill_content}</think>\n",
+                            source=agent_name,
+                        )
+                    elif tool_name in self._tools_names:
+                        async for message in self._process_model_result(
+                            model_result=model_result,
                             inner_messages=inner_messages,
-                        )
-                        await self._add_messages_to_context(
-                                    model_context=self._model_context,
-                                    messages=[TextMessage(
-                                        content=f"{verified_dict['message']}",
-                                        source=self.name)])
-                        global_status.rongzai_status = ToolsRunStatus.COMPLETE
-                        self._db_manager.upsert(global_status)
-                        return
-                    
-                    # 根据蓉仔的决策，使用GSAS-II工具精修一次, 注意，这里精修完后，GSAS-II工具会直接把精修结果保存在状态库中
-                    async for message in self.on_tools_stream(
-                            cancellation_token,
-                            workbench=self._GSASII_Workbench,
-                            tool_name="write_info",
-                            tool_type = "handle_diffraction",
-                            tool_args = json.loads(global_status.gsas_ii_input), 
-                            sleep_time=self._sleep_time,
-                            ):
+                            cancellation_token=cancellation_token,
+                            agent_name=agent_name,
+                            system_messages=system_messages,
+                            model_context=model_context,
+                            workbench=workbench,
+                            handoff_tools=handoff_tools,
+                            handoffs=handoffs,
+                            model_client=model_client,
+                            model_client_stream=model_client_stream,
+                            reflect_on_tool_use=reflect_on_tool_use,
+                            tool_call_summary_format=tool_call_summary_format,
+                            tool_call_summary_prompt=self._tool_call_summary_prompt,
+                            output_content_type=output_content_type,
+                            format_string=format_string,
+                        ):
+                            if self.is_paused:
+                                raise asyncio.CancelledError()
                             if isinstance(message, Response):
-                                inner_messages.append(message.chat_message)
-                                if isinstance(message.chat_message, HandoffMessage):
-                                    yield message
-                                    return
-                                else:
-                                    message.chat_message.metadata["internal"] = "yes"
-                                    yield message.chat_message
+                                yield message.chat_message
                             else:
                                 yield message
-                        
-                    # 第一次精修完成, 拿到GSAS-II工具精修结果，更新global_status并同步到状态库
-                    response: DBResponse = self._db_manager.get(
-                        ToolsStatus, 
-                        filters={"user_id": self._user_id,"thread_id": self._thread_id},
-                        return_json=False
-                        )
-                    if response.status and response.data:
-                        global_status: ToolsStatus = response.data[0]
-                        gsas_ii_output = global_status.gsas_ii_output
+                    elif tool_name == "UpdateUserConfig":
+                        update_message = self._user_profile_manager.update_user_config(**argument)
+                        await model_context.add_message(FunctionExecutionResultMessage(
+                            content=[FunctionExecutionResult(
+                                content = update_message,
+                                name = tool_name,
+                                call_id = call_id,
+                                is_error = False,
+                            ),]
+                        ))
+                        agent_name = self._user_profile_manager.agent_name
+                        yield AgentLogEvent(
+                            title="I am updating user's config.",
+                            source=agent_name, 
+                            content=str(argument), 
+                            content_type="tools")
                     else:
-                        raise ValueError("状态库读取失败！")
-                    
-                    response: DBResponse = self._db_manager.upsert(global_status)
-                    if not response.status or not response.data:
-                        raise RuntimeError(f"Failed to save user input: {response.message}")
+                        await model_context.add_message(FunctionExecutionResultMessage(
+                            content=[FunctionExecutionResult(
+                                content = f"Unknown tool: {model_result.content[i].name}",
+                                name = tool_name,
+                                call_id = call_id,
+                                is_error = False,
+                            ),]
+                        ))
 
-                    # 将GSAS-II精修结果加入上下文
-                    gsas_ii_output_json = json.loads(gsas_ii_output)
-                    
-                    if gsas_ii_output_json.get('status','') == 'error':
-                        error_message = gsas_ii_output_json.get('error','未知错误')
-                        error_position = gsas_ii_output_json.get('traceback','未知位置')
-                        yield ModelClientStreamingChunkEvent(content=f"精修过程中出现错误，原因：{error_message}\n\n 报错位置：{error_position}\n\n", source=self.name)
-                        await self._add_messages_to_context(
-                                    model_context=self._model_context,
-                                    messages=[TextMessage(
-                                        content=f"精修过程中出现错误，原因：{error_message}",
-                                        source=self.name)])
-                        self._db_manager.upsert(global_status)
-                        return
-                    else:
-                        #让用户看到这次精修的效果图
-                        neutron_refinement_plot_url = self.upload_file(file_path=gsas_ii_output_json['plot_path'])
-                        info2user = f"### 初始化后的中子衍射图像\n\n![image.png]({neutron_refinement_plot_url})\n\n"
-                        yield ModelClientStreamingChunkEvent(content=info2user, source=self.name)
-                    
-                    # 精修完成，返回报告内容，等待下一次输入
-                    if isinstance(gsas_ii_output_json, str):
-                        gsas_ii_output_json = json.loads(gsas_ii_output_json)
-                    
-                    # 复制 gpx 文件到 gsa 文件夹并重命名
-                    verified_dict = json.loads(global_status.verified_dict)
-                    gsa_path = verified_dict.get('gsa_path', '')
-                    gpx_path = gsas_ii_output_json.get('gpx_path', '')
-                    if gsa_path and gpx_path and os.path.exists(gpx_path):
-                        new_gpx_path = self.copy_gpx_to_gsa_folder(gpx_path, gsa_path)
-                    
-                    # 复制精修后的 cif 文件到 gsa 文件夹
-                    cif_paths_list = gsas_ii_output_json.get("refinement_results", {}).get("refined_cif_files", [])
-                    if gsa_path and cif_paths_list:
-                        new_cif_paths = self.copy_cif_files_to_gsa_folder(cif_paths_list, gsa_path)
-                    
-                    gsas_ii_refine_info = "gpx after refine: " + gsas_ii_output_json['gpx_path']
-                    try:
-                        lst_message = prune_lst_keep_main(gsas_ii_output_json['lst_path'])
-                    except Exception as e:
-                        lst_message = "精修初始化完成，可以进行后续精修操作。"
-                    refinement_log = gsas_ii_output_json['refinement_log']
-                    image = Image.from_file(file_path=gsas_ii_output_json['plot_path'])
-                    multimodal_message = MultiModalMessage(
-                        source=self.name,
-                        content=[
-                            f"GSAS-II的输入: {gsas_ii_refine_info},{lst_message},精修日志: {refinement_log}；精修图像也附给你了;你现在的状态：{global_status.rongzai_status}",
-                            image
-                        ])
-
-                    await self._add_messages_to_context(
-                        model_context=self._model_context,
-                        messages=[multimodal_message]
-                    )
-                
-                elif user_handle_info['require_type'] == 'refine_pause':
-                    response: DBResponse = self._db_manager.upsert(global_status)
-                    if not response.status or not response.data:
-                        raise RuntimeError(f"Failed to save user input: {response.message}")
-                    
-                    
-                    # 拿到精修的结果
-                    response: DBResponse = self._db_manager.get(
-                        ToolsStatus, 
-                        filters={"user_id": self._user_id,"thread_id": self._thread_id},
-                        return_json=False
-                        )
-                    if response.status and response.data:
-                        global_status: ToolsStatus = response.data[0]
-                        gsas_ii_output = global_status.gsas_ii_output
-                    else:
-                        raise ValueError("整理报告时未发现相关精修数据！")
-                    
-                    #拿到精修的图片后和精修结果一并返回给用户
-                    gsas_ii_output_json = json.loads(gsas_ii_output)
-                    if isinstance(gsas_ii_output_json, str):
-                        gsas_ii_output_json = json.loads(gsas_ii_output_json)
-                    neutron_refinement_plot_url = self.upload_file(file_path=gsas_ii_output_json['plot_path'])
-                    info2user = "下面是您当前的中子衍射数据精修结果：\n\n"
-                    info2user += f"### 精修后的中子衍射图像\n\n![image.png]({neutron_refinement_plot_url})\n\n"
-                    info2user += f"{user_handle_info['info']}\n\n"
-
-                    yield ModelClientStreamingChunkEvent(content=info2user, source=self.name)
+                if pending_stop_message is not None:
                     yield Response(
-                        chat_message=TextMessage(
-                            content=info2user,
-                            source=self.name,
-                            metadata={"internal": "yes"},
-                        ),
+                        chat_message=pending_stop_message,
                         inner_messages=inner_messages,
                     )
                     return
 
-                elif user_handle_info['require_type'] == 'refine_finish':
-                    # 告知用户会为他生成报告
-                    message = f"好的！正在为您生成本次精修结果报告，请稍后...\n\n"
-                    yield ModelClientStreamingChunkEvent(content=message, source=self.name)
-
-                    # 根据蓉仔的决策，更新status并同步到状态库，然后继续后续处理
-                    response: DBResponse = self._db_manager.get(
-                        ToolsStatus, 
-                        filters={"user_id": self._user_id,"thread_id": self._thread_id},
-                        return_json=False
-                        )
-                    if response.status and response.data:
-                        global_status: ToolsStatus = response.data[0]
-                    else:
-                        raise ValueError("整理报告时未发现相关精修数据！")
-                    
-                    response: DBResponse = self._db_manager.upsert(global_status)
-                    if not response.status or not response.data:
-                        raise RuntimeError(f"Failed to save user input: {response.message}")
-                    
-                    # 准备生成报告
-                    report_to_user = "下面是您当前的中子衍射数据精修报告：\n\n"
-                    report_to_user += global_status.report_content
-                    gsas_ii_results = json.loads(global_status.gsas_ii_output)
-                    gsas_ii_report_content = self.get_gsas_ii_info(
-                        diffraction_outputs=gsas_ii_results)
-                    report_to_user += f"\n\n{gsas_ii_report_content}\n\n"
-                    ## 将报告保存到数据库
-                    global_status.report_content = report_to_user
-                    response: DBResponse = self._db_manager.upsert(global_status)
-                    if not response.status or not response.data:
-                        raise RuntimeError(f"Failed to save report content: {response.message}")
-                    ## 将报告保存为文件
-                    try:
-                        first_user_handle_info = json.loads(global_status.first_user_handle_info)
-                        run_id = first_user_handle_info.get("run_id", "")
-                        beamline = first_user_handle_info.get("beamline","")
-                        report_file_name = f"{beamline}/RUNdataFiles/{run_id}/output/{self._user_id}_{self._thread_id}_report.md"
-                        report_file_path = os.path.join(self._data_dir, report_file_name)
-                        with open(report_file_path, "w", encoding="utf-8") as f:
-                            f.write(report_to_user)
-                        report_file_url = self.upload_file(report_file_path)
-                        report_to_user += f"\n\n报告文件已上传至{report_file_url}"
-                    except:
-                        pass
-                    
-                    for cif_path in self.cif_paths:
-                        cif_base64 = self.get_file_base64(cif_path)
-                
-                        base64_file = FileInfo(
-                            name = os.path.basename(cif_path),
-                            base64_content = cif_base64,
-                            description=f"cif file {os.path.basename(cif_path)} from final refinement",
-                            download_method="base64"
-                            )
-                        
-                        files=FilesContent(
-                            files=[base64_file],
-                            title="cif files",
-                            description="cif files from final refinement",
-                            )
-                        
-                        yield FilesEvent(
-                            source=self.name,
-                            content=files.model_dump(),
-                            )
-                        
-                    gpx_base64 = self.get_file_base64(self.gpx_path)
-                    
-                    base64_file = FileInfo(
-                            name = os.path.basename(self.gpx_path),
-                            base64_content = gpx_base64,
-                            description=f"gpx file {os.path.basename(self.gpx_path)} from final refinement",
-                            download_method="base64"
-                            )
-                        
-                    files=FilesContent(
-                        files=[base64_file],
-                        title="gpx file",
-                        description=f"gpx file from final refinement",
-                        )
-                    
-                    yield FilesEvent(
-                        source=self.name,
-                        content=files.model_dump(),
-                        )
-                    
-                    yield ModelClientStreamingChunkEvent(content=report_to_user, source=self.name)
+                turn_count += 1
+                if turn_count > self._max_turn_count:
                     yield Response(
                         chat_message=TextMessage(
-                            content=report_to_user,
-                            source=self.name,
-                            metadata={"internal": "yes"},
-                        ),
+                            content="\n\n(●'◡'●)抱歉，已达最大的任务循环次数，触发了保护措施，请重新调整您的询问方式或者更具体的告诉您的助手应该怎么做。",
+                            source=agent_name,
+                            metadata={"internal": "no"},
                         inner_messages=inner_messages,
-                    )
+                    ))
                     return
-
-                elif user_handle_info['require_type'] == 'refine':
-                    # 根据蓉仔的决策，更新tools_status并同步到状态库，然后继续后续处理
-                    user_handle_info['cif_paths'] = json.loads(global_status.verified_dict)['cif_paths'] # 获取original_cif_paths
-                    global_status.gsas_ii_input = json.dumps(self.get_tools_args('handle_diffraction',user_handle_info))
-                    response: DBResponse = self._db_manager.upsert(global_status)
-                    if not response.status or not response.data:
-                        raise RuntimeError(f"Failed to save user input: {response.message}")
-
-                    #将模型对接下来精修的评论输出出来
-                    yield ModelClientStreamingChunkEvent(content=f"{user_handle_info['info']}\n\n", source=self.name)
-                    
-                    # 蓉仔认为它还需要精修，继续精修
-                    # 使用GSAS-II工具精修一次, 注意，这里精修完后，GSAS-II工具会直接把精修结果保存在状态库中
-                    async for message in self.on_tools_stream(
-                            cancellation_token,
-                            workbench=self._GSASII_Workbench,
-                            tool_name="write_info",
-                            tool_type = "handle_diffraction",
-                            tool_args = json.loads(global_status.gsas_ii_input), 
-                            sleep_time=self._sleep_time,
-                            ):
-                            if isinstance(message, Response):
-                                inner_messages.append(message.chat_message)
-                                if isinstance(message.chat_message, HandoffMessage):
-                                    yield message
-                                    return
-                                else:
-                                    message.chat_message.metadata["internal"] = "yes"
-                                    yield message.chat_message
-                            else:
-                                yield message
-                                
-                    try:
-                        # 精修完成，拿到GSAS-II工具精修结果, 更新rongzai_status并同步到状态库
-                        response: DBResponse = self._db_manager.get(
-                            ToolsStatus, 
-                            filters={"user_id": self._user_id,"thread_id": self._thread_id},
-                            return_json=False
-                            )
-                        if response.status and response.data:
-                            global_status: ToolsStatus = response.data[0]
-                            gsas_ii_output = global_status.gsas_ii_output
-                        else:
-                            raise ValueError("整理报告时未发现相关精修数据！")
-                        
-                        global_status.rongzai_status = ToolsRunStatus.RUNNING
-                        response: DBResponse = self._db_manager.upsert(global_status)
-                        if not response.status or not response.data:
-                            raise RuntimeError(f"Failed to save user input: {response.message}")
-                    
-                        # 将GSAS-II精修结果加入上下文
-                        gsas_ii_output_json = json.loads(gsas_ii_output)
-                        if isinstance(gsas_ii_output_json, str):
-                            gsas_ii_output_json = json.loads(gsas_ii_output_json)
-                        if gsas_ii_output_json['status'] == 'error':
-                            error_message = gsas_ii_output_json.get('error', '未知错误')
-                            error_traceback = gsas_ii_output_json.get('traceback', '无追踪信息')
-                            await self._add_messages_to_context(
-                            model_context=self._model_context,
-                            messages=[TextMessage(
-                                content=f"GSAS-II精修失败: {error_message}\n错误详情: {error_traceback}\n你现在的状态：{global_status.rongzai_status}", 
-                                source=self.name)]
-                            )
-                        else:
-                            #让用户看到这次精修的效果图
-                            neutron_refinement_plot_url = self.upload_file(file_path=gsas_ii_output_json['plot_path'])
-                            info2user = f"### 精修后的中子衍射图像\n\n![image.png]({neutron_refinement_plot_url})\n\n"
-                            yield ModelClientStreamingChunkEvent(content=info2user, source=self.name)
-                            
-                            # 复制 gpx 文件到 gsa 文件夹并重命名
-                            verified_dict = json.loads(global_status.verified_dict)
-                            gsa_path = verified_dict.get('gsa_path', '')
-                            gpx_path = gsas_ii_output_json.get('gpx_path', '')
-                            if gsa_path and gpx_path and os.path.exists(gpx_path):
-                                self.gpx_path = self.copy_gpx_to_gsa_folder(gpx_path, gsa_path)
-                            
-                            # 复制精修后的 cif 文件到 gsa 文件夹
-                            cif_paths_list = gsas_ii_output_json.get("refinement_results", {}).get("refined_cif_files", [])
-                            if gsa_path and cif_paths_list:
-                                self.cif_paths = self.copy_cif_files_to_gsa_folder(cif_paths_list, gsa_path)
-                            
-                            gsas_ii_refine_info = "gpx after refine: " + gsas_ii_output_json['gpx_path']
-                            lst_message = prune_lst_keep_main(gsas_ii_output_json['lst_path'])
-                            refinement_log = gsas_ii_output_json['refinement_log']
-                            image = Image.from_file(file_path=gsas_ii_output_json['plot_path'])
-
-                            multimodal_message = MultiModalMessage(
-                                source=self.name,
-                                content=[
-                                    f"GSAS-II的输入: (1){gsas_ii_refine_info}；(2)lst: {lst_message}；(3)精修日志: {refinement_log}；（4）精修图片也附给你了，请关注图片中的所有细节，作为你接下来精修决策的依据之一; ",
-                                    image
-                                ])
-
-                            await self._add_messages_to_context(
-                                model_context=self._model_context,
-                                messages=[multimodal_message]
-                            )
-                    except Exception as e:
-                        logger.error(f"Error in {self.name}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        # add to chat history
-                        await self._add_messages_to_context(
-                            model_context=self._model_context,
-                            messages=[TextMessage(content=f"出现异常报错: {e}，需要重新精修。你现在的状态：{global_status.rongzai_status}", source=self.name)]
-                        )
-                        
 
         except asyncio.CancelledError:
             # If the task is cancelled, we respond with a message.
             yield Response(
                 chat_message=TextMessage(
                     content="The task was cancelled by the user.",
-                    source=self.name,
+                    source=self._user_profile_manager.agent_name,
                     metadata={"internal": "yes"},
                 ),
                 inner_messages=inner_messages,
             )
         except Exception as e:
-            logger.error(f"Error in {self.name}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error in {self._user_profile_manager.agent_name}: {e}")
+            logger.error(traceback.format_exc())
             # add to chat history
             await self._model_context.add_message(
                 AssistantMessage(
                     content=f"An error occurred while executing the task: {e}",
-                    source=self.name
+                    source=self._name
                 )
             )
             yield Response(
                 chat_message=TextMessage(
                     content=f"An error occurred while executing the task: {e}",
-                    source=self.name,
+                    source=self._user_profile_manager.agent_name,
                     metadata={"internal": "no"},
                 ),
                 inner_messages=inner_messages,
             )
-
         finally:
-            # Cancel the monitor task.
-            # try:
-            #     monitor_pause_task.cancel()
-            #     await monitor_pause_task
-            # except asyncio.CancelledError:
-            #     pass
-            pass
+            # save/update the conversation to {worker_dir}/memories
+            if isinstance(self._model_context, DrSaiChatCompletionContext):
+                if self._model_context._rag_flow_manager:
+                    await self._model_context.upload_conversation_to_ragflow()
+                self._model_context._current_messages = []
+                current_session_memory = self._model_context._history_messages
+                # TODO: use updates instead of full writes
+                self._user_profile_manager.save_session_memory(current_session_memory)
+                
+
+    async def _call_llm(
+        self,
+        model_client: ChatCompletionClient,
+        model_client_stream: bool,
+        system_messages: List[SystemMessage],
+        model_context: ChatCompletionContext,
+        workbench: Workbench,
+        handoff_tools: List[BaseTool[Any, Any]],
+        manager_tools: List[ToolSchema],
+        agent_name: str,
+        cancellation_token: CancellationToken,
+        output_content_type: type[BaseModel] | None,
+    ) -> AsyncGenerator[Union[CreateResult, ModelClientStreamingChunkEvent], None]:
+        """
+        Perform a model inference and yield either streaming chunk events or the final CreateResult.
+        """
+
+        if isinstance(model_context, DrSaiChatCompletionContext):
+            all_messages = await model_context.get_messages(cancellation_token = cancellation_token)
+        else:
+            all_messages = await model_context.get_messages()
+        
+        llm_messages: List[LLMMessage] = self._get_compatible_context(model_client=model_client, messages=system_messages + all_messages)
+
+        # 自定义的memory_function，用于RAG检索等功能，为大模型回复增加最新的知识
+        if self._memory_function is not None:
+            llm_messages = await self._call_memory_function(llm_messages, model_client, cancellation_token, agent_name)
+
+        all_tools = (await workbench.list_tools()) + handoff_tools + manager_tools
+        # model_result: Optional[CreateResult] = None
+        if self._reply_function is not None:
+            # 自定义的reply_function，用于自定义对话回复的定制
+            async for chunk in self._call_reply_function(
+                llm_messages, 
+                model_client = model_client, 
+                workbench=workbench,
+                handoff_tools=handoff_tools,
+                tools = all_tools,
+                agent_name=agent_name, 
+                cancellation_token=cancellation_token,
+                db_manager=self._db_manager,
+            ):
+                # if isinstance(chunk, CreateResult):
+                #     model_result = chunk
+                yield chunk
+        else:
+           async for chunk in self.call_llm(
+                agent_name = agent_name,
+                model_client = model_client,
+                llm_messages = llm_messages, 
+                tools = all_tools, 
+                model_client_stream = model_client_stream,
+                cancellation_token = cancellation_token,
+                output_content_type = output_content_type,
+           ):
+               yield chunk
+    
+    @classmethod
+    async def _process_model_result(
+        cls,
+        model_result: CreateResult,
+        inner_messages: List[BaseAgentEvent | BaseChatMessage],
+        cancellation_token: CancellationToken,
+        agent_name: str,
+        system_messages: List[SystemMessage],
+        model_context: ChatCompletionContext,
+        workbench: Workbench,
+        handoff_tools: List[BaseTool[Any, Any]],
+        handoffs: Dict[str, HandoffBase],
+        model_client: ChatCompletionClient,
+        model_client_stream: bool,
+        reflect_on_tool_use: bool,
+        tool_call_summary_format: str,
+        tool_call_summary_prompt: str | None,
+        output_content_type: type[BaseModel] | None,
+        format_string: str | None = None,
+    ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | Response, None]:
+        """
+        Handle final or partial responses from model_result, including tool calls, handoffs,
+        and reflection if needed.
+        """
+        
+        tool_call_msg = ToolCallRequestEvent(
+            content=model_result.content,
+            source=agent_name,
+            models_usage=model_result.usage,
+        )
+        inner_messages.append(tool_call_msg)
+        logger.debug(tool_call_msg)
+        yield tool_call_msg
+        tools_name = [tool.name for tool in model_result.content] 
+        yield AgentLogEvent(
+            title="I am using tools: " + " ".join(tools_name),
+            source=agent_name, 
+            content=str(tool_call_msg.content), 
+            content_type="tools")
+
+        # STEP 4B: Execute tool calls
+        executed_calls_and_results = await asyncio.gather(
+            *[
+                cls._execute_tool_call(
+                    tool_call=call,
+                    workbench=workbench,
+                    handoff_tools=handoff_tools,
+                    agent_name=agent_name,
+                    cancellation_token=cancellation_token,
+                )
+                for call in model_result.content
+            ]
+        )
+        exec_results = [result for _, result in executed_calls_and_results]
+        await model_context.add_message(FunctionExecutionResultMessage(content=exec_results))
+        normal_tool_calls = [(call, result) for call, result in executed_calls_and_results if call.name not in handoffs]
+        tool_call_summaries: List[str] = []
+        for tool_call, tool_call_result in normal_tool_calls:
+            tool_call_summaries.append(
+                tool_call_summary_format.format(
+                    tool_name=tool_call.name,
+                    arguments=tool_call.arguments,
+                    result=tool_call_result.content,
+                )
+            )
+        tool_call_summary = "\n".join(tool_call_summaries)
+        yield Response(
+                chat_message=ToolCallSummaryMessage(
+                    content="<think>The results of execution:\n " + tool_call_summary + "</think>\n",
+                    source=agent_name,
+                ),
+                inner_messages=inner_messages,
+            )
+
+    async def handle_str_reponse(
+            self,
+            model_result: CreateResult,
+            agent_name: str,
+            format_string: str | None,
+            inner_messages: List[BaseAgentEvent | BaseChatMessage],
+            output_content_type: type[BaseModel] | None,
+    ) -> Response:
+
+        if output_content_type:
+            content = output_content_type.model_validate_json(model_result.content)
+            return Response(
+                chat_message=StructuredMessage[output_content_type](  # type: ignore[valid-type]
+                    content=content,
+                    source=agent_name,
+                    models_usage=model_result.usage,
+                    format_string=format_string,
+                ),
+                inner_messages=inner_messages,
+            )
+        else:
+            return Response(
+                chat_message=TextMessage(
+                    content=model_result.content,
+                    source=agent_name,
+                    models_usage=model_result.usage,
+                ),
+                inner_messages=inner_messages,
+            )
+    
+    def get_tools_for_agent(self, agent_type: str) -> list:
+        """Filter tools based on agent type."""
+        allowed = self._user_sub_agents.get(agent_type, {}).get("tools", "*")
+        if allowed == "*":
+            return self._tools
+        return [t for t in self._workbench._tools if t.name in allowed]
+
+    async def handle_subagent_repsonse(
+        self,
+        agent_name: str,
+        model_client: ChatCompletionClient,
+        model_client_stream: bool,
+        model_context: ChatCompletionContext,
+        argument:Dict[str, Any],
+        tool_name: str,
+        call_id: str,
+        cancellation_token: CancellationToken,
+        output_content_type: type[BaseModel] | None,
+    ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage, None]:
+        """
+        Sub agent can actuate the sub task.
+
+        The types of sub agent:
+        1. code_executor
+        2. normal drsai agent
+        3. worker agent
+        """
+        try:
+            description, prompt, sub_agent_name = argument["description"], argument["prompt"], argument["agent_type"]
+
+            # get sub agent system prompt
+            sub_system = f"""You are a {sub_agent_name} subagent at {self._work_dir}.
+
+    {self._user_sub_agents[sub_agent_name].get("prompt", "")}
+
+    Complete the task and return a clear, concise summary."""
+            
+            # construct task messages
+            task_messages: Sequence[BaseChatMessage] = []
+            llm_messages = await model_context.get_messages()
+            # TODO: compress the background messages using  LLM
+            backgroud_message = "Below are the historical chat records between the user and various intelligent assistants, which can be referenced when executing the current task.\n\n"
+            for llm_message in llm_messages:
+                if isinstance(llm_message, UserMessage) or isinstance(llm_message, AssistantMessage):
+                    backgroud_message += f"{llm_message.source}: {llm_message.content}\n\n"
+            task_messages.append(TextMessage(content=backgroud_message, source="user"))
+            task_messages.append(TextMessage(content=f"Current task: \n\n{prompt}", source="user"))
+
+            # Get agent
+            if sub_agent_name in self._user_sub_agents:
+                sub_agent = self._user_sub_agents[sub_agent_name]
+                description=self._sub_agent_config[sub_agent_name].get("description", "")
+                sub_agent_type = sub_agent.get("type")
+                if sub_agent_type == "CodeExecutorAgent":
+                    venv_path = sub_agent.get("venv_path")
+                    if venv_path:
+                        executor = create_local_venv(work_dir=venv_path)
+                    else:
+                        executor = self._local_executor or create_local_venv(work_dir=self._user_profile_manager.tmp_dir)
+                    subagent = CodeExecutorAgent(
+                        name=sub_agent_name,
+                        code_executor=executor,
+                        model_client_stream=model_client_stream,
+                    )
+                elif sub_agent_type == "DrSaiAgent":
+                    tools = self.get_tools_for_agent(sub_agent_name)
+                    subagent = DrSaiAgent(
+                        name=sub_agent_name,
+                        system_message=sub_system,
+                        description=description,
+                        tools=tools,
+                        model_client=model_client,
+                        model_client_stream=model_client_stream,
+                        output_content_type=output_content_type,)
+                elif sub_agent_type == "HepAIWorkerAgent":
+                    model_remote_configs = sub_agent.get("model_remote_configs")
+                    url = model_remote_configs.get("url", "https://aiapi.ihep.ac.cn/apiv2")
+                    name = model_remote_configs.get("name")
+                    subagent = HepAIWorkerAgent(
+                        name=sub_agent_name,
+                        description=description,
+                        model_remote_configs={
+                            "url": url,
+                            "api_key": self._model_client._client.api_key,
+                            "name": name
+                        },
+                        chat_id=self._thread_id,
+                        run_info={"name": self._user_profile_manager.user_name, "email": self._user_id},
+
+                    )
+
+            
+            # Process task
+            #  TODO: handle turn count fro multi-turn task.
+            # turn_count = 0
+            # while turn_count < self._max_turn_count:
+            #     turn_count += 1
+            async for message in subagent.on_messages_stream(messages=task_messages, cancellation_token=cancellation_token):
+                if isinstance(message, Response):
+                    yield message.chat_message
+                    # await model_context.add_message(
+                    #     UserMessage(
+                    #         content=str(message.chat_message.content),
+                    #         source="user",
+                    #     )
+                    # )
+                    await model_context.add_message(FunctionExecutionResultMessage(
+                        content=[FunctionExecutionResult(
+                            content = str(message.chat_message.content),
+                            name = tool_name,
+                            call_id = call_id,
+                            is_error = False,
+                        ),]
+                    ))
+                    return
+                yield message
+
+        except Exception as e:
+            logger.exception(f"Error in {self.name}")
+            yield ModelClientStreamingChunkEvent(
+                content=str(e)+"\n\n",
+                source=self.name,
+            )
+            # await model_context.add_message(
+            #     UserMessage(
+            #         content=str(e),
+            #         source="user",
+            #     )
+            # )
+            await model_context.add_message(FunctionExecutionResultMessage(
+                content=[FunctionExecutionResult(
+                    content = str(e),
+                    name = tool_name,
+                    call_id = call_id,
+                    is_error = True,
+                ),]
+            ))
+            yield StopMessage(
+                content=str(e),
+                source=agent_name,
+            )
+
+    async def handle_todo_write(
+        self,
+        argument: Dict[str, Any],
+        tool_name: str,
+        call_id: str,
+        agent_name: str,
+        model_context: ChatCompletionContext,
+    ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage, None]:
+        try:
+            todo_list = self._todo_manager.update(argument["items"])
+            # send stream message
+            # yield ModelClientStreamingChunkEvent(
+            #     content=todo_list+"\n\n",
+            #     source=self._user_profile_manager.agent_name,
+            # )
+            # add message to model_context with user source
+            await model_context.add_message(FunctionExecutionResultMessage(
+                content=[FunctionExecutionResult(
+                    content = self._todo_manager.get_task_prompt(),
+                    name = tool_name,
+                    call_id = call_id,
+                    is_error = False,
+                ),]
+            ))
+            # await model_context.add_message(
+            #     UserMessage(
+            #         content=self._todo_manager.get_task_prompt(),
+            #         source="user",
+            #     )
+            # )
+            # send text message to save to db in drsai ui
+            yield TextMessage(
+                content=todo_list,
+                source=self._user_profile_manager.agent_name,
+                metadata={"interal": "no"},
+            )
+        except Exception as e:
+            logger.exception(f"Error in {self.name}")
+            yield TextMessage(
+                content=str(e)+"\n\n",
+                source=self._user_profile_manager.agent_name,
+                metadata={"interal": "no"},
+            )
+            # await model_context.add_message(
+            #     UserMessage(
+            #         content=str(e),
+            #         source="user",
+            #     )
+            # )
+            await model_context.add_message(FunctionExecutionResultMessage(
+                content=[FunctionExecutionResult(
+                    content = str(e),
+                    name = tool_name,
+                    call_id = call_id,
+                    is_error = True,
+                ),]
+            ))
+            yield StopMessage(
+                content=str(e),
+                source=agent_name,
+            )
+
+    # TODO: handle user tools and evenroment
+
+    # TODO: handle skills and self-learning -> # TODO: 支持动态获取skills
+
+    # TODO: fixed the config
+    def _to_config(self) -> DrSaiAssistantConfig:
+        """Convert the assistant agent to a declarative config."""
+
+        return DrSaiAssistantConfig(
+            name=self.name,
+            model_client=self._model_client.dump_component(),
+            tools=None,  # versionchanged:: v0.5.5  Now tools are not serialized, Cause they are part of the workbench.
+            workbench=self._workbench.dump_component() if self._workbench else None,
+            handoffs=list(self._handoffs.values()) if self._handoffs else None,
+            model_context=self._model_context.dump_component(),
+            memory=[memory.dump_component() for memory in self._memory] if self._memory else None,
+            description=self.description,
+            system_message=self._system_messages[0].content
+            if self._system_messages and isinstance(self._system_messages[0].content, str)
+            else None,
+            model_client_stream=self._model_client_stream,
+            reflect_on_tool_use=self._reflect_on_tool_use,
+            tool_call_summary_format=self._tool_call_summary_format,
+            tool_call_summary_prompt=self._tool_call_summary_prompt,
+            structured_message_factory=self._structured_message_factory.dump_component()
+            if self._structured_message_factory
+            else None,
+            metadata=self._metadata,
+            # drsaiAgent specific
+            db_manager_config=self._db_manager.dump_component(),
+            thread_id=self._thread_id,
+            user_id=self._user_id,
+            # skills and executor
+            skills_dir=self._skills_dir,
+            work_dir=self._work_dir,
+            only_in_workspace=self._only_in_workspace,
+            extra_work_dirs=self._extra_work_dirs,
+            executor=self._local_executor.dump_component(),
+            sub_agent_config=self._sub_agent_config,
+            max_turn_count=self._max_turn_count,
+            token_limit=self._token_limit,
+            rag_flow_url=self._rag_flow_url,
+            rag_flow_token=self._rag_flow_token,
+            memory_dataset_id=self._memory_dataset_id,
+            learning_dataset_id=self._learning_dataset_id,
+        )
     
     @classmethod
     def _from_config(
-        cls, config: AssistantAgentConfig, 
+        cls, config: DrSaiAssistantConfig, 
         db_manager: DatabaseManager,
         memory_function: Callable = None,
         reply_function: Callable = None,
@@ -1392,15 +1248,32 @@ class RongZaiAgent(DrSaiAgent):
             model_client_stream=config.model_client_stream,
             reflect_on_tool_use=config.reflect_on_tool_use,
             tool_call_summary_format=config.tool_call_summary_format,
+            tool_call_summary_prompt=config.tool_call_summary_prompt,
             output_content_type=output_content_type,
             output_content_type_format=format_string,
             metadata=config.metadata,
+            # drsaiAgent specific
             memory_function=memory_function,
             reply_function=reply_function,
             db_manager=db_manager,
+            thread_id=config.thread_id,
+            user_id=config.user_id,
+            # skills and executor
+            skills_dir=config.skills_dir,
+            work_dir=config.work_dir,
+            only_in_workspace=config.only_in_workspace,
+            extra_work_dirs=config.extra_work_dirs,
+            executor=CodeExecutor.load_component(config.executor),
+            sub_agent_config = config.sub_agent_config,
+            max_turn_count = config.max_turn_count,
+            token_limit = config.token_limit,
+            rag_flow_url = config.rag_flow_url,
+            rag_flow_token = config.rag_flow_token,
+            memory_dataset_id = config.memory_dataset_id,
+            learning_dataset_id = config.learning_dataset_id,
             **kwargs,
-        
         )
+
 
         
 
