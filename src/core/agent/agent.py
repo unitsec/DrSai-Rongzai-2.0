@@ -215,6 +215,7 @@ class RongZaiAgent(DrSaiAgent):
         self._update_user_config_tools = [self._user_profile_manager.get_user_config_tool()]
         
         # === basic tools ===
+        # 将run_bash, run_read, run_write, run_edit4个函数转换为大模型能理解的FunctionTool对象并加入self._tools列表
         self._only_in_workspace = only_in_workspace
         self._extra_work_dirs = extra_work_dirs
         self._basic_funcs: List[Callable] = get_operator_funcs(
@@ -227,6 +228,7 @@ class RongZaiAgent(DrSaiAgent):
             self._tools.append(FunctionTool(func, description=func.__doc__))
 
         # === model context ===
+        # 创建一个上下文管理器，并且将其中的retrieve_from_memory和summry_conversation_to_memory转为FunctionTool加入工具列表，以便模型调用
         self._token_limit = token_limit
         self._rag_flow_url = rag_flow_url
         self._rag_flow_token = rag_flow_token
@@ -256,6 +258,7 @@ class RongZaiAgent(DrSaiAgent):
             self._tools.append(FunctionTool(func, description=func.__doc__))
                 
         # === skills ===
+        # 把系统预置的每个 skill 文件夹，复制一份到用户自己的 skills 目录下
         self._skills_dir = skills_dir
         if self._user_profile_manager.first_time_setup and self._skills_dir:
             src_dirs = self._skills_dir if isinstance(self._skills_dir, list) else [self._skills_dir]
@@ -267,18 +270,21 @@ class RongZaiAgent(DrSaiAgent):
                         dst = dst_root / skill_folder.name
                         if not dst.exists():
                             shutil.copytree(skill_folder, dst)
-        self._agent_skills_tools = []
+        self._agent_skills_tools = [] # 先占位，真正加载是在每轮对话开始前的 update_user_skills() 里
 
         # === executor ===
+        # 执行器？这里是None
         self._local_executor = executor
         
         # === sub_agent_config ===
+        # 配置子智能体的描述，但是如何将这些描述转化为可以实际工作的智能体呢？
         self._sub_agent_config = sub_agent_config
         self._user_sub_agents = {}
         self._user_sub_agents.update(sub_agent_config)
         self._subagent_tools = []
 
         # === todo manager ===
+        # 配置一个计划器，并把TodoWrite作为一个工具放图
         self._todo_manager = TodoManager()
         self._todo_tools = [get_todo_manager_tool()]
 

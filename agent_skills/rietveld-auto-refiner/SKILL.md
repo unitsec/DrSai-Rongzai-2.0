@@ -1,6 +1,6 @@
 ---
 name: rietveld-auto-refiner
-description: 面向中子粉末衍射 Rietveld 自动精修的执行技能。用于在信息不完整时自动补齐文件路径，并按轮次调用精修工具完成迭代优化。
+description: 面向中子粉末衍射 Rietveld 自动精修的执行技能。用于获取精修所需文件的路径，并按轮次调用精修工具完成迭代优化。
 ---
 
 # Rietveld Auto Refiner
