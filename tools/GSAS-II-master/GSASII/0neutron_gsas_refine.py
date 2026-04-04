@@ -11,12 +11,16 @@ from datetime import datetime
 import multiprocessing,queue
 import traceback
 from glob import glob
-
+import uuid
+import pprint
 from typing import List, Tuple, Dict, Union
-
 from mcp.server.fastmcp import FastMCP
+
+TMP_DIR = (Path(__file__).resolve().parent.parent / 'tmp')
+TMP_DIR.mkdir(parents=True, exist_ok=True)
+
 mcp=FastMCP(
-    name="GSASII_Refinement_Tool",
+    name="RefineToolsGSASII",
     instructions="A tool for refining neutron diffraction data and generating refined structure files.",
     port = 42501, # for transport = "sse" to start a server-sent events (SSE) server
     )
@@ -33,12 +37,12 @@ def setup_logging(output_dir):
     )
     return logging.getLogger(__name__)
 
-def initialize_project(neutron_data, neutron_inst, cif_files, output_dir):
+def initialize_project(neutron_data, neutron_inst, cif_files, task_id):
     """初始化GSAS-II项目并添加中子数据"""
     logger = logging.getLogger(__name__)
 
     logger.info("步骤 1/8: 创建新的 GSAS-II 项目")
-    gpx = G2sc.G2Project(newgpx=Path(output_dir) / 'neutron_refinement.gpx')
+    gpx = G2sc.G2Project(newgpx=TMP_DIR / f'{task_id}.gpx')
     logger.info("✓ 项目创建成功")
 
     # 添加中子数据
@@ -99,8 +103,8 @@ def initialize_project(neutron_data, neutron_inst, cif_files, output_dir):
                 logger.info(f"  从原始文件中提取了 {len(valid_data_lines)} 行有效数据")
 
                 # 创建临时文件保存有效数据。使用 .xye 扩展名以匹配文本读取器。
-                temp_dir = Path(output_dir) / 'temp'
-                temp_dir.mkdir(exist_ok=True)
+                temp_dir = TMP_DIR / f'{task_id}' / 'temp'
+                temp_dir.mkdir(parents=True, exist_ok=True)
                 clean_data_file = temp_dir / 'cleaned_neutron_data.xye'
 
                 with open(clean_data_file, 'w') as f:
@@ -315,7 +319,7 @@ def initialize_project(neutron_data, neutron_inst, cif_files, output_dir):
 
     return gpx, [hist], phases
 
-def flexible_neutron_refinement(gpx, hist, phases, output_dir, gpx_file='', refine_idx=0,refine_config=None, use_constraints=False):
+def flexible_neutron_refinement(gpx, hist, phases, task_id, gpx_file='', refine_idx=0,refine_config=None, use_constraints=False):
     """
     灵活的中子精修函数 - 一次性精修所有启用的参数
 
@@ -761,7 +765,7 @@ def flexible_neutron_refinement(gpx, hist, phases, output_dir, gpx_file='', refi
     # 检查是否有需要精修的参数
     if not any(refine_config.values()) and not refine_config.get('initial_cell') and not refine_config.get('initial_mustrain'):
         logger.warning("没有启用任何精修参数，跳过精修")
-        gpx.save(str(Path(output_dir) / f'neutron_refinement_{refine_idx}.gpx')) #备份这次的结果
+        gpx.save(str(TMP_DIR / f'{task_id}.gpx')) #备份这次的结果
         return hist.get_wR(), "没有执行任何精修"
 
     # 显示最终的ref_dict
@@ -812,12 +816,12 @@ def flexible_neutron_refinement(gpx, hist, phases, output_dir, gpx_file='', refi
         if final_rwp is not None:
             logger.info(f"精修完成，最终Rwp: {final_rwp:.2f}%")
 
-        # 备份这次结果
-        gpx.save(str(Path(output_dir) / f'neutron_refinement_{refine_idx}.gpx'))
-        # 手动备份 lst 文件,这么做的原因是GSAS-II会自动保存gpx同名 lst 文件，这恰好是idx-1的名字，所以需要手动备份
-        original_lst = Path(output_dir) / os.path.basename(gpx_file).replace('.gpx', '.lst') if gpx_file else Path(output_dir) / 'neutron_refinement.lst'
-        backup_lst = Path(output_dir) / f'neutron_refinement_{refine_idx}.lst'
-        if original_lst.exists():
+        # 将精修结果保存为新的gpx文件
+        gpx.save(str(TMP_DIR / f'{task_id}.gpx'))
+        # 修改 lst 文件名,这么做的原因是GSAS-II会自动保存gpx同名 lst 文件，这恰好是精修前gpx文件的名字，所以需要赋值为新gpx文件名
+        original_lst = TMP_DIR / os.path.basename(gpx_file).replace('.gpx', '.lst') if gpx_file else None
+        backup_lst = TMP_DIR / f'{task_id}.lst'
+        if original_lst and original_lst.exists():
             shutil.copy(str(original_lst), str(backup_lst))
             logger.info(f"已备份lst文件到: {backup_lst}")
         else:
@@ -848,7 +852,7 @@ def safe_float(value, default=0.0):
     except (ValueError, TypeError):
         return default
 
-def create_refined_cif(original_cif_path, phase, rwp, output_dir):
+def create_refined_cif(original_cif_path, phase, rwp, output_dir, task_id):
     """
     创建精修后的CIF文件，确保为标准CIF格式
     修复原子坐标行的格式问题
@@ -1010,7 +1014,7 @@ def create_refined_cif(original_cif_path, phase, rwp, output_dir):
     
     # 保存精修后的CIF文件
     original_name = os.path.splitext(os.path.basename(original_cif_path))[0]
-    refined_cif_path = os.path.join(output_dir, f"{original_name}_gsas_refined.cif")
+    refined_cif_path = os.path.join(output_dir, f"{original_name}_{task_id}.cif")
     
     try:
         with open(refined_cif_path, 'w', encoding='utf-8') as f:
@@ -1041,7 +1045,7 @@ def create_refined_cif(original_cif_path, phase, rwp, output_dir):
         logger.error(f"保存精修后的CIF文件失败: {str(e)}")
         return None
 
-def save_structure_parameters(gpx, phases, output_dir):
+def save_structure_parameters(gpx, phases, output_dir, task_id):
     """保存结构参数到文件"""
     logger = logging.getLogger(__name__)
     
@@ -1071,7 +1075,7 @@ def save_structure_parameters(gpx, phases, output_dir):
         logger.info(f"获取到{len(atoms)}个原子")
         
         # 创建结构参数文件
-        struct_file = Path(output_dir) / f'{phase_name}_structure_params.txt'
+        struct_file = Path(output_dir) / f'{phase_name}_{task_id}_structure_params.txt'
         
         try:
             with open(struct_file, 'w', encoding='utf-8') as f:
@@ -1211,7 +1215,7 @@ def print_structure_parameters(phases):
             if len(atoms) > 5:
                 print(f"  ... 还有 {len(atoms) - 5} 个原子位点")
 
-def export_neutron_results(gpx, hist, phases, output_dir, original_cif_files,refine_idx=None):
+def export_neutron_results(gpx, hist, phases, original_cif_files,task_id=None):
     """导出中子精修结果"""
     logger = logging.getLogger(__name__)
     
@@ -1240,7 +1244,7 @@ def export_neutron_results(gpx, hist, phases, output_dir, original_cif_files,ref
         print("  ✅ 所有数据点都有计算强度")
     
     # 保存详细的数据文件，包含验证信息
-    data_file = Path(output_dir) / 'neutron_refinement_data_verified.csv'
+    data_file = TMP_DIR / f'{task_id}_neutron_refinement_data_verified.csv'
     try:
         # 创建包含验证信息的CSV
         with open(data_file, 'w', encoding='utf-8') as f:
@@ -1275,7 +1279,7 @@ def export_neutron_results(gpx, hist, phases, output_dir, original_cif_files,ref
     
     # 保存原始格式的数据文件（兼容性）
     try:
-        original_data_file = Path(output_dir) / 'neutron_refinement_data.csv'
+        original_data_file = TMP_DIR / f'{task_id}_neutron_refinement_data.csv'
         hist.Export(str(original_data_file), '.csv', 'hist')
         logger.info(f"原始格式数据已保存到: {original_data_file}")
     except Exception as e:
@@ -1395,11 +1399,7 @@ def export_neutron_results(gpx, hist, phases, output_dir, original_cif_files,ref
         # plt.grid(True, alpha=0.3)
         
         plt.tight_layout(pad=2.0)
-        id = os.path.basename(os.path.normpath(output_dir)).split('gsas_output_')[-1] if 'gsas_output_' in output_dir else None
-        if refine_idx is not None:
-            plot_path = Path(output_dir) / f'{id}_plot_{refine_idx}.png'
-        else:
-            plot_path = Path(output_dir) / f'{id}_plot_verified.png'
+        plot_path = TMP_DIR / f'{task_id}_plot.png'
         plt.savefig(str(plot_path), dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -1411,7 +1411,7 @@ def export_neutron_results(gpx, hist, phases, output_dir, original_cif_files,ref
         logger.error(f"生成图表时出错: {str(e)}")
     
     # 保存详细结构参数
-    save_structure_parameters(gpx, phases, output_dir)
+    save_structure_parameters(gpx, phases, TMP_DIR, task_id)
     
     # 创建精修后的CIF文件
     logger.info(f"original_cif_files: {original_cif_files}")
@@ -1420,7 +1420,7 @@ def export_neutron_results(gpx, hist, phases, output_dir, original_cif_files,ref
     for i, phase in enumerate(phases):
         if i < len(original_cif_files):
             original_cif = original_cif_files[i]
-            refined_cif = create_refined_cif(original_cif, phase, hist.get_wR(), output_dir)
+            refined_cif = create_refined_cif(original_cif, phase, hist.get_wR(), TMP_DIR, task_id)
             if refined_cif:
                 refined_cif_files.append(refined_cif)
     
@@ -1432,7 +1432,7 @@ def export_neutron_results(gpx, hist, phases, output_dir, original_cif_files,ref
     # 添加其他可能的输出文件
     for i in range(len(phases)):
         phase_name = f"Phase_{i+1}"
-        struct_file = Path(output_dir) / f'{phase_name}_structure_params.txt'
+        struct_file = TMP_DIR / f'{phase_name}_structure_params.txt'
         if struct_file.exists():
             output_files.append(str(struct_file))
     
@@ -1442,22 +1442,17 @@ def export_neutron_results(gpx, hist, phases, output_dir, original_cif_files,ref
     # 收集结果
     current_rwp = hist.get_wR()
     results = {
-        'rwp': current_rwp if current_rwp is not None else 0.0,
-        'cell_params': [phase.get_cell() for phase in phases],
-        'output_files': output_files,
-        'plot_path': str(plot_path) if plot_path is not None else '',
-        'refined_cif_files': refined_cif_files,
-        'data_quality': {
-            'total_points': len(x_data),
-            'zero_calc_points': int(zero_calc),
-            'calc_range': [float(y_calc.min()), float(y_calc.max())],
-            'obs_range': [float(y_obs.min()), float(y_obs.max())]
+        'status': 'success',
+        'content': {
+                'rwp': current_rwp if current_rwp is not None else 0.0,
+                'plot_path': str(plot_path) if plot_path is not None else '',
+                'refined_cif_files': refined_cif_files
         }
     }
     
     return results
 
-def ensure_fixed_background(gpx, hist, logger=None):
+def ensure_fixed_background(gpx, hist):
     """如果 histogram 的 Background 包含 FixedPoints，则用线性插值写回 data[1][4]，
     并克隆为一个新的 PWDR histogram，设置为 background PWDR。
     此操作直接修改 gpx.data 并保存由调用方控制何时写入磁盘。
@@ -1491,8 +1486,7 @@ def ensure_fixed_background(gpx, hist, logger=None):
             try:
                 gpx.data[histname]['data'][1][4] = full_bkg.tolist()
             except Exception:
-                if logger:
-                    logger.warning('无法将 full_bkg 写回 data channel 4')
+                print('无法将 full_bkg 写回 data channel 4')
 
         # 克隆新直方图并设置 background PWDR
         try:
@@ -1514,31 +1508,18 @@ def ensure_fixed_background(gpx, hist, logger=None):
             except Exception:
                 pass
         except Exception as e:
-            if logger:
-                logger.warning(f'克隆背景直方图失败: {e}')
+            print(f'克隆背景直方图失败: {e}')
     except Exception as e:
-        if logger:
-            logger.warning(f'ensure_fixed_background 出错: {e}')
+        print(f'ensure_fixed_background 出错: {e}')
     return
 
 def neutron_refinement(
     neutron_data=None,
     neutron_inst=None,
     cif_files=None,
-    output_dir='neutron_output',
-    # 基础参数 (简单模式,向后兼容)
-    refine_cycle=3,                # 精修循环次数
-    refine_background=False,       # True/False
-    refine_cell=False,             # True/False
-    refine_scale=False,            # True/False
-    refine_instrument=False,       # True/False
-    refine_absorption=False,       # True/False
-    refine_atoms={},               # 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'}
-    use_constraints=False,          # 是否使用约束
     gpx_file=None,                 # 可选的已有gpx项目文件路径
-    refine_idx=0,                    # 精修索引 (用于多次精修保存不同文件)
-    # 高级参数 (可选,用于精细控制)
-    advanced_config=None,          # 高级配置字典,支持所有GSAS-II精修参数
+    refine_config={"refine_cycle":3,"refine_background":False,"refine_cell":False,"refine_scale":False,"refine_instrument":False,"refine_absorption":False,"refine_atoms":{}},          # 高级配置字典,支持所有GSAS-II精修参数
+    task_id=None,                    # 用于日志记录和输出文件命名
     que=multiprocessing.Queue()
 ):
     """
@@ -1548,20 +1529,10 @@ def neutron_refinement(
     neutron_data: 中子数据文件路径 (当gpx_file为None时必需)
     neutron_inst: 仪器参数文件路径 (当gpx_file为None时必需)
     cif_files: CIF结构文件列表 (当gpx_file为None时必需)
-    output_dir: 输出目录
-
-    基础参数 (简单模式):
-    refine_background: True/False - 是否精修背景
-    refine_cell: True/False - 是否精修晶胞参数
-    refine_scale: True/False - 是否精修标度因子
-    refine_instrument: True/False - 是否精修仪器参数(整体)
-    refine_absorption: True/False - 是否精修吸收参数
-    refine_atoms: dict - 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'}
-    use_constraints: 是否使用约束
     gpx_file: 可选,已有的GSAS-II项目文件(.gpx)路径,如果提供则加载现有项目继续精修
 
     高级参数 (高级模式,提供更精细的控制):
-    advanced_config: 字典,包含所有可用的精修参数,例如:
+    refine_config: 字典,包含所有可用的精修参数,例如:
         {
             # 基础参数
             'background_coeffs': 3,              # 背景系数数量
@@ -1595,70 +1566,26 @@ def neutron_refinement(
     - 如果提供了 advanced_config,它会覆盖基础参数
     - 基础参数适合快速使用,高级参数适合精细控制
     """
-    # 创建输出目录
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # 设置日志
-    logger = setup_logging(output_dir)
-    logger.info("="*50)
-    logger.info("开始中子粉末衍射精修")
-    logger.info("="*50)
-
-    # 构建精修配置字典
-    if advanced_config:
-        # 使用高级配置
-        logger.info("使用高级配置模式")
-        refine_config = advanced_config.copy()
-        # 确保基础参数也在配置中
-        if 'refine_cycle' not in refine_config:
-            refine_config['refine_cycle'] = refine_cycle
-        if 'refine_background' not in refine_config:
-            refine_config['refine_background'] = refine_background
-        if 'refine_cell' not in refine_config:
-            refine_config['refine_cell'] = refine_cell
-        if 'refine_scale' not in refine_config:
-            refine_config['refine_scale'] = refine_scale
-        if 'refine_instrument' not in refine_config:
-            refine_config['refine_instrument'] = refine_instrument
-        if 'refine_absorption' not in refine_config:
-            refine_config['refine_absorption'] = refine_absorption
-        if 'refine_atoms' not in refine_config:
-            refine_config['refine_atoms'] = refine_atoms
-    else:
-        # 使用基础配置(向后兼容)
-        logger.info("使用基础配置模式")
-        refine_config = {
-            'refine_cycle': refine_cycle,
-            'refine_background': refine_background,
-            'refine_cell': refine_cell,
-            'refine_scale': refine_scale,
-            'refine_instrument': refine_instrument,
-            'refine_absorption': refine_absorption,
-            'refine_atoms': refine_atoms,
-        }
-
-    import pprint
-    logger.info("精修配置 (展开):\n" + pprint.pformat(refine_config, width=120))
+    print("精修配置 (展开):\n" + pprint.pformat(refine_config, width=120))
 
     try:
         # 1. 加载或初始化项目
         if gpx_file and os.path.exists(gpx_file):
             # 使用用户提供的gpx文件
-            logger.info(f"📂 加载现有GSAS-II项目: {gpx_file}")
+            print(f"📂 加载现有GSAS-II项目: {gpx_file}")
             gpx = G2sc.G2Project(gpxfile=gpx_file)
-            # 在对原始 gpx 操作前先保存一份备份，以便在需要时回退
+
+            #GSASII精修会直接修改原始gpx文件，为了大模型能回退，在对原始 gpx 操作前先保存一份备份，精修完成后再恢复原始 gpx（覆盖当前 gpx），以便用户后续查看和继续操作
             backup_path = None
             try:
                 if gpx_file:
                     bk = Path(gpx_file)
                     backup_path = str(bk.with_name(bk.stem + '_pre_refine' + bk.suffix))
                     shutil.copy2(gpx_file, backup_path)
-                    logger.info(f"已备份原始 gpx 到: {backup_path}")
+                    print(f"已备份原始 gpx 到: {backup_path}")
             except Exception as e:
-                logger.warning(f"无法创建 gpx 备份: {e}")
+                print(f"无法创建 gpx 备份: {e}")
             
-
             # 获取项目中的histogram和phases
             hists = gpx.histograms()
             phases = gpx.phases()
@@ -1669,10 +1596,10 @@ def neutron_refinement(
                 raise ValueError("GPX项目中未找到任何晶体结构")
 
             hist = hists[0]  # 使用第一个histogram
-            logger.info(f"  ✓ 成功加载项目")
-            logger.info(f"  - Histogram数量: {len(hists)}")
-            logger.info(f"  - Phase数量: {len(phases)}")
-            logger.info(f"  - 使用Histogram: {hist.name}")
+            print(f"  ✓ 成功加载项目")
+            print(f"  - Histogram数量: {len(hists)}")
+            print(f"  - Phase数量: {len(phases)}")
+            print(f"  - 使用Histogram: {hist.name}")
 
             # 保存原始cif文件路径(用于后续导出)
             original_cif_files = cif_files if cif_files else []
@@ -1680,313 +1607,155 @@ def neutron_refinement(
         else:
             # 初始化新项目
             if gpx_file:
-                logger.warning(f"⚠️  指定的gpx文件不存在: {gpx_file}")
-                logger.info("  将创建新项目")
+                print(f"⚠️  指定的gpx文件不存在: {gpx_file}")
+                print("  将创建新项目")
             else:
-                logger.info("🆕 创建新的GSAS-II项目")
+                print("🆕 创建新的GSAS-II项目")
 
             # 验证必需参数
             if not (neutron_data and neutron_inst and cif_files):
                 raise ValueError("创建新项目时必须提供 neutron_data, neutron_inst 和 cif_files 参数")
 
-            logger.info(f"  中子数据: {neutron_data}")
-            logger.info(f"  仪器参数: {neutron_inst}")
-            logger.info(f"  结构文件: {len(cif_files)}个")
+            print(f"  中子数据: {neutron_data}")
+            print(f"  仪器参数: {neutron_inst}")
+            print(f"  结构文件: {len(cif_files)}个")
 
             gpx, hists, phases = initialize_project(
-                neutron_data, neutron_inst, cif_files, output_dir
+                neutron_data, neutron_inst, cif_files, task_id
             )
             hist = hists[0]  # 只有中子数据
-            ensure_fixed_background(gpx, hist, logger=logger)
+            ensure_fixed_background(gpx, hist)
 
             original_cif_files = cif_files
 
          # 2. 执行一次性精修流程
-        logger.info("开始一次性精修流程...")
+        print("开始一次性精修流程haha...")
         _, refinement_log = flexible_neutron_refinement(
-            gpx, hist, phases, output_dir,
+            gpx, hist, phases, task_id,
             gpx_file=gpx_file,
-            refine_idx=refine_idx,
-            refine_config=refine_config,
-            use_constraints=use_constraints
+            refine_config=refine_config
         )
         
         # 3. 导出结果
         try:
-            results = export_neutron_results(gpx, hist, phases, output_dir, original_cif_files,refine_idx=refine_idx)
-            results['refinement_log'] = refinement_log
+            results = export_neutron_results(gpx, hist, phases, original_cif_files,task_id=task_id)
+            results['content']['refinement_log'] = refinement_log
+            results['content']['gpx_path'] = str(TMP_DIR / f'{task_id}.gpx')
+            results['content']['lst_path'] = str(TMP_DIR / f'{task_id}.lst')
         except Exception as e:
-            logger.warning(f"导出结果时遇到问题: {str(e)}")
+            print(f"导出结果时遇到问题: {str(e)}")
             # 创建基本结果，确保能显示精修参数
             results = {
-                'rwp': hist.get_wR() if hist else 0.0,
-                'cell_params': [phase.get_cell() for phase in phases],
-                'output_files': [],
-                'refined_cif_files': [],
-                'refinement_log': refinement_log
+                'status': 'failed',
+                'content': '结果导出失败: ' + str(e) + '\n' + refinement_log
             }
         
         # 4. 打印结构参数到控制台
         print_structure_parameters(phases)
         
-        logger.info("="*50)
-        logger.info(f"精修完成! 最终Rwp: {results['rwp']:.2f}%")
-        if results['refined_cif_files']:
-            logger.info(f"生成的精修CIF文件: {', '.join(results['refined_cif_files'])}")
-        logger.info("="*50)
+        print("="*50)
+        if results['status'] == 'success':
+            print(f"精修完成! 最终Rwp: {results['content']['rwp']:.2f}%")
+        if results['content']['refined_cif_files']:
+            print(f"生成的精修CIF文件: {', '.join(results['content']['refined_cif_files'])}")
+        print("="*50)
         # 精修完成后：如果存在备份，则将原始 gpx 恢复为备份文件（替换当前 gpx）
         try:
             if 'backup_path' in locals() and backup_path and gpx_file and os.path.exists(backup_path):
                 shutil.copy2(backup_path, gpx_file)
-                logger.info(f"已将 gpx 恢复为备份: {backup_path} -> {gpx_file}")
+                print(f"已将 gpx 恢复为备份: {backup_path} -> {gpx_file}")
         except Exception as e:
-            logger.warning(f"恢复 gpx 备份失败: {e}")
+            print(f"恢复 gpx 备份失败: {e}")
         que.put(results)
         return results
 
     except Exception as e:
-        logger.error("!"*50)
-        logger.error(f"精修失败: {str(e)}")
-        logger.error("!"*50)
+        print("!"*50)
+        print(f"精修失败: {str(e)}")
+        print("!"*50)
         que.put({
-            'status': 'error',
-            'error': str(e),
-            'traceback': traceback.format_exc()
+            'status': 'failed',
+            'content': traceback.format_exc()
         })
         raise
-
 
 id_to_task={}
 id_to_result={}
 
 @mcp.tool()
-def write_info(
-    gsa_path: str = None,
-    instprm_path: str = None,
-    cif_paths: List[str] = None,
-    gpx_path: str = None,                 # 可选的已有gpx项目文件路径
-    refine_idx: int = 0,                 # 精修轮次索引
-    refine_params: Dict = None,            # 高级配置字典
-    refine_background: bool = False,      # True/False - 是否精修背景
-    refine_cell: bool = False,            # True/False - 是否精修晶胞参数
-    refine_scale: bool = False,           # True/False - 是否精修标度因子
-    refine_instrument: bool = False,      # True/False - 是否精修仪器参数
-    refine_absorption: bool = False,      # True/False - 是否精修吸收参数
-    refine_atoms: dict = {},              # 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'}
-    use_constraints: bool = False,         # 是否使用约束
+def RefineToolsGSASII(
+    gsa_path: str = '',
+    instprm_path: str = '',
+    cif_paths: List[str] = [],
+    gpx_path: str = '',                 # 可选的已有gpx项目文件路径               # 精修轮次索引
+    refine_params: Dict = {},            # 高级配置字典
     task_id: str|None = None,
-    thread_id: str|None = None,
     ) -> Dict:
     """
     使用GSAS-II的API接口进行中子衍射数据精修任务并返回结果信息
     Args:
-        gsa_file: GSAS的gsa文件绝对路径 (当gpx_file为None时必需)
-        instprm_file: GSAS的instprm文件绝对路径 (当gpx_file为None时必需)
-        cif_files: 结构文件列表 (当gpx_file为None时必需)
-        gpx_file: 可选,已有的GSAS-II项目文件(.gpx)路径,如果提供则加载现有项目继续精修
-        refine_idx: 精修轮次索引，默认0
-        refine_config: 高级配置字典,支持所有GSAS-II精修参数，
-        refine_background: True/False - 是否精修背景
-        refine_cell: True/False - 是否精修晶胞参数
-        refine_scale: True/False - 是否精修标度因子
-        refine_instrument: True/False - 是否精修仪器参数
-        refine_absorption: True/False - 是否精修吸收参数
-        refine_atoms: dict = {},              # 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'}
-        use_constraints: 是否使用约束
-        task_id: 任务ID，默认自动生成
-        thread_id: 线程ID，默认自动生成
+        gsa_path: GSAS的gsa文件绝对路径 (当gpx_path为None时必需)
+        instprm_path: GSAS的instprm文件绝对路径 (当gpx_path为None时必需)
+        cif_paths: 结构文件列表 (当gpx_path为None时必需)
+        gpx_path: 可选,已有的GSAS-II项目文件(.gpx)路径,如果提供则加载现有项目继续精修
+        refine_params: 高级配置字典,支持所有GSAS-II精修参数，
+        task_id: 任务ID，在开启一个新的工具调用时，这里写None或不传，工具会自动生成一个唯一ID；如果是对已有任务的结果查询，则必须传入之前的task_id
+    
+    returns:
+        字典{
+            "task_id":task_id, 字符串，返回当前任务ID，便于用户后续查询和查看结果，
+            "state":字符串，当前精修任务状态，可能的值为 "created", "running", "completed"，表示刚创建、运行中、已完成，
+            "result": 
+                字典{
+                    'status': 字符串，可能的值为'success' or 'failed',表示精修成功或失败
+                    'content': 字典{
+                        'rwp': 当前Rwp值,
+                        'plot_path': 生成的验证图表路径,
+                        'refined_cif_files': 生成的精修CIF文件列表,
+                        'refinement_log': 精修过程中的日志信息,
+                        'gpx_path': 精修后拿到的新gpx项目文件路径
+                    } 或字符串（当status为'failed'时，content为错误信息字符串）
+                }
+        }
+
+        该工具传参模式：
+
+    
     """
-    id_=task_id
-    result_json={"id":id_,'state':None,'result':None}
-
-    # 规范化并记录 refine_params，防止字符串/数字类型导致布尔字段丢失
-    import pprint
-    logger = logging.getLogger(__name__)
-    if refine_params is None:
-        refine_params = {}
-    try:
-        logger.info("收到的 refine_params (原始):\n" + pprint.pformat(refine_params, width=120))
-    except Exception:
-        logger.info(f"收到的 refine_params: {str(refine_params)}")
-
-    bool_keys = [
-        'refine_background','refine_cell','refine_scale','refine_instrument',
-        'refine_absorption','refine_size','refine_mustrain','refine_phase_fraction',
-        'refine_limits','refine_sample_displacement',
-        'refine_instrument_difc','refine_instrument_difa','refine_instrument_difb',
-        'refine_instrument_zero','refine_instrument_alpha','refine_instrument_beta',
-        'refine_instrument_sig','refine_instrument_x','refine_instrument_y','refine_instrument_z'
-    ]
-
-    def to_bool(v):
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, (int, float)):
-            return bool(v)
-        if isinstance(v, str):
-            vs = v.strip().lower()
-            if vs in ('true','1','yes','y'):
-                return True
-            if vs in ('false','0','no','n'):
-                return False
-        return v
-
-    refine_params_norm = {}
-    for k, v in refine_params.items():
-        if k in bool_keys:
-            refine_params_norm[k] = to_bool(v)
-        else:
-            refine_params_norm[k] = v
-
-    # 根据是否提供gpx_file来确定输出目录
-    if gpx_path:
-        # 如果提供了gpx文件,输出目录基于gpx文件的位置
-        output_dir = os.path.dirname(gpx_path)
-    else:
-        # 否则基于gsa文件的位置
-        output_dir = os.path.join(os.path.dirname(gsa_path), f"output/{thread_id}/gsas_output_{task_id}")
-
-    if id_ not in id_to_task or id_to_task[id_]==None:
-        # 任务创建
-        id_to_result[id_]=multiprocessing.Queue()
-        id_to_task[id_]=multiprocessing.Process(target=neutron_refinement,kwargs={
-                    'output_dir': output_dir,
-                    'neutron_data': gsa_path,
-                    'neutron_inst': instprm_path,
-                    'cif_files': cif_paths,
-                    'gpx_file': gpx_path,
-                    'refine_idx': refine_idx,
-                'advanced_config': refine_params_norm,
-                    'refine_background': refine_background,
-                    'refine_cell': refine_cell,
-                    'refine_scale': refine_scale,
-                    'refine_instrument': refine_instrument,
-                    'refine_absorption': refine_absorption,
-                    'refine_atoms': refine_atoms,
-                    'use_constraints': use_constraints,
-                    'que': id_to_result[id_]
-                }
+    result_json={"task_id":task_id,'state':None,'result':None}
+    if not task_id: # 没有task_id说明是新任务，生成一个新的ID
+        task_id = str(uuid.uuid4())
+        result_json['task_id']=task_id
+        id_to_result[task_id]=multiprocessing.Queue()
+        id_to_task[task_id]=multiprocessing.Process(target=neutron_refinement,kwargs={
+                'neutron_data': gsa_path,
+                'neutron_inst': instprm_path,
+                'cif_files': cif_paths,
+                'gpx_file': gpx_path,
+                'refine_config': refine_params,
+                'task_id': task_id,
+                'que': id_to_result[task_id]
+            }
         )
-
         result_json['state']='created'
-        id_to_task[id_].start()
-        # id_to_task[id_].kill()
-        # id_to_task.pop(id_)
-
-    else:
-        if not id_to_task[id_].is_alive():
-            info=id_to_result[id_].get()
-            id_to_task[id_].join()
-            if (not info) or (isinstance(info, dict) and info.get('status') == 'error'):
-                error_msg = info.get('error') if isinstance(info, dict) else "中子精修处理失败"
-                traceback_msg = info.get('traceback') if isinstance(info, dict) else None
-
+        id_to_task[task_id].start()
+    else: # 有task_id说明是已有任务的后续调用，查看该任务当前结果
+        if not id_to_task[task_id].is_alive(): # 第一种情况，任务已经结束，获取结果并清理
+            info=id_to_result[task_id].get()
+            id_to_task[task_id].join()
+            if info.get('status') == 'error':
                 result_json['state'] = 'completed'
-                result_json['status'] = 'error'
-                result_json['result'] = {
-                    "status": "error",
-                    "error": error_msg,
-                    "traceback": traceback_msg,
-                    "suggestion": "请检查输入文件格式、仪器参数或结构文件是否正确"
-                }
-                result_json["summary"] = f"GSAS-II中子粉末衍射精修失败: {error_msg}"
-                id_to_task[id_] = None
+                result_json['result'] = info
+                id_to_task[task_id] = None
             else:
                 # 处理结果
                 # print(info)
-                id_to_task[id_]=None
+                id_to_task[task_id]=None
                 result_json['state']='completed'
-                result_json['status']='success'
-                result_json["name"] = f"{task_id}_neutron_refinement"
-                
-                # 计算输出文件大小并构建结果信息
-                output_files = []
-                total_size_bytes = 0
-                total_size_mb = 0
-                
-                # 检查输出目录中的所有文件
-                if os.path.exists(output_dir):
-                    for filename in os.listdir(output_dir):
-                        file_path = os.path.join(output_dir, filename)
-                        if os.path.isfile(file_path):
-                            file_size = os.path.getsize(file_path)
-                            file_size_mb = file_size / (1024 * 1024)
-                            
-                            output_files.append({
-                                "filename": filename,
-                                "path": file_path,
-                                "size_bytes": file_size,
-                                "size_mb": round(file_size_mb, 3)
-                            })
-                            
-                            total_size_bytes += file_size
-                            total_size_mb += file_size_mb
-                
-                # 构建摘要信息
-                rwp = info.get('rwp', 0.0)
-                result_json["summary"] = f"GSAS-II中子粉末衍射精修完成，最终Rwp: {rwp:.2f}%\n"
-
-                # 显示启用的精修参数
-                enabled_params = []
-                if refine_background:
-                    enabled_params.append("背景")
-                if refine_cell:
-                    enabled_params.append("晶胞")
-                if refine_scale:
-                    enabled_params.append("标度")
-                if refine_instrument:
-                    enabled_params.append("仪器")
-                if refine_absorption:
-                    enabled_params.append("吸收")
-                if refine_atoms:
-                    enabled_params.append("原子")
-
-                result_json["summary"] += f"精修参数: {', '.join(enabled_params) if enabled_params else '无'}\n"
-                result_json["summary"] += f"总输出文件大小: {round(total_size_mb, 3)} MB\n"
-                result_json["summary"] += f"生成文件数量: {len(output_files)}\n"
-                
-                # 添加主要文件信息
-                if info.get('refined_cif_files'):
-                    result_json["summary"] += f"精修CIF文件: {os.path.basename(info['refined_cif_files'][0])}\n"
-                
-                # 构建详细结果
-                result_json['result'] = {
-                    "status": "success",
-                    "gpx_path": str(Path(output_dir) / f'neutron_refinement_{refine_idx}.gpx'),
-                    "lst_path": str(Path(output_dir) / f'neutron_refinement_{refine_idx}.lst'),
-                    "plot_path": info.get('plot_path', ''),
-                    "refinement_log": info.get('refinement_log', '没有获取到本次精修的日志信息。'),
-                    "input_files": {
-                        "gsa_file": gsa_path,
-                        "instprm_file": instprm_path,
-                        "cif_file": cif_paths,
-                        "gpx_file": gpx_path
-                    },
-                    "refinement_config": {
-                        "refine_background": refine_background,
-                        "refine_cell": refine_cell,
-                        "refine_scale": refine_scale,
-                        "refine_instrument": refine_instrument,
-                        "refine_absorption": refine_absorption,
-                        "refine_atoms": refine_atoms,
-                        "use_constraints": use_constraints
-                    },
-                    "output_dir": output_dir,
-                    "output_files": output_files,
-                    "total_files": len(output_files),
-                    "total_size_bytes": total_size_bytes,
-                    "total_size_mb": round(total_size_mb, 3),
-                    "refinement_results": {
-                        "rwp": rwp,
-                        "cell_parameters": info.get('cell_params', []),
-                        "refined_cif_files": info.get('refined_cif_files', []) or glob(os.path.join(output_dir, '*_refined.cif')),
-                        "data_quality": info.get('data_quality', {})
-                    },
-                    "processing_info": "中子粉末衍射数据精修完成，包含晶胞参数精修、原子位置优化等"
-                }
-
-        else:
+                result_json["result"] = info
+        else: # 第二种情况，任务仍在运行中
             result_json['state']='running'
+
     return result_json
 
 if __name__ == '__main__':

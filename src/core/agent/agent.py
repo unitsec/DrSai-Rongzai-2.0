@@ -284,7 +284,7 @@ class RongZaiAgent(DrSaiAgent):
         self._subagent_tools = []
 
         # === todo manager ===
-        # 配置一个计划器，并把TodoWrite作为一个工具放图
+        # 配置一个计划器，并把TodoWrite作为一个工具放到工具列表self._todo_tools里
         self._todo_manager = TodoManager()
         self._todo_tools = [get_todo_manager_tool()]
 
@@ -297,9 +297,9 @@ class RongZaiAgent(DrSaiAgent):
         self._max_turn_count = max_turn_count
 
         # config file mtime cache for lazy reloading
-        self._config_mtimes: Dict[str, float] = {}
-        self._cached_tools_prompt: str = ""
-        self._cached_skills_loader = None
+        self._config_mtimes: Dict[str, float] = {} #作用：保存“文件路径 -> 最近修改时间 mtime”的映射。配合 _file_changed 使用，用来判断配置文件或目录是否发生变化。
+        self._cached_tools_prompt: str = "" # 缓存由用户工具配置生成的提示词文本。 如果工具配置文件没变，就直接复用，不再重新拼接 prompt。
+        self._cached_skills_loader = None # 缓存 SkillLoader 实例。如果 skills 目录没变，就复用已有 loader，不重新扫描和加载技能。
 
     def _file_changed(self, path: Path) -> bool:
         """Check if a file/dir has been modified since last check, updating the cached mtime."""
@@ -500,10 +500,12 @@ Current Session_ID is {self._thread_id}
         try:
 
             # initialize the learning memory document
+            # 创建一个每个用户唯一的经验学习文档
             if self._user_profile_manager.first_time_setup:
                 self._learning_document_id = await self._model_context.create_new_session_document(dataset_id = self._learning_dataset_id, create_type="learning_memory" )
                 self._user_profile_manager.update_document_ids(thread_id=self._user_id, document_id=self._learning_document_id)
             # create the new session document
+            # 为每个对话会话创建一个新的记忆文档，并将文档ID保存在用户画像里
             if self._memory_document_id is None:
                 self._memory_document_id = await self._model_context.create_new_session_document(
                     user_id = self._user_id,
@@ -511,19 +513,22 @@ Current Session_ID is {self._thread_id}
                     work_dir = self._work_dir,
                 )
                 self._user_profile_manager.update_document_ids(thread_id=self._thread_id, document_id=self._memory_document_id)
-                self._model_context._document_id = self._memory_document_id
+                self._model_context._document_id = self._memory_document_id # 当前session的document id是对话记忆文档的id
 
 
             # load/update tools only if TOOLS_CONFIG.json changed
+            # 检查用户工具配置文件是否有更新，如果有更新则调用update_user_tools()方法更新mcp工具和local工具，并将local工具提示词缓存到self._cached_tools_prompt中以供系统消息使用
             tools_changed = self._file_changed(self._user_profile_manager.tools_config_path)
             if tools_changed:
                 self._cached_tools_prompt = await self.update_user_tools()
 
             # update system prompt if AGENTS.md or tools prompt changed
+            # 无论是用户画像（AGENTS.md）还是工具配置有变化，都要更新系统消息，以便模型能及时获取最新的用户画像和工具信息
             if tools_changed or self._file_changed(self._user_profile_manager.agents_md):
                 self.update_system_prompt(additional_prompt=self._cached_tools_prompt)
 
             # load/update skills only if skills directories changed
+            # 更新用户的skills
             skills_changed = self._file_changed(self._user_profile_manager.skills_dir)
             if self._skills_dir:
                 extra_dirs = self._skills_dir if isinstance(self._skills_dir, list) else [self._skills_dir]
@@ -533,10 +538,12 @@ Current Session_ID is {self._thread_id}
             skills_loader = self._cached_skills_loader
 
             # load/update subagents only if SUBAGENT_CONFIG.json changed
+            # 看是否需要更新子智能体配置
             if self._file_changed(self._user_profile_manager.subagent_config_path):
                 self.update_user_subagents()
 
             # manager ToolSchema
+            # 这边全部都是管理层的工具，里面每一个都是ToolSchema对象，包含工具的名字、描述、参数等信息，最终把这些工具都放到manager_tools这个列表里，供模型调用
             manager_tools = self._update_user_config_tools+self._agent_skills_tools+self._subagent_tools+self._todo_tools
 
             # count the number of tools
@@ -614,6 +621,7 @@ Current Session_ID is {self._thread_id}
                 # If direct text response (string)
                 if isinstance(model_result.content, str):
 
+                    # 忍耐3次模型的空回复
                     if not model_result.content and empty_turn_count < max_empty_turn:
                         empty_turn_count += 1
                         await self._model_context.add_message(
@@ -635,11 +643,12 @@ Current Session_ID is {self._thread_id}
                         inner_messages = inner_messages,
                         output_content_type = output_content_type,)
                     if self._user_profile_manager.first_time_setup:
-                        yield TextMessage(
-                            content="\n\n(●'◡'●)如果您需要调整我的名称、我对您的称呼、您涉及领域，请告诉我，我来调整(If you need to adjust my name, how I address you, or your field of expertise, please let me know, and I will make the changes).",
-                            source=agent_name,
-                            metadata={"internal": "no"},
-                        )
+                        # 对于rongzai这种专业领域智能体，不需要用户调整智能体的名称、称呼和领域，所以注释掉这个提示。
+                        # yield TextMessage(
+                        #     content="\n\n(●'◡'●)如果您需要调整我的名称、我对您的称呼、您涉及领域，请告诉我，我来调整(If you need to adjust my name, how I address you, or your field of expertise, please let me know, and I will make the changes).",
+                        #     source=agent_name,
+                        #     metadata={"internal": "no"},
+                        # )
                         self._user_profile_manager.first_time_setup = False
                     yield reponse
                     break

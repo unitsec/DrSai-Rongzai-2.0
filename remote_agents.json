@@ -19,26 +19,5 @@
         "logo": "https://aiapi.ihep.ac.cn/apiv2/files/file-61518e9f7e8f45049739d7ae58abe35a/preview",
         "owner": "wanghao96@ihep.ac.cn",
         "id": "edf80f28"
-    },
-    {
-        "name": "RongZai_Agent_SAS",
-        "url": "http://10.1.252.95:42813/apiv2",
-        "apiKey": "sk-qywwUDyCxrUQYyyxhUCNKZbasiRwAzszJSdIQXdsWdsjHOV",
-        "mode": "remote",
-        "description": "蓉仔——你的小角中子散射分析助手  by中国散裂中子源数据分析组",
-        "agent_config":{
-            "quick refinement":"openai/gpt-4.1",
-            "deep refinement":"openai/gpt-5",
-            "qwen3 Max": "aliyun/qwen3-max",
-            "qwen3 Coder+": "aliyun/qwen3-coder-plus",
-            "minimax": "minimax/minimax-m2.7",
-            "磐石": "scienceone/s1-base-ultra"},
-        "default_config_name": "quick refinement",
-        "version": "0.1.0",
-        "examples":["帮我拟合BLX的RUNX的小角散射一维曲线，模型选择X"],
-        "author": "zhongjiajun@ihep.ac.cn",
-        "logo": "https://aiapi.ihep.ac.cn/apiv2/files/file-61518e9f7e8f45049739d7ae58abe35a/preview",
-        "owner": "zhongjiajun@ihep.ac.cn",
-        "id": "edf80f27"
     }
 ]

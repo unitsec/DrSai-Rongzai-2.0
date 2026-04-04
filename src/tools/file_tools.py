@@ -4,7 +4,7 @@ from typing import List
 
 
 def find_refinement_files(
-    data_dir: str,
+    data_dir: str = "",
     user_upload_dir: str = "",
     beamline: str | None = None,
     run_id: str | None = None,
@@ -18,8 +18,8 @@ def find_refinement_files(
     定位 Rietveld 精修所需的衍射数据、仪器参数和 CIF 结构文件绝对路径。
 
     参数:
-        data_dir: CSNS 数据根目录
-        user_upload_dir: 用户上传文件目录
+        data_dir: CSNS 数据根目录；为空时尝试使用环境变量 WORKER_SPACE
+        user_upload_dir: 用户上传文件目录；为空时尝试使用环境变量 USER_UPLOAD_DIR
         beamline: 谱仪名称，如 BL16、BL18、BL09、BL15
         run_id: 实验 RUN 号，如 RUN0021905，也兼容 run21905 等写法
         detector: 探测器组名，如 group5、bank14、module11203
@@ -42,6 +42,15 @@ def find_refinement_files(
                 "message": "..."
             }
     """
+
+    data_dir = data_dir or os.getenv("WORKER_SPACE", "")
+    user_upload_dir = user_upload_dir or os.getenv("USER_UPLOAD_DIR", "")
+
+    if not data_dir:
+        return {
+            "status": "error",
+            "message": "未提供 data_dir，且环境变量 WORKER_SPACE 未设置。",
+        }
 
     def _find_in_upload(name: str) -> str:
         if not name or not user_upload_dir:

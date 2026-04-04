@@ -63,9 +63,9 @@ from tools.material_project.structure_api import mp_search_cif_api
 # from pathlib import Path
 # import sys
 # here = Path(__file__).parent.resolve()
-# tool_path = here.parent.parent.parent.joinpath("tools/GSAS-II-master/MCPS/gsasii_api.py")
+# tool_path = here.parent.parent.parent.joinpath("tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py")
 # sys.path.insert(0, str(tool_path.parent))
-from src.core.tools.gsasii_tools import powder_diffraction_refinement
+# 当前新架构通过 MCP 工具 write_info 调用 GSAS-II。
 
 # ASE
 from ase.io import read

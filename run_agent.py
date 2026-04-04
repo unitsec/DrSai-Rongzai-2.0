@@ -29,7 +29,6 @@ import asyncio
 from drsai.backend import run_worker
 
 from src.core.agent.agent import RongZaiAgent
-from src.tools import SkillRegistryManager
 import os
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
@@ -60,15 +59,6 @@ llm_mode_config = {
     "磐石": "scienceone/s1-base-ultra",
     "default": "openai/gpt-5"
 }
-
-# async def get_GSASII_Workbench() -> StaticWorkbench:
-#     tools = []
-#     tools.extend(await mcp_server_tools(SseServerParams(
-#         url = "http://127.0.0.1:42501/sse",
-#         # url="http://202.122.37.163:42851/sse",
-#         timeout = 30,
-#     )))
-#     return StaticWorkbench(tools)
 
 async def create_agent(
         api_key: str | None = None,
@@ -119,6 +109,7 @@ async def create_agent(
     
     # Code executor and working directory
     WORKDIR=os.getenv("WORKDIR")
+    USER_UPLOAD_DIR = os.getenv("USER_UPLOAD_DIR", "")
 
     # Sub-agents configuration
     SUB_AGENTS = {
