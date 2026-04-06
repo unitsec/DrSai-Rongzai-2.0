@@ -1629,7 +1629,7 @@ def neutron_refinement(
             original_cif_files = cif_files
 
          # 2. 执行一次性精修流程
-        print("开始一次性精修流程haha...")
+        print("开始一次性精修流程...")
         _, refinement_log = flexible_neutron_refinement(
             gpx, hist, phases, task_id,
             gpx_file=gpx_file,
@@ -1718,9 +1718,66 @@ def RefineToolsGSASII(
                 }
         }
 
-        该工具传参模式：
-
+    该工具的两种启用模式：
+        - 精修初始化：不传入gpx文件路径，传入必要的gsa、instprm、cif文件路径，并给一个空的精修参数，工具会执行精修初始化并精修scale和拟合一个background,然后返回生成的gpx路径。
+        - 精修：传入gpx文件路径，以及需要精修的参数，工具会加载该gpx项目继续精修，并返回精修结果和生成的文件路径等信息。
+    该工具的查询模式：
+        - 任务查询：传入之前的task_id，工具会检查该任务当前的状态，如果任务已完成则返回结果，如果任务仍在运行中则返回运行状态。
     
+    refine_params的内容和结构：
+        它是一个字典，键是你能够精修的所有参数名称，键值的格式如下
+        | 参数 | 类型 | 默认值 | 说明 |
+        | `refine_cycle` | int | 1 | 精修循环次数 (Refine Cycle) |
+        | `refine_background` | bool | False | 是否精修背景 |
+        | `background_coeffs` | int | 3 | 背景函数系数数量 |
+        | `refine_scale` | bool | False | scale |
+        | `refine_cell` | bool | False | 晶胞参数 (a, b, c, α, β, γ)，启用则在精修中调整晶胞 |
+        | `initial_cell` | dict/list | None | 在精修前设置晶胞初始值（见下文详细说明） |
+        | `refine_absorption` | bool | False | 吸收，用于修正由吸收导致的衍射峰强度系统性偏差 |
+        | `refine_instrument_alpha` | bool | False | 仪器参数alpha(仪器参数中影响最大的一个) | 
+        | `refine_instrument_beta` | bool | False | 仪器参数beta-0, beta-1, beta-q |
+        | `refine_instrument_sig` | bool | False | 仪器参数sig-0, sig-1, sig-2, sig-q |
+        | `refine_instrument_x` | bool | False | 仪器参数X |
+        | `refine_instrument_y` | bool | False | 仪器参数Y |
+        | `refine_instrument_z` | bool | False | 仪器参数Z |
+        | `refine_atoms` | dict | {} | 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'} |
+        注意：'X' 为位置，'U' 为等效各向同性温度因子，'F' 为占位率。例如 'XU' 表示同时精修位置和 U。
+        | `refine_size` | bool | False | 晶粒尺寸,一般不修,除非你有特殊需求 |
+        | `refine_mustrain` | bool | False | 微应变,一般不修,除非你有特殊需求|
+        | `initial_mustrain` | float/list/dict | None | 在精修前设置微应变初始值，仅支持isotropic模式（见下文详细说明） |
+        | `initial_atom_uiso` | dict/list/float | None | 在精修前设置原子热无序因子(Uiso)初始值，支持多种格式（见下文详细说明） |
+        | `refine_phase_fraction` | bool | False | 相分数, 仅多相精修中需要 |
+
+        参数 `initial_cell`用途与使用方法：
+            - 目的：在执行任何晶胞精修之前设置相（phase）的初始晶胞数值，避免直接修改核心.
+            - 单位与空间：GSAS 使用实空间晶胞参数（a, b, c 单位 Å；α, β, γ 单位为度），不是倒空间参数。
+            - 支持格式：
+                1. 列表（按相索引）：例如 `[{'a':5.12,'b':5.12,'c':7.23,'alpha':90,'beta':90,'gamma':120}, ...]`，第 0 项对应第 1 个 phase。
+                2. 字典（按相名或索引）：例如 `{'Phase_1': {'a':...}, 0: {'a':...}}`，支持相名或数字索引（或索引的字符串形式）。
+            - 行为：如果 `initial_cell` 存在，代码会在精修前把实空间参数写入 `phase.data['General']['Cell']`，采用 GSAS 内部期望的格式：
+                `[refine_flag, a, b, c, alpha, beta, gamma, volume]`。
+                其中 `refine_flag` 保留原先的布尔值（或设为 False），`volume` 会自动计算并写入（若能计算）。
+            - 同时，如果 `refine_cell` 为 True，脚本会尝试调用 `phase.set_refinements({"Cell": True})` 来开启晶胞精修标志（若该方法可用）。
+
+        参数 `initial_mustrain`用途与使用方法：
+            - 目的：在执行微应变精修之前设置相（phase）的初始微应变数值。当拟合的衍射峰明显比实验数据宽，且无论如何精修都无法解决时，可将此值设为0来消除微应变的影响。
+            - 仅支持isotropic模式（单一数值），单位为 μstrain（微应变）。
+            - 支持格式：
+                1. 单个数值：例如 `1000.0`，适用于单相或所有相使用相同微应变值。
+                2. 列表（按相索引）：例如 `[1000.0, 1200.0]`，第 0 项对应第 1 个 phase。
+                3. 字典（按相名或索引）：例如 `{'Phase_1': 1000.0, 0: 1200.0}`，支持相名或数字索引。
+            - 行为：如果 `initial_mustrain` 存在，代码会在精修前把微应变参数写入 `gpx.data['Histograms'][hist.name]['Mustrain']`，仅修改参数值，保留原有的精修标志。
+            - 特殊用法：当设置 `initial_mustrain: 0` 时，可以消除微应变对衍射峰宽的贡献，用于诊断衍射峰过宽的原因。
+
+        参数 `initial_atom_uiso`用途与使用方法：
+            - 目的：在执行精修之前设置相（phase）的原子热无序因子（Uiso）初始值。这对以下情况特别有用：
+                当absorption和scale参数高度关联（一个增加另一个必须减小）导致精修卡顿时，将Uiso设为0来隔离这个问题。
+            - 单位：Ų（平方埃），典型范围 0.005-0.15。
+            - 支持格式：
+                1. 字典（按原子标签）：例如 `{'Si': 0.012, 'O': 0.015, 'Fe': 0.010}`，推荐用于简单情况。
+                2. 列表（按相和原子索引）：例如 `[[0.012, 0.015], [0.010, 0.014]]`，第 0 项对应第 1 个 phase。
+                3. 单个数值：例如 `0.012`，应用于所有原子，最简单的方式。    
+        
     """
     result_json={"task_id":task_id,'state':None,'result':None}
     if not task_id: # 没有task_id说明是新任务，生成一个新的ID

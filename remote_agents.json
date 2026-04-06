@@ -12,7 +12,7 @@
             "minimax": "minimax/minimax-m2.7",
             "磐石": "scienceone/s1-base-ultra"
             },
-        "default_config_name": "deep refinement",
+        "default_config_name": "quick refinement",
         "version": "0.1.0",
         "examples":["帮我把BLX的RUNX的groupX的衍射谱精修好，cif文件是X.cif"],
         "author": "wanghao96@ihep.ac.cn",

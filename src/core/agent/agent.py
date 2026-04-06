@@ -577,7 +577,7 @@ Current Session_ID is {self._thread_id}
             turn_count = 0
             max_empty_turn = 3 
             empty_turn_count = 0
-            while turn_count < self._max_turn_count:
+            while True:
                 
                 model_result = None
                 async for inference_output in self._call_llm(
@@ -768,17 +768,6 @@ Current Session_ID is {self._thread_id}
                         chat_message=pending_stop_message,
                         inner_messages=inner_messages,
                     )
-                    return
-
-                turn_count += 1
-                if turn_count > self._max_turn_count:
-                    yield Response(
-                        chat_message=TextMessage(
-                            content="\n\n(●'◡'●)抱歉，已达最大的任务循环次数，触发了保护措施，请重新调整您的询问方式或者更具体的告诉您的助手应该怎么做。",
-                            source=agent_name,
-                            metadata={"internal": "no"},
-                        inner_messages=inner_messages,
-                    ))
                     return
 
         except asyncio.CancelledError:

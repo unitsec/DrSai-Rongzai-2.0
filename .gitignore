@@ -28,6 +28,9 @@ test/
 # 忽略files文件夹
 files/*
 
+# 忽略智能体工作目录
+agentWorkSpace/
+
 test_datesets/*
 # datasets/*
 *.gpx
