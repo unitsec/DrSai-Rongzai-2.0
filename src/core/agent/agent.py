@@ -91,6 +91,7 @@ from drsai.modules.agents.skills_agent.managers.get_managers_tools import (
     get_todo_manager_tool,
     create_local_venv,
 )
+from .utils import _extract_existing_image_paths_from_content, show_file_to_user
 
 class DrSaiAssistantConfig(DrSaiAgentConfig):
     skills_dir: Optional[str | List[str]]
@@ -157,12 +158,7 @@ class RongZaiAgent(DrSaiAgent):
         extra_work_dirs: List[str] | None = None,
         executor: CodeExecutor | None = None,
         sub_agent_config: Dict = {},
-        max_turn_count: int = 20,
-        token_limit: int = 50000,
-        rag_flow_url: str | None = None,
-        rag_flow_token: str | None = None,
-        memory_dataset_id: str | None = None,
-        learning_dataset_id: str| None = None,
+        token_limit: int = 50000
         ):
         
         super().__init__(
@@ -229,13 +225,6 @@ class RongZaiAgent(DrSaiAgent):
 
         # === model context ===
         # 创建一个上下文管理器，并且将其中的retrieve_from_memory和summry_conversation_to_memory转为FunctionTool加入工具列表，以便模型调用
-        self._token_limit = token_limit
-        self._rag_flow_url = rag_flow_url
-        self._rag_flow_token = rag_flow_token
-        self._memory_dataset_id = memory_dataset_id
-        self._learning_dataset_id = learning_dataset_id or memory_dataset_id
-        self._memory_document_id = self._user_profile_manager.get_document_ids(self._thread_id)
-        self._learning_document_id = self._user_profile_manager.get_document_ids(self._user_id)
         # memory manager
         self._model_context = DrSaiChatCompletionContext(
             agent_name=self._user_profile_manager.agent_name,
@@ -243,19 +232,8 @@ class RongZaiAgent(DrSaiAgent):
             user_id=self._user_id,
             thread_id=self._thread_id,
             work_dir=self._work_dir,
-            token_limit=self._token_limit,
-            rag_flow_url=self._rag_flow_url,
-            rag_flow_token=self._rag_flow_token,
-            dataset_id=self._memory_dataset_id,
-            document_id=self._memory_document_id,
-            learning_dataset_id=self._learning_dataset_id,
-            learning_document_id=self._learning_document_id,
+            token_limit=token_limit,
         )
-        if not self._model_context._rag_flow_manager:
-            raise ValueError("RAGFlowManager is not initialized in DrSaiChatCompletionContext")
-        funcs = [self._model_context.retrieve_from_memory, self._model_context.summry_conversation_to_memory]
-        for func in funcs:
-            self._tools.append(FunctionTool(func, description=func.__doc__))
                 
         # === skills ===
         # 把系统预置的每个 skill 文件夹，复制一份到用户自己的 skills 目录下
@@ -288,13 +266,6 @@ class RongZaiAgent(DrSaiAgent):
         self._todo_manager = TodoManager()
         self._todo_tools = [get_todo_manager_tool()]
 
-        # 初始化实例变量供edge_agent_core使用
-        # self._current_plan = None
-        # self._task_planner = None
-        # self._memory_manager = None
-
-        # max_turn_count
-        self._max_turn_count = max_turn_count
 
         # config file mtime cache for lazy reloading
         self._config_mtimes: Dict[str, float] = {} #作用：保存“文件路径 -> 最近修改时间 mtime”的映射。配合 _file_changed 使用，用来判断配置文件或目录是否发生变化。
@@ -501,19 +472,10 @@ Current Session_ID is {self._thread_id}
 
             # initialize the learning memory document
             # 创建一个每个用户唯一的经验学习文档
-            if self._user_profile_manager.first_time_setup:
-                self._learning_document_id = await self._model_context.create_new_session_document(dataset_id = self._learning_dataset_id, create_type="learning_memory" )
-                self._user_profile_manager.update_document_ids(thread_id=self._user_id, document_id=self._learning_document_id)
+            # if self._user_profile_manager.first_time_setup:
+            #     self._learning_document_id = await self._model_context.create_new_session_document(dataset_id = self._learning_dataset_id, create_type="learning_memory" )
+            #     self._user_profile_manager.update_document_ids(thread_id=self._user_id, document_id=self._learning_document_id)
             # create the new session document
-            # 为每个对话会话创建一个新的记忆文档，并将文档ID保存在用户画像里
-            if self._memory_document_id is None:
-                self._memory_document_id = await self._model_context.create_new_session_document(
-                    user_id = self._user_id,
-                    thread_id = self._thread_id,
-                    work_dir = self._work_dir,
-                )
-                self._user_profile_manager.update_document_ids(thread_id=self._thread_id, document_id=self._memory_document_id)
-                self._model_context._document_id = self._memory_document_id # 当前session的document id是对话记忆文档的id
 
 
             # load/update tools only if TOOLS_CONFIG.json changed
@@ -574,9 +536,6 @@ Current Session_ID is {self._thread_id}
 
             # TODO: Update model context with any relevant memory -> When? How?
 
-            turn_count = 0
-            max_empty_turn = 3 
-            empty_turn_count = 0
             while True:
                 
                 model_result = None
@@ -620,21 +579,6 @@ Current Session_ID is {self._thread_id}
                 
                 # If direct text response (string)
                 if isinstance(model_result.content, str):
-
-                    # 忍耐3次模型的空回复
-                    if not model_result.content and empty_turn_count < max_empty_turn:
-                        empty_turn_count += 1
-                        await self._model_context.add_message(
-                            UserMessage(
-                                content=f"Your reply is empty. Please continue with the task above.",
-                                source="user"
-                            )
-                        )
-                        continue
-                    elif not model_result.content and empty_turn_count >= max_empty_turn:
-                        model_result.content = "The response is empty. Please try again or create a new session."
-                    else:
-                        empty_turn_count = 0
 
                     reponse = await self.handle_str_reponse(
                         model_result = model_result,
@@ -921,6 +865,30 @@ Current Session_ID is {self._thread_id}
         )
         exec_results = [result for _, result in executed_calls_and_results]
         await model_context.add_message(FunctionExecutionResultMessage(content=exec_results))
+        img_paths = []
+        for result in exec_results:
+            img_paths.extend(_extract_existing_image_paths_from_content(result.content))
+        if img_paths:
+            for img_path in img_paths:
+                #show user the images of this tool call result
+                fig_url = show_file_to_user(model_client, file_path=img_path)
+                info2user = f"### ![image.png]({fig_url})\n\n"
+                yield ModelClientStreamingChunkEvent(content=info2user, source=agent_name)
+
+                # Show LLM the image in context as a true multimodal user message.
+                image_ob = Image.from_file(file_path=img_path)
+                multimodal_msg = UserMessage(
+                    content=[f"the figure of {img_path}", image_ob],
+                    source="user",
+                )
+                if isinstance(model_context, DrSaiChatCompletionContext):
+                    # Bypass add_message() because the local memory serializer currently
+                    # does not support multimodal message persistence.
+                    model_context._messages.append(multimodal_msg)
+                    model_context._current_messages.append(multimodal_msg)
+                else:
+                    await model_context.add_message(multimodal_msg)
+
         normal_tool_calls = [(call, result) for call, result in executed_calls_and_results if call.name not in handoffs]
         tool_call_summaries: List[str] = []
         for tool_call, tool_call_result in normal_tool_calls:
@@ -1277,6 +1245,27 @@ Current Session_ID is {self._thread_id}
             learning_dataset_id = config.learning_dataset_id,
             **kwargs,
         )
+    
+    def upload_file(self, file_path: str, purpose: str = "user_data") -> str:
+        """上传文件到图床接口
+        Args:
+            file_path (str): 文件路径
+            purpose (str): 上传用途，默认为"user_data"
+
+        Returns:
+            str: 上传后的URL
+        """
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=self._model_client._client.api_key,
+            base_url="https://aiapi.ihep.ac.cn/apiv2"
+        )
+
+        file_obj = client.files.create(
+                file=open(file_path, "rb"),
+                purpose=purpose
+            )
+        return f"https://aiapi.ihep.ac.cn/apiv2/files/{file_obj.id}/preview"
 
 
         

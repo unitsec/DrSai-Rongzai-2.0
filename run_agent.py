@@ -57,7 +57,7 @@ llm_mode_config = {
     "qwen3 Coder+": "aliyun/qwen3-coder-plus",
     "minimax": "minimax/minimax-m2.7",
     "磐石": "scienceone/s1-base-ultra",
-    "default": "openai/gpt-4.1"
+    "default": "minimax/minimax-m2.7"
 }
 
 async def create_agent(
@@ -160,14 +160,10 @@ your_code
         # executor=local_executor,
 
         work_dir=WORKDIR,
-        only_in_workspace=True,
+        only_in_workspace=False,
         extra_work_dirs=[],
         sub_agent_config = SUB_AGENTS,
-        max_turn_count=20,
-        token_limit=50000,
-        rag_flow_url=os.getenv('RAGFLOW_URL'),
-        rag_flow_token=os.getenv('RAGFLOW_TOKEN'),
-        memory_dataset_id=os.getenv('MEMORY_DATASET_ID'),
+        token_limit=50000
     )
 
 if __name__ == "__main__":
