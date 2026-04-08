@@ -12,7 +12,7 @@ from typing import (
     Self,
     Mapping,
     )
-import os, json, sys, uuid, shutil
+import os, json, sys, uuid
 import asyncio, traceback
 from pydantic import BaseModel
 from pathlib import Path
@@ -68,8 +68,8 @@ from drsai.modules.managers.messages import (
     ToolCallRequestEvent,
     ToolCallSummaryMessage,
     UserInputRequestedEvent,
-    ThoughtEvent,
     AgentLogEvent,
+    FilesEvent,
     StructuredMessage,
     StructuredMessageFactory,
     MultiModalMessage,
@@ -91,7 +91,11 @@ from drsai.modules.agents.skills_agent.managers.get_managers_tools import (
     get_todo_manager_tool,
     create_local_venv,
 )
-from .utils import _extract_existing_image_paths_from_content, show_file_to_user
+from .utils import (
+    _extract_existing_image_paths_from_content,
+    show_file_to_user,
+    get_operator_funcs_rongzai,
+)
 
 class DrSaiAssistantConfig(DrSaiAgentConfig):
     skills_dir: Optional[str | List[str]]
@@ -219,8 +223,13 @@ class RongZaiAgent(DrSaiAgent):
             only_in_workspace=self._only_in_workspace,
             extra_dirs = self._extra_work_dirs,
             )
-        self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
+        # self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
         for func in self._basic_funcs:
+            self._tools.append(FunctionTool(func, description=func.__doc__))
+
+        # 将rongzai需要的特定的函数转换为FunctionTool对象并加入self._tools列表
+        self._otherBasic_funcs: List[Callable] = get_operator_funcs_rongzai(source_name = self._name)
+        for func in self._otherBasic_funcs:
             self._tools.append(FunctionTool(func, description=func.__doc__))
 
         # === model context ===
@@ -236,18 +245,8 @@ class RongZaiAgent(DrSaiAgent):
         )
                 
         # === skills ===
-        # 把系统预置的每个 skill 文件夹，复制一份到用户自己的 skills 目录下
+        # 系统级skills（开发者维护）与用户级skills（用户维护）分层加载，不再复制。
         self._skills_dir = skills_dir
-        if self._user_profile_manager.first_time_setup and self._skills_dir:
-            src_dirs = self._skills_dir if isinstance(self._skills_dir, list) else [self._skills_dir]
-            dst_root = self._user_profile_manager.skills_dir
-            for src_dir in src_dirs:
-                src_path = Path(src_dir)
-                for skill_folder in src_path.iterdir():
-                    if skill_folder.is_dir():
-                        dst = dst_root / skill_folder.name
-                        if not dst.exists():
-                            shutil.copytree(skill_folder, dst)
         self._agent_skills_tools = [] # 先占位，真正加载是在每轮对话开始前的 update_user_skills() 里
 
         # === executor ===
@@ -265,6 +264,25 @@ class RongZaiAgent(DrSaiAgent):
         # 配置一个计划器，并把TodoWrite作为一个工具放到工具列表self._todo_tools里
         self._todo_manager = TodoManager()
         self._todo_tools = [get_todo_manager_tool()]
+
+        # === core skill promotion ===
+        # 由模型自主决定是否将某个 skill 的关键规则提级到系统提示词热区。
+        self._core_skill_tools = [
+            self._get_promote_skill_tool(),
+            self._get_demote_skill_tool(),
+            self._get_replace_core_skill_tool(),
+        ]
+        self._core_skill_slots: List[Dict[str, Any]] = []
+        self._max_core_skill_slots = 2
+        self._core_skill_update_seq = 0
+        self._core_skill_policy_prompt = (
+            "[Core Skill Promotion Policy]\n"
+            "Evaluate whether to call PromoteSkillToCore before important actions.\n"
+            "Use it especially for high-risk or strict multi-step domain tasks.\n"
+            "Use it especially when you need a skill for a professional data analysis work with multi-step operation.\n"
+            "Core skills do not auto-expire; manage lifecycle explicitly with DemoteCoreSkill/ReplaceCoreSkill.\n"
+            "Always provide a concise reason when promoting, demoting, or replacing core skills."
+        )
 
 
         # config file mtime cache for lazy reloading
@@ -284,9 +302,27 @@ class RongZaiAgent(DrSaiAgent):
             return True
         return False
 
+    def _skills_inputs_changed(self) -> bool:
+        """Detect changes from both shared system skills and user workspace skills."""
+        changed = False
+
+        skills_dirs: List[Path] = [self._user_profile_manager.skills_dir]
+        if self._skills_dir:
+            system_dirs = self._skills_dir if isinstance(self._skills_dir, list) else [self._skills_dir]
+            skills_dirs.extend(Path(d) for d in system_dirs)
+
+        for skills_dir in skills_dirs:
+            changed = self._file_changed(skills_dir) or changed
+            if skills_dir.exists():
+                for skill_file in skills_dir.glob("*/SKILL.md"):
+                    changed = self._file_changed(skill_file) or changed
+
+        return changed
+
     def update_system_prompt(self, additional_prompt: str = "") -> str:
         """获取agent描述、用户画像并更新系统消息"""
         user_context = self._user_profile_manager.get_agent_system_prompt()
+        user_context = self._compact_user_context(user_context)
         enhanced_system_message = self._developer_system_message
         if user_context and self._developer_system_message:
             # 合并系统消息和用户上下文
@@ -296,22 +332,277 @@ class RongZaiAgent(DrSaiAgent):
 
 Current Session_ID is {self._thread_id}
 """
+        enhanced_system_message += f"\n\n{self._core_skill_policy_prompt}"
+        core_skill_prompt = self._build_core_skill_prompt()
+        if core_skill_prompt:
+            enhanced_system_message += f"\n\n{core_skill_prompt}"
+
         enhanced_system_message += additional_prompt
         self._system_messages = [SystemMessage(content=enhanced_system_message)]
+
+    def _compact_user_context(self, user_context: str) -> str:
+        """Trim verbose profile/config sections to keep system prompt focused."""
+        if not user_context:
+            return ""
+
+        compact = user_context
+
+        # Remove large per-user environment block from this marker onward.
+        marker = "\n# Tool Preferences for User:"
+        if marker in compact:
+            compact = compact.split(marker, 1)[0].rstrip()
+
+        # Remove generic workflow boilerplate section if present.
+        workflow_marker = "\n## Workflow"
+        profile_marker = "\n# User Profile"
+        if workflow_marker in compact and profile_marker in compact:
+            left, right = compact.split(workflow_marker, 1)
+            if profile_marker in right:
+                right = right.split(profile_marker, 1)[1]
+                compact = f"{left}\n# User Profile{right}".rstrip()
+
+        return compact
+
+    def _debug_log_system_prompt(self, system_messages: List[SystemMessage]) -> None:
+        """Optionally log the exact system prompt that will be sent to the model."""
+        debug_enabled = os.getenv("RONGZAI_DEBUG_SYSTEM_PROMPT", "").lower() in {"1", "true", "yes", "on"}
+        if not debug_enabled:
+            return
+
+        parts: List[str] = []
+        for idx, message in enumerate(system_messages, start=1):
+            content = message.content
+            if isinstance(content, str):
+                parts.append(f"[SystemMessage {idx}]\n{content}")
+            else:
+                parts.append(f"[SystemMessage {idx}]\n{str(content)}")
+
+        logger.info("===== FULL SYSTEM PROMPT BEFORE LLM CALL =====\n{}\n===== END SYSTEM PROMPT =====", "\n\n".join(parts))
+
+    def _get_promote_skill_tool(self) -> ToolSchema:
+        """Tool schema that lets the model decide if a skill should be promoted to core prompt."""
+        parameters = ParametersSchema(
+            type="object",
+            properties={
+                "skill": {
+                    "type": "string",
+                    "description": "Skill name to promote into the core system prompt area.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why this skill must be treated as a high-priority execution rule now.",
+                },
+                "focus": {
+                    "type": "string",
+                    "description": "Optional focus area/keywords to extract from the skill content.",
+                    "default": "",
+                },
+            },
+            required=["skill", "reason"],
+            additionalProperties=False,
+        )
+        return ToolSchema(
+            name="PromoteSkillToCore",
+            description=(
+                "Promote one loaded skill into high-priority core system rules. "
+                "Use this only when strict skill compliance is important for the current task. "
+                "You decide whether to call this tool."
+            ),
+            parameters=parameters,
+            strict=False,
+        )
+
+    def _get_demote_skill_tool(self) -> ToolSchema:
+        """Tool schema for explicit core skill downgrade/removal."""
+        parameters = ParametersSchema(
+            type="object",
+            properties={
+                "skill": {
+                    "type": "string",
+                    "description": "Core skill name to demote/remove.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why this core skill should be demoted now.",
+                    "default": "",
+                },
+            },
+            required=["skill"],
+            additionalProperties=False,
+        )
+        return ToolSchema(
+            name="DemoteCoreSkill",
+            description="Demote/remove a promoted core skill from high-priority system rules.",
+            parameters=parameters,
+            strict=False,
+        )
+
+    def _get_replace_core_skill_tool(self) -> ToolSchema:
+        """Tool schema for explicit core skill replacement."""
+        parameters = ParametersSchema(
+            type="object",
+            properties={
+                "old_skill": {
+                    "type": "string",
+                    "description": "Existing promoted core skill to replace.",
+                },
+                "new_skill": {
+                    "type": "string",
+                    "description": "New skill to promote as replacement.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why replacement is needed now.",
+                },
+                "focus": {
+                    "type": "string",
+                    "description": "Optional focus area/keywords for the new skill extraction.",
+                    "default": "",
+                },
+            },
+            required=["old_skill", "new_skill", "reason"],
+            additionalProperties=False,
+        )
+        return ToolSchema(
+            name="ReplaceCoreSkill",
+            description="Replace one promoted core skill with another in high-priority system rules.",
+            parameters=parameters,
+            strict=False,
+        )
+
+    def _extract_core_skill_rules(self, skill_content: str, focus: str = "") -> str:
+        """Keep full promoted skill content so core rules are complete and not truncated."""
+        text = (skill_content or "").strip()
+        if not text:
+            return ""
+        if focus:
+            return f"[Focus]\n{focus}\n\n{text}"
+        return text
+
+    def _build_core_skill_prompt(self) -> str:
+        """Build the core skill block injected into system prompt."""
+        if not self._core_skill_slots:
+            return ""
+
+        lines = [
+            "[Core Skill Rules]",
+            "The following promoted skill rules are high-priority execution constraints for the current task.",
+            "If there is a conflict with normal skill text, follow this core section first.",
+        ]
+        for idx, slot in enumerate(self._core_skill_slots, start=1):
+            lines.append(f"\n## CoreSkill {idx}: {slot['skill']}")
+            lines.append(f"Reason: {slot['reason']}")
+            lines.append(slot["core_rules"])
+        return "\n".join(lines)
+
+    def _promote_skill_to_core(
+        self,
+        *,
+        skills_loader: SkillLoader | None,
+        skill_name: str,
+        reason: str,
+        focus: str = "",
+    ) -> str:
+        """Promote a skill into core system prompt rules."""
+        if skills_loader is None:
+            return "Cannot promote skill: no skills loader is available in this session."
+
+        skill_content = skills_loader.get_skill_content(skill_name)
+        if skill_content is None:
+            available = ", ".join(skills_loader.list_skills()) or "none"
+            return f"Cannot promote skill '{skill_name}': not found. Available skills: {available}."
+
+        core_rules = self._extract_core_skill_rules(skill_content=skill_content, focus=focus)
+        if not core_rules.strip():
+            return f"Cannot promote skill '{skill_name}': extracted core rules are empty."
+
+        self._core_skill_update_seq += 1
+        existing = None
+        for slot in self._core_skill_slots:
+            if slot["skill"] == skill_name:
+                existing = slot
+                break
+
+        if existing is not None:
+            existing["reason"] = reason
+            existing["core_rules"] = core_rules
+            existing["focus"] = focus
+            existing["updated_at_seq"] = self._core_skill_update_seq
+        else:
+            self._core_skill_slots.append(
+                {
+                    "skill": skill_name,
+                    "reason": reason,
+                    "core_rules": core_rules,
+                    "focus": focus,
+                    "updated_at_seq": self._core_skill_update_seq,
+                }
+            )
+
+        # Keep only the newest N promoted skills.
+        self._core_skill_slots.sort(key=lambda s: s.get("updated_at_seq", 0), reverse=True)
+        self._core_skill_slots = self._core_skill_slots[: self._max_core_skill_slots]
+
+        active = ", ".join(slot["skill"] for slot in self._core_skill_slots)
+        return (
+            f"Promoted skill '{skill_name}' to core rules. "
+            f"Use DemoteCoreSkill or ReplaceCoreSkill when needed. Active core skills: {active}."
+        )
+
+    def _demote_core_skill(self, skill_name: str, reason: str = "") -> str:
+        """Remove a promoted core skill explicitly."""
+        before = len(self._core_skill_slots)
+        self._core_skill_slots = [slot for slot in self._core_skill_slots if slot.get("skill") != skill_name]
+        if len(self._core_skill_slots) == before:
+            active = ", ".join(slot["skill"] for slot in self._core_skill_slots) or "none"
+            return f"Core skill '{skill_name}' is not active. Active core skills: {active}."
+        active = ", ".join(slot["skill"] for slot in self._core_skill_slots) or "none"
+        if reason:
+            return f"Demoted core skill '{skill_name}' (reason: {reason}). Active core skills: {active}."
+        return f"Demoted core skill '{skill_name}'. Active core skills: {active}."
+
+    def _replace_core_skill(
+        self,
+        *,
+        skills_loader: SkillLoader | None,
+        old_skill: str,
+        new_skill: str,
+        reason: str,
+        focus: str = "",
+    ) -> str:
+        """Replace one core skill with another explicitly."""
+        demote_message = self._demote_core_skill(skill_name=old_skill, reason=f"replace -> {new_skill}")
+        promote_message = self._promote_skill_to_core(
+            skills_loader=skills_loader,
+            skill_name=new_skill,
+            reason=reason,
+            focus=focus,
+        )
+        return f"{demote_message} {promote_message}"
     
     def update_user_skills(self) -> SkillLoader:
-        """加载/更新用户技能"""
+        """加载/更新技能：系统共享skills + 用户私有skills（用户同名skill可覆盖系统skill）"""
         skills_loader = None
-        # 首先尝试从用户的skills目录加载
+
+        # 1) 先加载系统共享skills（开发者维护）
+        if self._skills_dir:
+            system_dirs = self._skills_dir if isinstance(self._skills_dir, list) else [self._skills_dir]
+            for skills_dir in system_dirs:
+                skills_path = Path(skills_dir)
+                if skills_path.exists() and list(skills_path.glob("*/SKILL.md")):
+                    if skills_loader is None:
+                        skills_loader = SkillLoader(skills_dir=str(skills_path))
+                    else:
+                        skills_loader.add_skills_by_dir(skills_dir=str(skills_path))
+
+        # 2) 再加载用户workspace skills（同名时覆盖系统skills）
         user_skills_dir = self._user_profile_manager.skills_dir
         if user_skills_dir.exists() and list(user_skills_dir.glob("*/SKILL.md")):
-            skills_loader = SkillLoader(skills_dir=str(user_skills_dir))
-        # # 再从指定的skills目录加载
-        # if self._skills_dir:
-        #     if not skills_loader:
-        #         skills_loader = SkillLoader(skills_dir=self._skills_dir)
-        #     else:
-        #         skills_loader.add_skills_by_dir(skills_dir=self._skills_dir)
+            if skills_loader is None:
+                skills_loader = SkillLoader(skills_dir=str(user_skills_dir))
+            else:
+                skills_loader.add_skills_by_dir(skills_dir=str(user_skills_dir))
+
         # 获取技能描述
         if skills_loader and skills_loader.skills:
             self._agent_skills_tools = [get_agent_skills_tool(descriptions=skills_loader.get_descriptions())]
@@ -489,12 +780,8 @@ Current Session_ID is {self._thread_id}
             if tools_changed or self._file_changed(self._user_profile_manager.agents_md):
                 self.update_system_prompt(additional_prompt=self._cached_tools_prompt)
 
-            # load/update skills only if skills directories changed
-            # 更新用户的skills
-            skills_changed = self._file_changed(self._user_profile_manager.skills_dir)
-            if self._skills_dir:
-                extra_dirs = self._skills_dir if isinstance(self._skills_dir, list) else [self._skills_dir]
-                skills_changed = skills_changed or any(self._file_changed(Path(d)) for d in extra_dirs)
+            # load/update skills when either shared system skills or user skills changed
+            skills_changed = self._skills_inputs_changed()
             if skills_changed or self._cached_skills_loader is None:
                 self._cached_skills_loader = self.update_user_skills()
             skills_loader = self._cached_skills_loader
@@ -506,7 +793,7 @@ Current Session_ID is {self._thread_id}
 
             # manager ToolSchema
             # 这边全部都是管理层的工具，里面每一个都是ToolSchema对象，包含工具的名字、描述、参数等信息，最终把这些工具都放到manager_tools这个列表里，供模型调用
-            manager_tools = self._update_user_config_tools+self._agent_skills_tools+self._subagent_tools+self._todo_tools
+            manager_tools = self._update_user_config_tools+self._agent_skills_tools+self._subagent_tools+self._todo_tools+self._core_skill_tools
 
             # count the number of tools
             if isinstance(self._model_context, DrSaiChatCompletionContext):
@@ -537,7 +824,7 @@ Current Session_ID is {self._thread_id}
             # TODO: Update model context with any relevant memory -> When? How?
 
             while True:
-                
+                self._debug_log_system_prompt(system_messages)
                 model_result = None
                 async for inference_output in self._call_llm(
                     model_client=model_client,
@@ -561,13 +848,9 @@ Current Session_ID is {self._thread_id}
                         yield inference_output
 
                 assert model_result is not None, "No model result was produced."
+                
 
-                # --- NEW: If the model produced a hidden "thought," yield it as an event ---
-                if model_result.thought:
-                    thought_event = ThoughtEvent(content=model_result.thought, source=agent_name)
-                    yield thought_event
-                    inner_messages.append(thought_event)
-
+                
                 # Add the assistant message to the model context (including thought if present)  
                 await model_context.add_message(
                     AssistantMessage(
@@ -652,9 +935,73 @@ Current Session_ID is {self._thread_id}
                             source=agent_name, 
                             content=str(argument), 
                             content_type="tools")
-                        yield ToolCallSummaryMessage(
-                            content=f"<think>Skill for {argument['skill']}:\n\n {skill_content}</think>\n",
+                    elif tool_name == "PromoteSkillToCore":
+                        promote_message = self._promote_skill_to_core(
+                            skills_loader=skills_loader,
+                            skill_name=argument["skill"],
+                            reason=argument["reason"],
+                            focus=argument.get("focus", ""),
+                        )
+                        await model_context.add_message(FunctionExecutionResultMessage(
+                            content=[FunctionExecutionResult(
+                                content=promote_message,
+                                name=tool_name,
+                                call_id=call_id,
+                                is_error=False,
+                            )]
+                        ))
+                        self.update_system_prompt(additional_prompt=self._cached_tools_prompt)
+                        system_messages = self._system_messages
+                        yield AgentLogEvent(
+                            title="I am promoting a skill to core system rules.",
                             source=agent_name,
+                            content=str(argument),
+                            content_type="tools",
+                        )
+                    elif tool_name == "DemoteCoreSkill":
+                        demote_message = self._demote_core_skill(
+                            skill_name=argument["skill"],
+                            reason=argument.get("reason", ""),
+                        )
+                        await model_context.add_message(FunctionExecutionResultMessage(
+                            content=[FunctionExecutionResult(
+                                content=demote_message,
+                                name=tool_name,
+                                call_id=call_id,
+                                is_error=False,
+                            )]
+                        ))
+                        self.update_system_prompt(additional_prompt=self._cached_tools_prompt)
+                        system_messages = self._system_messages
+                        yield AgentLogEvent(
+                            title="I am demoting a core skill.",
+                            source=agent_name,
+                            content=str(argument),
+                            content_type="tools",
+                        )
+                    elif tool_name == "ReplaceCoreSkill":
+                        replace_message = self._replace_core_skill(
+                            skills_loader=skills_loader,
+                            old_skill=argument["old_skill"],
+                            new_skill=argument["new_skill"],
+                            reason=argument["reason"],
+                            focus=argument.get("focus", ""),
+                        )
+                        await model_context.add_message(FunctionExecutionResultMessage(
+                            content=[FunctionExecutionResult(
+                                content=replace_message,
+                                name=tool_name,
+                                call_id=call_id,
+                                is_error=False,
+                            )]
+                        ))
+                        self.update_system_prompt(additional_prompt=self._cached_tools_prompt)
+                        system_messages = self._system_messages
+                        yield AgentLogEvent(
+                            title="I am replacing a core skill.",
+                            source=agent_name,
+                            content=str(argument),
+                            content_type="tools",
                         )
                     elif tool_name in self._tools_names:
                         async for message in self._process_model_result(
@@ -864,6 +1211,26 @@ Current Session_ID is {self._thread_id}
             ]
         )
         exec_results = [result for _, result in executed_calls_and_results]
+
+        # Unpack structured file events returned by tools and stream them to user.
+        for result in exec_results:
+            try:
+                parsed = json.loads(result.content)
+            except Exception:
+                continue
+
+            if isinstance(parsed, dict) and parsed.get("type") == "files_events":
+                events = parsed.get("events", [])
+                sent_count = 0
+                for event_data in events:
+                    try:
+                        files_event = FilesEvent.model_validate(event_data)
+                        yield files_event
+                        sent_count += 1
+                    except Exception:
+                        continue
+                result.content = f"Served {sent_count} file event(s) to user."
+
         await model_context.add_message(FunctionExecutionResultMessage(content=exec_results))
         img_paths = []
         for result in exec_results:
@@ -889,24 +1256,8 @@ Current Session_ID is {self._thread_id}
                 else:
                     await model_context.add_message(multimodal_msg)
 
-        normal_tool_calls = [(call, result) for call, result in executed_calls_and_results if call.name not in handoffs]
-        tool_call_summaries: List[str] = []
-        for tool_call, tool_call_result in normal_tool_calls:
-            tool_call_summaries.append(
-                tool_call_summary_format.format(
-                    tool_name=tool_call.name,
-                    arguments=tool_call.arguments,
-                    result=tool_call_result.content,
-                )
-            )
-        tool_call_summary = "\n".join(tool_call_summaries)
-        yield Response(
-                chat_message=ToolCallSummaryMessage(
-                    content="<think>The results of execution:\n " + tool_call_summary + "</think>\n",
-                    source=agent_name,
-                ),
-                inner_messages=inner_messages,
-            )
+        # Intentionally do not emit tool summary chat messages to user after tool execution.
+        return
 
     async def handle_str_reponse(
             self,
@@ -1245,27 +1596,6 @@ Current Session_ID is {self._thread_id}
             learning_dataset_id = config.learning_dataset_id,
             **kwargs,
         )
-    
-    def upload_file(self, file_path: str, purpose: str = "user_data") -> str:
-        """上传文件到图床接口
-        Args:
-            file_path (str): 文件路径
-            purpose (str): 上传用途，默认为"user_data"
-
-        Returns:
-            str: 上传后的URL
-        """
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=self._model_client._client.api_key,
-            base_url="https://aiapi.ihep.ac.cn/apiv2"
-        )
-
-        file_obj = client.files.create(
-                file=open(file_path, "rb"),
-                purpose=purpose
-            )
-        return f"https://aiapi.ihep.ac.cn/apiv2/files/{file_obj.id}/preview"
 
 
         

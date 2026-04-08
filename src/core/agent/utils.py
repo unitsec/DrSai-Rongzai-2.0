@@ -2,8 +2,14 @@ from typing import (
     List,
     Any
     )
-import re,json
+import re,json,os,base64
 from pathlib import Path
+from drsai.modules.managers.messages import (
+    FileInfo,
+    FilesContent,
+    FilesEvent
+    )
+
 
 def _extract_existing_image_paths_from_content(content: str) -> List[str]:
     """Extract existing local image file paths from tool result text.
@@ -91,3 +97,58 @@ def show_file_to_user(model_client, file_path: str, purpose: str = "user_data") 
                 purpose=purpose
             )
         return f"https://aiapi.ihep.ac.cn/apiv2/files/{file_obj.id}/preview"
+
+def get_operator_funcs_rongzai(source_name: str) -> list[callable]:
+    
+    def get_file_base64(file_path: str):
+        """获取知识库文件的base64编码"""
+        try:
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as file:
+                    file_base64 = base64.b64encode(file.read()).decode('utf-8')
+                # file_obj = upload_to_hepai_filesystem(file_path=file_path)
+                return file_base64
+            else:
+                print(f"警告: 文件 {file_path} 不存在")
+                return None
+        except Exception as e:
+            print(f"读取文件时出错: {e}")
+            return None
+    
+    def serve_files_for_user(files_list: list[str], descriptions_list: list[str]):
+        """
+        Serve the files to the user for downloading by showing it to the frontend.
+        if you need to serve files to user, you can call this function with the local paths of the files and their corresponding descriptions, then the files will be shown to user in the frontend and user can download them.
+
+        args:
+            files_list (list[str]): The local paths of the files to serve.
+            descriptions_list (list[str]): The corresponding descriptions of the files to serve.
+        """
+        events = []
+        for file_path, description in zip(files_list, descriptions_list):
+            file_base64 = get_file_base64(file_path)
+            if not file_base64:
+                continue
+                
+            base64_file = FileInfo(
+                name = os.path.basename(file_path),
+                base64_content = file_base64,
+                description=description,
+                download_method="base64"
+                )
+            
+            files=FilesContent(
+                files=[base64_file],
+                title="files for download",
+                description="these files are served for user downloading.",
+                )
+
+            event = FilesEvent(
+                source=source_name,
+                content=files.model_dump(),
+                )
+            events.append(event.model_dump(mode="json"))
+
+        return json.dumps({"type": "files_events", "events": events}, ensure_ascii=False)
+
+    return [serve_files_for_user]

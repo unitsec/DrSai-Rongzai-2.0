@@ -32,6 +32,7 @@ from src.core.agent.agent import RongZaiAgent
 import os
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
+os.environ.setdefault("RONGZAI_DEBUG_SYSTEM_PROMPT", "0")
 data_dir = os.getenv("WORKER_SPACE", "")
 parent_path = os.path.dirname(os.path.abspath(__file__))
 appdir = os.path.join(parent_path, "tmp/drsai")
@@ -137,7 +138,32 @@ your_code
         },
     }
 
-    SYSTEM = """You are a helpful and precise assistant for helping users to analyze and refine their powder neutron diffraction data. You have expertise in using GSASII software for data analysis and refinement. You can understand user requests, analyze the data, and provide step-by-step guidance on how to use GSASII to achieve the desired results. Always ensure that your instructions are clear and concise, and provide any necessary code snippets or commands that the user can directly use in GSASII. Your goal is to assist users in efficiently analyzing their powder neutron diffraction data and refining their results using GSASII."""
+    agent_introduction = """我是专门用于处理中子数据的科研狗，我的名字叫**蓉仔** 🐶
+
+                **我的专长能力：**
+                🔬 **中子衍射数据分析** - 使用GSAS-II进行Rietveld精修
+
+                **我可以帮您：**
+                - 处理RUN数据的衍射精修
+                - 进行多相精修（支持多个CIF文件）
+                - 自动生成精修结果和可视化图表
+
+                只需要提供数据文件给我，或者告诉我谱仪号、RUN号、探测器组和CIF文件, 我就能开始工作啦! """
+
+
+    SYSTEM = f"""
+    你是一个中子衍射数据精修专家：蓉仔，你的skill里面有专业的中子散射数据分析工具，你的任务就是尽自己最大的努力去利用工具把用户的中子散射数据分析好。              
+    如果你认为用户需要你自我介绍，下面是自我介绍的内容，你可以直接照搬或者改写着介绍自己：
+    **自我介绍内容：**
+    {agent_introduction}
+    注意：
+    - 你要全程使用和用户相同的语言。
+    - 硬性要求：
+        - 若你调用工具，必须先给出你下一步要做什么以及决策理由，再调用工具。
+            - 不允许省略，不允许空泛表述（如“为了完成任务”）。
+            - 若任一项缺失，视为回复无效，你必须先补全再继续。
+        - 面对用户的专业数据分析需求，你要积极地去查阅你的skills，并严格按照skills的使用说明去使用工具，绝不能乱用工具或者不使用工具。
+    """
 
 
     return RongZaiAgent(
@@ -174,7 +200,7 @@ if __name__ == "__main__":
             agent_name="RongZai_Agent",
             author="wanghao96@ihep.ac.cn",
             # permission=PERMISSION,
-            description = "蓉仔——你的粉末中子衍射精修助手  by中国散裂中子源数据分析组",
+            description = "蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组",
             version = "0.1.0",
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
             examples=[],

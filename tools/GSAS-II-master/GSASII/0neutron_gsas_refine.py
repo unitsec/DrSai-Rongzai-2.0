@@ -1300,11 +1300,43 @@ def export_neutron_results(gpx, hist, phases, original_cif_files,task_id=None):
 
         # 先计算差值
         diff = y_obs - y_calc
+
+        # 仅绘制 limits 范围内的数据，避免超出范围的数据干扰图像
+        try:
+            plot_mask = (x_data >= tofmin) & (x_data <= tofmax)
+            x_plot = x_data[plot_mask]
+            y_obs_plot = y_obs[plot_mask]
+            y_calc_plot = y_calc[plot_mask]
+            y_bkg_plot = y_bkg[plot_mask]
+            diff_plot = diff[plot_mask]
+        except Exception:
+            x_plot = x_data
+            y_obs_plot = y_obs
+            y_calc_plot = y_calc
+            y_bkg_plot = y_bkg
+            diff_plot = diff
+
+        # 将 y_obs/y_calc/y_bkg 整体上移，避免与 diff 曲线重叠。
+        try:
+            signal_min = float(np.nanmin([np.nanmin(y_obs_plot), np.nanmin(y_calc_plot), np.nanmin(y_bkg_plot)]))
+            signal_max = float(np.nanmax([np.nanmax(y_obs_plot), np.nanmax(y_calc_plot), np.nanmax(y_bkg_plot)]))
+            diff_min = float(np.nanmin(diff_plot))
+            diff_max = float(np.nanmax(diff_plot))
+            y_span = max(signal_max, diff_max) - min(signal_min, diff_min)
+            margin = 0.08 * y_span if y_span > 0 else 1.0
+            target_lower = diff_max + margin
+            y_offset = max(0.0, target_lower - signal_min)
+        except Exception:
+            y_offset = 0.0
+
+        y_obs_shifted = y_obs_plot + y_offset
+        y_calc_shifted = y_calc_plot + y_offset
+        y_bkg_shifted = y_bkg_plot + y_offset
         
-        plt.plot(x_data, diff, 'k-', label='Difference (Obs-Calc)', linewidth=1)
-        plt.plot(x_data, y_obs, 'b.', label='Observed', markersize=6, alpha=0.8)
-        plt.plot(x_data, y_calc, 'r-', label='Calculated', linewidth=3.6)
-        plt.plot(x_data, y_bkg, 'g-', label='Background', linewidth=1.2)
+        plt.plot(x_plot, diff_plot, 'k-', label='Difference (Obs-Calc)', linewidth=1)
+        plt.plot(x_plot, y_obs_shifted, color='b', marker='x', linestyle='None', label='Observed', markersize=6, alpha=0.8)
+        plt.plot(x_plot, y_calc_shifted, 'r-', label='Calculated', linewidth=3.6)
+        plt.plot(x_plot, y_bkg_shifted, 'g-', label='Background', linewidth=1.2)
         plt.axvline(x=tofmin, color='m', linestyle='--', linewidth=1, label='TOF Min')
         plt.axvline(x=tofmax, color='c', linestyle='--', linewidth=1, label='TOF Max')
         plt.title(f'Neutron Refinement - Rwp: {hist.get_wR():.2f}%', fontsize=title_fs)
