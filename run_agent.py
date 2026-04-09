@@ -58,7 +58,7 @@ llm_mode_config = {
     "qwen3 Coder+": "aliyun/qwen3-coder-plus",
     "minimax": "minimax/minimax-m2.7",
     "磐石": "scienceone/s1-base-ultra",
-    "default": "minimax/minimax-m2.7"
+    "default": "openai/gpt-5.4",
 }
 
 async def create_agent(

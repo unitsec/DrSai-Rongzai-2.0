@@ -162,7 +162,7 @@ class RongZaiAgent(DrSaiAgent):
         extra_work_dirs: List[str] | None = None,
         executor: CodeExecutor | None = None,
         sub_agent_config: Dict = {},
-        token_limit: int = 50000
+        token_limit: int = 500000
         ):
         
         super().__init__(
@@ -225,7 +225,8 @@ class RongZaiAgent(DrSaiAgent):
             )
         # self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
         for func in self._basic_funcs:
-            self._tools.append(FunctionTool(func, description=func.__doc__))
+            if func.__name__ in {"run_bash", "run_read", "run_write", "run_edit"}:
+                self._tools.append(FunctionTool(func, description=func.__doc__))
 
         # 将rongzai需要的特定的函数转换为FunctionTool对象并加入self._tools列表
         self._otherBasic_funcs: List[Callable] = get_operator_funcs_rongzai(source_name = self._name)
@@ -1465,7 +1466,7 @@ Current Session_ID is {self._thread_id}
             yield TextMessage(
                 content=todo_list,
                 source=self._user_profile_manager.agent_name,
-                metadata={"interal": "no"},
+                metadata={"internal": "no"},
             )
         except Exception as e:
             logger.exception(f"Error in {self.name}")

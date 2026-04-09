@@ -9,8 +9,10 @@ async def main():
     gsa_path = "/home/wangh/rongzai-agent/tools/GSAS-II-master/tests/testData/RUN0023568_group5.gsa"  # 必需的gsa文件路径（当gpx_path为None时必需）
     instprm_path="/home/wangh/rongzai-agent/tools/GSAS-II-master/tests/testData/RT_group5.instprm" # 必需的instprm文件路径（当gpx_path为None时必需）
     cif_paths=["/home/wangh/rongzai-agent/tools/GSAS-II-master/tests/testData/Si.cif"]  # 可选的结构文件列表（当gpx_path为None时必需）
-    gpx_path= 'tools/GSAS-II-master/tmp/5f371c5c-e472-4b0f-9c87-5c9423375183.gpx'
-    refine_params = {}
+    gpx_path= ''
+    refine_params = {"initial_mustrain": 0, "refine_scale": True, "refine_cycle": 4}
+    user_id = "test_user"
+    mission_name = "test_mission"
     task_id = None
 
 
@@ -27,7 +29,7 @@ async def main():
             # 调用具体工具（请替换为实际工具名和参数）
             result = await session.call_tool(
                 "RefineToolsGSASII",  # 替换为实际的工具名称
-                arguments={"gsa_path": gsa_path, "instprm_path": instprm_path, "cif_paths": cif_paths, "gpx_path": gpx_path, "refine_params": refine_params, "task_id": task_id}
+                arguments={"gsa_path": gsa_path, "instprm_path": instprm_path, "cif_paths": cif_paths, "gpx_path": gpx_path, "refine_params": refine_params, "task_id": task_id, "user_id": user_id, "mission_name": mission_name}
             )
             if getattr(result, "structuredContent", None):
                 data = result.structuredContent
@@ -43,7 +45,7 @@ async def main():
             while True:
                 status_result = await session.call_tool(
                     "RefineToolsGSASII",  # 替换为实际的工具名称
-                    arguments={"task_id": task_id}
+                    arguments={"task_id": task_id, "user_id": user_id, "mission_name": mission_name}
                 )
                 if getattr(status_result, "structuredContent", None):
                     status_data = status_result.structuredContent
