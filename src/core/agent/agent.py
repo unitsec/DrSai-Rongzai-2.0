@@ -8,15 +8,14 @@ from typing import (
     Awaitable, 
     Union, 
     Optional, 
-    Tuple,
     Self,
-    Mapping,
     )
-import os, json, sys, uuid
+import os, json
 import asyncio, traceback
 from pydantic import BaseModel
 from pathlib import Path
 from loguru import logger
+from autogen_ext.tools.mcp import McpWorkbench, SseServerParams, StdioServerParams
 
 from drsai import CancellationToken, FunctionCall
 from drsai.modules.baseagent import (
@@ -33,12 +32,11 @@ from drsai.modules.baseagent import (
     LLMMessage
     )
 from drsai.modules.baseagent.drsaiagent import DrSaiAgentConfig
-from drsai.modules.baseagent import CodeExecutorAgent, CodeExecutor
-from drsai.modules.agents.drsai_worker_agent import HepAIWorkerAgent
+from drsai.modules.baseagent import CodeExecutor
 from drsai.modules.components import (
     ComponentModel,
 )
-from drsai.modules.components.model_client import ChatCompletionClient, HepAIChatCompletionClient
+from drsai.modules.components.model_client import ChatCompletionClient
 from drsai.modules.components.model_context import (
     ChatCompletionContext,
     DrSaiChatCompletionContext,
@@ -50,46 +48,29 @@ from drsai.modules.components.tool import (
     Workbench,
     ToolSchema,
     ParametersSchema,
-    StdioServerParams,
-    SseServerParams,
-    mcp_server_tools
     )
 from drsai.modules.managers.messages import (
     BaseAgentEvent,
     BaseChatMessage,
-    AgentEvent,
-    ChatMessage,
-    HandoffMessage,
-    MemoryQueryEvent,
     ModelClientStreamingChunkEvent,
     TextMessage,
-    StopMessage,
-    ToolCallExecutionEvent,
     ToolCallRequestEvent,
-    ToolCallSummaryMessage,
-    UserInputRequestedEvent,
     AgentLogEvent,
     FilesEvent,
     StructuredMessage,
     StructuredMessageFactory,
-    MultiModalMessage,
     Image,
     
 )
 from drsai.modules.managers.database import DatabaseManager
 from drsai.configs.constant import RUNS_DIR
 from drsai.modules.agents.skills_agent.managers import (
-    UserProfileManager,
-    TodoManager,
     get_operator_funcs,
 )
 from drsai.modules.components.skills import SkillLoader
 from drsai.utils.utils import download_file_from_url_or_base64
 from drsai.modules.agents.skills_agent.managers.get_managers_tools import (
     get_agent_skills_tool,
-    get_subagent_tools,
-    get_todo_manager_tool,
-    create_local_venv,
 )
 from .utils import (
     _extract_existing_image_paths_from_content,
@@ -103,8 +84,6 @@ class DrSaiAssistantConfig(DrSaiAgentConfig):
     only_in_workspace: bool
     extra_work_dirs: List[str]
     executor: ComponentModel
-    sub_agent_config: Dict
-    max_turn_count: int
     token_limit: int
     rag_flow_url: str
     rag_flow_token: str
@@ -113,16 +92,13 @@ class DrSaiAssistantConfig(DrSaiAgentConfig):
 
 class RongZaiAgent(DrSaiAgent):
     """
-    专业中子科学数据智能分析智能体
+    融载智能体（精简版）。
 
-    TODO: 核心能力:
-    1. 用户个人画像/提示词/其他配置的动态更新
-    2. 任务规划与分解
-    3. 多任务进度管理
-    4. 智能工具/Skills/子智能体调用与动态更新
-    5. 记忆注入机制与长期记忆
-    6. 自我被动学习与skill转化
-    7. 错误处理与用户交互
+    当前设计目标：
+    1. 保留基础工具调用能力。
+    2. 仅加载系统级 skills（不允许用户覆盖）。
+    3. 保留 Core Skill 提升/降级/替换能力，用于多轮任务中强化关键约束。
+    4. 移除用户画像与用户自定义 tools/skills/system prompt 动态注入。
     """
 
 
@@ -161,7 +137,6 @@ class RongZaiAgent(DrSaiAgent):
         only_in_workspace: bool = True,
         extra_work_dirs: List[str] | None = None,
         executor: CodeExecutor | None = None,
-        sub_agent_config: Dict = {},
         token_limit: int = 500000
         ):
         
@@ -205,14 +180,8 @@ class RongZaiAgent(DrSaiAgent):
         if not self._work_dir.exists():
             self._work_dir.mkdir(parents=True)
 
-        # === initial UserProfileManager ===
-        self._user_profile_manager = UserProfileManager(
-            agent_name=self._name,
-            work_dir=self._work_dir,
-            user_id=self._user_id,
-            thread_id=self._thread_id,
-        )
-        self._update_user_config_tools = [self._user_profile_manager.get_user_config_tool()]
+        # 固定智能体名，不再通过用户画像动态改名。
+        self._agent_name = self._name
         
         # === basic tools ===
         # 将run_bash, run_read, run_write, run_edit4个函数转换为大模型能理解的FunctionTool对象并加入self._tools列表
@@ -225,49 +194,48 @@ class RongZaiAgent(DrSaiAgent):
             )
         # self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
         for func in self._basic_funcs:
-            if func.__name__ in {"run_bash", "run_read", "run_write", "run_edit"}:
-                self._tools.append(FunctionTool(func, description=func.__doc__))
+            # if func.__name__ in {"run_bash", "run_read", "run_write", "run_edit"}:
+            self._tools.append(FunctionTool(func, description=func.__doc__))
 
         # 将rongzai需要的特定的函数转换为FunctionTool对象并加入self._tools列表
         self._otherBasic_funcs: List[Callable] = get_operator_funcs_rongzai(source_name = self._name)
         for func in self._otherBasic_funcs:
             self._tools.append(FunctionTool(func, description=func.__doc__))
 
+        # MCP 基础工具：当 skill 里提到需要连接某个 MCP 服务/工具时，模型应优先使用这里的连接工具。
+        self._tools.append(
+            FunctionTool(
+                self.ConnectMcpServer,
+                description=self.ConnectMcpServer.__doc__ or "",
+                name="ConnectMcpServer",
+            )
+        )
+        self._tools.append(
+            FunctionTool(
+                self.CallMcpTool,
+                description=self.CallMcpTool.__doc__ or "",
+                name="CallMcpTool",
+            )
+        )
+
         # === model context ===
-        # 创建一个上下文管理器，并且将其中的retrieve_from_memory和summry_conversation_to_memory转为FunctionTool加入工具列表，以便模型调用
-        # memory manager
+        # 对话上下文管理器
         self._model_context = DrSaiChatCompletionContext(
-            agent_name=self._user_profile_manager.agent_name,
+            agent_name=self._agent_name,
             model_client=self._model_client,
             user_id=self._user_id,
             thread_id=self._thread_id,
             work_dir=self._work_dir,
             token_limit=token_limit,
         )
-                
+
+        self._download_dir = self._work_dir / "downloads"
+        self._download_dir.mkdir(parents=True, exist_ok=True)
+
         # === skills ===
-        # 系统级skills（开发者维护）与用户级skills（用户维护）分层加载，不再复制。
+        # 仅加载系统级 skills，禁用用户覆盖。
         self._skills_dir = skills_dir
-        self._agent_skills_tools = [] # 先占位，真正加载是在每轮对话开始前的 update_user_skills() 里
-
-        # === executor ===
-        # 执行器？这里是None
-        self._local_executor = executor
-        
-        # === sub_agent_config ===
-        # 配置子智能体的描述，但是如何将这些描述转化为可以实际工作的智能体呢？
-        self._sub_agent_config = sub_agent_config
-        self._user_sub_agents = {}
-        self._user_sub_agents.update(sub_agent_config)
-        self._subagent_tools = []
-
-        # === todo manager ===
-        # 配置一个计划器，并把TodoWrite作为一个工具放到工具列表self._todo_tools里
-        self._todo_manager = TodoManager()
-        self._todo_tools = [get_todo_manager_tool()]
-
-        # === core skill promotion ===
-        # 由模型自主决定是否将某个 skill 的关键规则提级到系统提示词热区。
+        self._agent_skills_tools = []
         self._core_skill_tools = [
             self._get_promote_skill_tool(),
             self._get_demote_skill_tool(),
@@ -285,14 +253,24 @@ class RongZaiAgent(DrSaiAgent):
             "Always provide a concise reason when promoting, demoting, or replacing core skills."
         )
 
+        # 初始化固定系统提示词（仅受开发者配置影响）。
+        self.update_system_prompt()
 
-        # config file mtime cache for lazy reloading
-        self._config_mtimes: Dict[str, float] = {} #作用：保存“文件路径 -> 最近修改时间 mtime”的映射。配合 _file_changed 使用，用来判断配置文件或目录是否发生变化。
-        self._cached_tools_prompt: str = "" # 缓存由用户工具配置生成的提示词文本。 如果工具配置文件没变，就直接复用，不再重新拼接 prompt。
-        self._cached_skills_loader = None # 缓存 SkillLoader 实例。如果 skills 目录没变，就复用已有 loader，不重新扫描和加载技能。
+        self._local_executor = executor
+
+        # 记录 skills 目录/文件 mtime，用于按需重载。
+        self._config_mtimes: Dict[str, float] = {}
+        self._cached_skills_loader = None
+
+        # === MCP 动态连接 ===
+        # key: server_id（SSE 用 url，stdio 用 command），value: 已启动的 McpWorkbench
+        self._mcp_connections: Dict[str, McpWorkbench] = {}
+        # key: server_id，value: 该 server 注册到 workbench 的代理工具名列表
+        self._mcp_server_tool_names: Dict[str, List[str]] = {}
+        self._tools_names = [tool.name for tool in self._tools]
 
     def _file_changed(self, path: Path) -> bool:
-        """Check if a file/dir has been modified since last check, updating the cached mtime."""
+        """判断文件或目录是否变化，并更新 mtime 缓存。"""
         try:
             mtime = path.stat().st_mtime
         except FileNotFoundError:
@@ -304,10 +282,10 @@ class RongZaiAgent(DrSaiAgent):
         return False
 
     def _skills_inputs_changed(self) -> bool:
-        """Detect changes from both shared system skills and user workspace skills."""
+        """仅检查系统 skills 输入目录是否变化。"""
         changed = False
 
-        skills_dirs: List[Path] = [self._user_profile_manager.skills_dir]
+        skills_dirs: List[Path] = []
         if self._skills_dir:
             system_dirs = self._skills_dir if isinstance(self._skills_dir, list) else [self._skills_dir]
             skills_dirs.extend(Path(d) for d in system_dirs)
@@ -320,52 +298,24 @@ class RongZaiAgent(DrSaiAgent):
 
         return changed
 
-    def update_system_prompt(self, additional_prompt: str = "") -> str:
-        """获取agent描述、用户画像并更新系统消息"""
-        user_context = self._user_profile_manager.get_agent_system_prompt()
-        user_context = self._compact_user_context(user_context)
-        enhanced_system_message = self._developer_system_message
-        if user_context and self._developer_system_message:
-            # 合并系统消息和用户上下文
-            enhanced_system_message = f"""{self._developer_system_message}
-
-{user_context}
-
-Current Session_ID is {self._thread_id}
-"""
+    def update_system_prompt(self) -> None:
+        """构建系统提示词：开发者提示词 + 会话 ID + Core Skill 规则区。"""
+        enhanced_system_message = self._developer_system_message or ""
+        if self._thread_id:
+            enhanced_system_message = f"{enhanced_system_message}\n\nCurrent Session_ID is {self._thread_id}"
+        if self._user_id:
+            enhanced_system_message = (
+                f"{enhanced_system_message}\n\nCurrent user_id is {self._user_id}. "
+                f"Uploaded user files are under /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/{self._user_id}/. If user has uploaded any files, they are in this directory."
+            )
         enhanced_system_message += f"\n\n{self._core_skill_policy_prompt}"
         core_skill_prompt = self._build_core_skill_prompt()
         if core_skill_prompt:
             enhanced_system_message += f"\n\n{core_skill_prompt}"
-
-        enhanced_system_message += additional_prompt
         self._system_messages = [SystemMessage(content=enhanced_system_message)]
 
-    def _compact_user_context(self, user_context: str) -> str:
-        """Trim verbose profile/config sections to keep system prompt focused."""
-        if not user_context:
-            return ""
-
-        compact = user_context
-
-        # Remove large per-user environment block from this marker onward.
-        marker = "\n# Tool Preferences for User:"
-        if marker in compact:
-            compact = compact.split(marker, 1)[0].rstrip()
-
-        # Remove generic workflow boilerplate section if present.
-        workflow_marker = "\n## Workflow"
-        profile_marker = "\n# User Profile"
-        if workflow_marker in compact and profile_marker in compact:
-            left, right = compact.split(workflow_marker, 1)
-            if profile_marker in right:
-                right = right.split(profile_marker, 1)[1]
-                compact = f"{left}\n# User Profile{right}".rstrip()
-
-        return compact
-
     def _debug_log_system_prompt(self, system_messages: List[SystemMessage]) -> None:
-        """Optionally log the exact system prompt that will be sent to the model."""
+        """按开关输出即将发送给模型的完整系统提示词。"""
         debug_enabled = os.getenv("RONGZAI_DEBUG_SYSTEM_PROMPT", "").lower() in {"1", "true", "yes", "on"}
         if not debug_enabled:
             return
@@ -380,8 +330,154 @@ Current Session_ID is {self._thread_id}
 
         logger.info("===== FULL SYSTEM PROMPT BEFORE LLM CALL =====\n{}\n===== END SYSTEM PROMPT =====", "\n\n".join(parts))
 
+    def _sanitize_tool_name(self, value: str) -> str:
+        """将远程工具名转换为本地可用的稳定工具名片段。"""
+        cleaned = []
+        for ch in value:
+            cleaned.append(ch if (ch.isalnum() or ch == "_") else "_")
+        result = "".join(cleaned).strip("_")
+        return result or "mcp"
+
+    def _remove_mcp_proxy_tools(self, server_id: str) -> None:
+        """移除某个 MCP server 在本地注册的所有代理工具。"""
+        names = set(self._mcp_server_tool_names.get(server_id, []))
+        if not names:
+            return
+        self._tools = [tool for tool in self._tools if tool.name not in names]
+        self._tools_names = [tool.name for tool in self._tools]
+        self._mcp_server_tool_names[server_id] = []
+
+    async def ConnectMcpServer(
+        self,
+        type: str,
+        url: str = "",
+        command: str = "",
+        args: List[str] | None = None,
+        headers: Dict[str, Any] | None = None,
+        env: Dict[str, Any] | None = None,
+    ) -> str:
+        """连接远程 MCP server，并把其工具动态注册到当前 workbench 供后续直接调用。
+
+        设计意图：
+        - 当某个 skill、系统提示词或用户指令提到“需要连接某个 MCP 工具/服务”时，优先调用本工具。
+        - skill 不需要硬编码写出“调用 ConnectMcpServer”这句话；只要给出足够明确的连接线索即可，
+          例如服务类型（sse/stdio）、URL、command、headers、env 或其他配置说明。
+
+        使用规则：
+        - 若是 SSE 服务，传入 type='sse' 和 url。
+                - 若是 stdio 服务，传入 type='stdio' 和 command，可选 args/env。
+
+        返回结果：
+        - 会返回该 MCP server 暴露出的远程工具列表。
+        - 每个远程工具都会被注册为当前 agent 可直接调用的本地代理工具。
+        - 后续应优先使用这些新注册的本地代理工具；只有在确有必要时，才使用 CallMcpTool 兜底。
+        """
+        conn_type = (type or "").strip().lower()
+        try:
+            if conn_type == "sse":
+                server_id = (url or "").strip()
+                if not server_id:
+                    return "Error: 'url' is required when type='sse'."
+                server_params = SseServerParams(url=server_id, headers=headers or {})
+            elif conn_type == "stdio":
+                server_id = (command or "").strip()
+                if not server_id:
+                    return "Error: 'command' is required when type='stdio'."
+                server_params = StdioServerParams(command=server_id, args=args or [], env=env or None)
+            else:
+                return "Error: 'type' must be either 'sse' or 'stdio'."
+
+            # 重新连接同一 server 时，先清理旧连接与旧代理工具。
+            if server_id in self._mcp_connections:
+                try:
+                    await self._mcp_connections[server_id].stop()
+                except Exception:
+                    pass
+                self._remove_mcp_proxy_tools(server_id)
+
+            mcp_workbench = McpWorkbench(server_params=server_params)
+            await mcp_workbench.start()
+            self._mcp_connections[server_id] = mcp_workbench
+
+            remote_tools = await mcp_workbench.list_tools()
+            local_names: List[str] = []
+            for remote in remote_tools:
+                remote_name = remote["name"]
+                remote_name_part = self._sanitize_tool_name(remote_name)
+                local_name = f"mcp_{remote_name_part}"
+                if local_name in self._tools_names:
+                    local_name = f"{local_name}_{len(self._tools_names)}"
+
+                def _make_proxy(sid: str, tool: str):
+                    async def _proxy(arguments_json: str = "{}") -> str:
+                        """调用远程 MCP 工具。arguments_json 必须是 JSON 对象字符串。"""
+                        try:
+                            parsed_args = json.loads(arguments_json or "{}")
+                        except json.JSONDecodeError as e:
+                            return f"Error: invalid arguments_json: {e}"
+                        result = await self._mcp_connections[sid].call_tool(tool, parsed_args)
+                        return result.to_text()
+                    return _proxy
+
+                _proxy = _make_proxy(server_id, remote_name)
+
+                description = (
+                    f"Proxy tool for MCP '{server_id}' tool '{remote_name}'. "
+                    f"Original description: {remote.get('description', '')}. "
+                    "Pass arguments via arguments_json (JSON object string)."
+                )
+                self._tools.append(FunctionTool(_proxy, description=description, name=local_name))
+                local_names.append(local_name)
+
+            self._mcp_server_tool_names[server_id] = local_names
+            self._tools_names = [tool.name for tool in self._tools]
+
+            returned_tools = [
+                {
+                    "remote_name": remote.get("name", ""),
+                    "local_proxy_name": local_name,
+                    "description": remote.get("description", ""),
+                    "inputSchema": remote.get("inputSchema", {}),
+                }
+                for remote, local_name in zip(remote_tools, local_names)
+            ]
+            return (
+                f"Connected MCP server '{server_id}' and registered {len(local_names)} proxy tools. "
+                f"Use local_proxy_name in subsequent tool calls.\n"
+                + json.dumps(returned_tools, ensure_ascii=False, indent=2)
+            )
+        except Exception as e:
+            return f"Failed to connect MCP server: {e}"
+
+    async def CallMcpTool(self, server_id: str, tool_name: str, arguments_json: str = "{}") -> str:
+        """调用已连接 MCP server 的原始工具。
+
+        这是兜底工具：
+        - 如果 ConnectMcpServer 已经把远程工具注册成了本地代理工具，优先直接调用那些代理工具。
+        - 仅在你需要按原始远程工具名调用，或暂时无法直接使用本地代理工具时，再使用本工具。
+
+        参数要求：
+        - server_id 是 ConnectMcpServer 连接时使用的 URL 或 command。
+        - tool_name 是远程 MCP 工具的原始名称。
+        - arguments_json 必须是一个 JSON 对象字符串。
+        """
+        if server_id not in self._mcp_connections:
+            return (
+                f"Error: MCP server '{server_id}' is not connected. "
+                "Call ConnectMcpServer first."
+            )
+        try:
+            parsed_args = json.loads(arguments_json or "{}")
+        except json.JSONDecodeError as e:
+            return f"Error: invalid arguments_json: {e}"
+        try:
+            result = await self._mcp_connections[server_id].call_tool(tool_name, parsed_args)
+            return result.to_text()
+        except Exception as e:
+            return f"Error calling '{tool_name}' on '{server_id}': {e}"
+
     def _get_promote_skill_tool(self) -> ToolSchema:
-        """Tool schema that lets the model decide if a skill should be promoted to core prompt."""
+        """供模型调用：将某个 skill 提升为 Core Skill。"""
         parameters = ParametersSchema(
             type="object",
             properties={
@@ -414,7 +510,7 @@ Current Session_ID is {self._thread_id}
         )
 
     def _get_demote_skill_tool(self) -> ToolSchema:
-        """Tool schema for explicit core skill downgrade/removal."""
+        """供模型调用：将某个 Core Skill 降级/移除。"""
         parameters = ParametersSchema(
             type="object",
             properties={
@@ -439,7 +535,7 @@ Current Session_ID is {self._thread_id}
         )
 
     def _get_replace_core_skill_tool(self) -> ToolSchema:
-        """Tool schema for explicit core skill replacement."""
+        """供模型调用：替换 Core Skill。"""
         parameters = ParametersSchema(
             type="object",
             properties={
@@ -472,7 +568,7 @@ Current Session_ID is {self._thread_id}
         )
 
     def _extract_core_skill_rules(self, skill_content: str, focus: str = "") -> str:
-        """Keep full promoted skill content so core rules are complete and not truncated."""
+        """提取 Core Skill 规则正文，尽量保留完整内容。"""
         text = (skill_content or "").strip()
         if not text:
             return ""
@@ -481,7 +577,7 @@ Current Session_ID is {self._thread_id}
         return text
 
     def _build_core_skill_prompt(self) -> str:
-        """Build the core skill block injected into system prompt."""
+        """构建注入系统提示词的 Core Skill 规则区块。"""
         if not self._core_skill_slots:
             return ""
 
@@ -504,7 +600,7 @@ Current Session_ID is {self._thread_id}
         reason: str,
         focus: str = "",
     ) -> str:
-        """Promote a skill into core system prompt rules."""
+        """将指定 skill 提升为系统高优先级规则。"""
         if skills_loader is None:
             return "Cannot promote skill: no skills loader is available in this session."
 
@@ -540,7 +636,6 @@ Current Session_ID is {self._thread_id}
                 }
             )
 
-        # Keep only the newest N promoted skills.
         self._core_skill_slots.sort(key=lambda s: s.get("updated_at_seq", 0), reverse=True)
         self._core_skill_slots = self._core_skill_slots[: self._max_core_skill_slots]
 
@@ -551,7 +646,7 @@ Current Session_ID is {self._thread_id}
         )
 
     def _demote_core_skill(self, skill_name: str, reason: str = "") -> str:
-        """Remove a promoted core skill explicitly."""
+        """显式移除已提升的 Core Skill。"""
         before = len(self._core_skill_slots)
         self._core_skill_slots = [slot for slot in self._core_skill_slots if slot.get("skill") != skill_name]
         if len(self._core_skill_slots) == before:
@@ -571,7 +666,7 @@ Current Session_ID is {self._thread_id}
         reason: str,
         focus: str = "",
     ) -> str:
-        """Replace one core skill with another explicitly."""
+        """将一个 Core Skill 替换为另一个。"""
         demote_message = self._demote_core_skill(skill_name=old_skill, reason=f"replace -> {new_skill}")
         promote_message = self._promote_skill_to_core(
             skills_loader=skills_loader,
@@ -580,12 +675,12 @@ Current Session_ID is {self._thread_id}
             focus=focus,
         )
         return f"{demote_message} {promote_message}"
-    
-    def update_user_skills(self) -> SkillLoader:
-        """加载/更新技能：系统共享skills + 用户私有skills（用户同名skill可覆盖系统skill）"""
+
+    def update_system_skills(self) -> SkillLoader:
+        """加载/刷新系统级 skills（开发者维护）。"""
         skills_loader = None
 
-        # 1) 先加载系统共享skills（开发者维护）
+        # 只扫描系统 skills 目录。
         if self._skills_dir:
             system_dirs = self._skills_dir if isinstance(self._skills_dir, list) else [self._skills_dir]
             for skills_dir in system_dirs:
@@ -596,84 +691,12 @@ Current Session_ID is {self._thread_id}
                     else:
                         skills_loader.add_skills_by_dir(skills_dir=str(skills_path))
 
-        # 2) 再加载用户workspace skills（同名时覆盖系统skills）
-        user_skills_dir = self._user_profile_manager.skills_dir
-        if user_skills_dir.exists() and list(user_skills_dir.glob("*/SKILL.md")):
-            if skills_loader is None:
-                skills_loader = SkillLoader(skills_dir=str(user_skills_dir))
-            else:
-                skills_loader.add_skills_by_dir(skills_dir=str(user_skills_dir))
-
-        # 获取技能描述
+        # 生成给模型看的 Skill 工具描述
         if skills_loader and skills_loader.skills:
             self._agent_skills_tools = [get_agent_skills_tool(descriptions=skills_loader.get_descriptions())]
         else:
             self._agent_skills_tools = []
         return skills_loader
-    
-    async def update_user_tools(self) -> str:
-        """将用户的自定义配置工具接入到agent中"""
-        user_mcp_tools = []
-        user_local_tools = []
-        tools_config = self._user_profile_manager.load_user_tools_config()
-        for tool in tools_config:
-            try:
-                if tool.get("type") == "mcp-std":
-                    config = tool.get("config")
-                    if "command" in config and "args" in config:
-                        std_mcp_tools = await mcp_server_tools(StdioServerParams(
-                            command=config["command"],
-                            args=config["args"]
-                        ))
-                        user_mcp_tools.extend(std_mcp_tools)
-                elif tool.get("type") == "mcp-sse":
-                    config = tool.get("config")
-                    if "url" in config:
-                        sse_mcp_tools = await mcp_server_tools(SseServerParams(
-                            url=config["url"],
-                            headers = config.get("headers", None),
-                            timeout=config.get("timeout", float(20)),
-                            sse_read_timeout=config.get("sse_read_timeout", float(300)),
-                        ))
-                        user_mcp_tools.extend(sse_mcp_tools)
-                else:
-                    user_local_tools.append(str(config)+"\n")
-
-            except Exception as e:
-                # print(f"Error loading tool: {e}")
-                pass
-
-        self._workbench._tools = self._tools + user_mcp_tools
-        self._tools_names = [tool.name for tool in self._workbench._tools ]
-
-        if user_local_tools:
-            user_local_tools_prompt = "The info about the user's local function is as follows. When needed, you can execute it on the command line using `run_bash` tool\n\n"
-            user_local_tools_prompt += "\n".join(user_local_tools)
-        else:
-            user_local_tools_prompt = ""
-        return user_local_tools_prompt
-    
-    def get_subagent_descriptions(self, sub_agent_config: dict) -> str:
-        """Generate agent type descriptions for system prompt."""
-        return "\n".join(
-            f"- {name}: {cfg['description']}"
-            for name, cfg in sub_agent_config.items()
-        )
-    
-    def update_user_subagents(self):
-        """Update user subagents."""
-        subagents_config = self._user_profile_manager.load_subagents_config()
-        self._user_sub_agents.update(subagents_config)
-
-        if self._user_sub_agents:
-            self._sub_agent_descriptions = self.get_subagent_descriptions(sub_agent_config = self._user_sub_agents)
-            self._subagent_tools = [
-                get_subagent_tools(
-                    sub_agents=list(self._user_sub_agents.keys()),
-                    description=self._sub_agent_descriptions)]
-        else:
-            self._sub_agent_descriptions = ""
-            self._subagent_tools = []
 
     async def run_stream(
         self,
@@ -681,8 +704,7 @@ Current Session_ID is {self._thread_id}
         task: str | BaseChatMessage | Sequence[BaseChatMessage] | None = None,
         cancellation_token: CancellationToken | None = None,
     ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | TaskResult, None]:
-        """Run the agent with the given task and return a stream of messages
-        and the final task result as the last item in the stream."""
+        """执行任务并流式返回事件，最后输出 TaskResult。"""
         if cancellation_token is None:
             cancellation_token = CancellationToken()
         self._cancellation_token = cancellation_token
@@ -716,7 +738,7 @@ Current Session_ID is {self._thread_id}
                             for file in attached_files:
                                 download_file_from_url_or_base64(
                                     file_info = file, 
-                                    save_path = f"{self._user_profile_manager.download_dir}/{file['name']}")
+                                    save_path = f"{self._download_dir}/{file['name']}")
                         settings_config = msg.metadata.get("settings_config")
                         if settings_config:
                             settings_config = json.loads(settings_config)
@@ -737,18 +759,16 @@ Current Session_ID is {self._thread_id}
             else:
                 yield message
                 if isinstance(message, ModelClientStreamingChunkEvent):
-                    # Skip the model client streaming chunk events.
+                    # 流式 token 事件不写入最终消息列表。
                     continue
                 output_messages.append(message)
                 
     async def on_messages_stream(
         self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken
     ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | Response, None]:
-        """
-        Process the incoming messages with the assistant agent and yield events/responses as they happen.
-        """
+        """处理输入消息并按事件流实时产出响应。"""
 
-        # monitor the pause event
+        # 响应暂停状态
         if self.is_paused:
             yield Response(
                 chat_message=TextMessage(
@@ -761,50 +781,25 @@ Current Session_ID is {self._thread_id}
 
         inner_messages: List[BaseAgentEvent | BaseChatMessage] = []
         try:
+            # 每轮重建系统提示词，以纳入最新 Core Skill 状态。
+            self.update_system_prompt()
 
-            # initialize the learning memory document
-            # 创建一个每个用户唯一的经验学习文档
-            # if self._user_profile_manager.first_time_setup:
-            #     self._learning_document_id = await self._model_context.create_new_session_document(dataset_id = self._learning_dataset_id, create_type="learning_memory" )
-            #     self._user_profile_manager.update_document_ids(thread_id=self._user_id, document_id=self._learning_document_id)
-            # create the new session document
-
-
-            # load/update tools only if TOOLS_CONFIG.json changed
-            # 检查用户工具配置文件是否有更新，如果有更新则调用update_user_tools()方法更新mcp工具和local工具，并将local工具提示词缓存到self._cached_tools_prompt中以供系统消息使用
-            tools_changed = self._file_changed(self._user_profile_manager.tools_config_path)
-            if tools_changed:
-                self._cached_tools_prompt = await self.update_user_tools()
-
-            # update system prompt if AGENTS.md or tools prompt changed
-            # 无论是用户画像（AGENTS.md）还是工具配置有变化，都要更新系统消息，以便模型能及时获取最新的用户画像和工具信息
-            if tools_changed or self._file_changed(self._user_profile_manager.agents_md):
-                self.update_system_prompt(additional_prompt=self._cached_tools_prompt)
-
-            # load/update skills when either shared system skills or user skills changed
+            # 按需重载系统 skills。
             skills_changed = self._skills_inputs_changed()
             if skills_changed or self._cached_skills_loader is None:
-                self._cached_skills_loader = self.update_user_skills()
+                self._cached_skills_loader = self.update_system_skills()
             skills_loader = self._cached_skills_loader
 
-            # load/update subagents only if SUBAGENT_CONFIG.json changed
-            # 看是否需要更新子智能体配置
-            if self._file_changed(self._user_profile_manager.subagent_config_path):
-                self.update_user_subagents()
+            manager_tools = self._agent_skills_tools + self._core_skill_tools
 
-            # manager ToolSchema
-            # 这边全部都是管理层的工具，里面每一个都是ToolSchema对象，包含工具的名字、描述、参数等信息，最终把这些工具都放到manager_tools这个列表里，供模型调用
-            manager_tools = self._update_user_config_tools+self._agent_skills_tools+self._subagent_tools+self._todo_tools+self._core_skill_tools
-
-            # count the number of tools
+            # 将管理类工具 schema 同步到上下文，供模型决策调用。
             if isinstance(self._model_context, DrSaiChatCompletionContext):
                 self._model_context._tool_schema = await self._workbench.list_tools()
                 self._model_context._tool_schema += manager_tools
 
-            # Gather all relevant state here
-            agent_name = self._user_profile_manager.agent_name
+            # 提取运行期所需对象，便于后续调用。
+            agent_name = self._agent_name
             model_context = self._model_context
-            memory = self._memory
             system_messages = self._system_messages
             workbench = self._workbench
             handoff_tools = self._handoff_tools
@@ -816,13 +811,11 @@ Current Session_ID is {self._thread_id}
             output_content_type = self._output_content_type
             format_string = self._output_content_type_format
             
-            # Add new user/handoff messages to the model context
+            # 将用户消息写入模型上下文
             await self._add_messages_to_context(
                 model_context=model_context,
                 messages=messages,
             )
-
-            # TODO: Update model context with any relevant memory -> When? How?
 
             while True:
                 self._debug_log_system_prompt(system_messages)
@@ -845,14 +838,14 @@ Current Session_ID is {self._thread_id}
                     if isinstance(inference_output, CreateResult):
                         model_result = inference_output
                     else:
-                        # Streaming chunk event
+                        # 透传流式输出
                         yield inference_output
 
                 assert model_result is not None, "No model result was produced."
                 
 
                 
-                # Add the assistant message to the model context (including thought if present)  
+                # 将 assistant 结果写回上下文（包含可选 thought）
                 await model_context.add_message(
                     AssistantMessage(
                         content=model_result.content,
@@ -861,7 +854,7 @@ Current Session_ID is {self._thread_id}
                     )
                 )
                 
-                # If direct text response (string)
+                # 纯文本响应，直接返回
                 if isinstance(model_result.content, str):
 
                     reponse = await self.handle_str_reponse(
@@ -870,59 +863,24 @@ Current Session_ID is {self._thread_id}
                         format_string = format_string,
                         inner_messages = inner_messages,
                         output_content_type = output_content_type,)
-                    if self._user_profile_manager.first_time_setup:
-                        # 对于rongzai这种专业领域智能体，不需要用户调整智能体的名称、称呼和领域，所以注释掉这个提示。
-                        # yield TextMessage(
-                        #     content="\n\n(●'◡'●)如果您需要调整我的名称、我对您的称呼、您涉及领域，请告诉我，我来调整(If you need to adjust my name, how I address you, or your field of expertise, please let me know, and I will make the changes).",
-                        #     source=agent_name,
-                        #     metadata={"internal": "no"},
-                        # )
-                        self._user_profile_manager.first_time_setup = False
                     yield reponse
                     break
 
-                # Otherwise, we have function calls
+                # 否则进入工具调用分支
                 assert isinstance(model_result.content, list) and all(
                     isinstance(item, FunctionCall) for item in model_result.content
                 )
-                
-                # handle tool call
-                pending_stop_message: StopMessage | None = None
+
+                # 处理模型请求的工具调用
                 for i in range(len(model_result.content)):
                     argument = json.loads(model_result.content[i].arguments)
                     tool_name = model_result.content[i].name
                     call_id = model_result.content[i].id
-                    if tool_name == "TodoWrite":
-                        async for message in self.handle_todo_write(
-                            argument = argument,
-                            tool_name = tool_name,
-                            call_id = call_id,
-                            agent_name = agent_name, 
-                            model_context = model_context):
-                            if isinstance(message, StopMessage):
-                                if pending_stop_message is None:
-                                    pending_stop_message = message
-                                break
-                            yield message
-                    elif tool_name == "Task":
-                        async for message in self.handle_subagent_repsonse(
-                            agent_name = agent_name,
-                            model_client = model_client,
-                            model_client_stream = model_client_stream,
-                            model_context = model_context,
-                            argument = argument,
-                            tool_name = tool_name,
-                            call_id = call_id,
-                            cancellation_token = cancellation_token,
-                            output_content_type = output_content_type,
-                        ):
-                            if isinstance(message, StopMessage):
-                                if pending_stop_message is None:
-                                    pending_stop_message = message
-                                break
-                            yield message
-                    elif tool_name == "Skill":
-                        skill_content = skills_loader.run_skill(argument["skill"])
+                    if tool_name == "Skill":
+                        if skills_loader is None:
+                            skill_content = "No system skill is loaded."
+                        else:
+                            skill_content = skills_loader.run_skill(argument["skill"])
                         await model_context.add_message(FunctionExecutionResultMessage(
                             content=[FunctionExecutionResult(
                                 content = f"Skill for {argument['skill']}:\n\n {skill_content}",
@@ -951,7 +909,7 @@ Current Session_ID is {self._thread_id}
                                 is_error=False,
                             )]
                         ))
-                        self.update_system_prompt(additional_prompt=self._cached_tools_prompt)
+                        self.update_system_prompt()
                         system_messages = self._system_messages
                         yield AgentLogEvent(
                             title="I am promoting a skill to core system rules.",
@@ -972,7 +930,7 @@ Current Session_ID is {self._thread_id}
                                 is_error=False,
                             )]
                         ))
-                        self.update_system_prompt(additional_prompt=self._cached_tools_prompt)
+                        self.update_system_prompt()
                         system_messages = self._system_messages
                         yield AgentLogEvent(
                             title="I am demoting a core skill.",
@@ -996,7 +954,7 @@ Current Session_ID is {self._thread_id}
                                 is_error=False,
                             )]
                         ))
-                        self.update_system_prompt(additional_prompt=self._cached_tools_prompt)
+                        self.update_system_prompt()
                         system_messages = self._system_messages
                         yield AgentLogEvent(
                             title="I am replacing a core skill.",
@@ -1029,22 +987,6 @@ Current Session_ID is {self._thread_id}
                                 yield message.chat_message
                             else:
                                 yield message
-                    elif tool_name == "UpdateUserConfig":
-                        update_message = self._user_profile_manager.update_user_config(**argument)
-                        await model_context.add_message(FunctionExecutionResultMessage(
-                            content=[FunctionExecutionResult(
-                                content = update_message,
-                                name = tool_name,
-                                call_id = call_id,
-                                is_error = False,
-                            ),]
-                        ))
-                        agent_name = self._user_profile_manager.agent_name
-                        yield AgentLogEvent(
-                            title="I am updating user's config.",
-                            source=agent_name, 
-                            content=str(argument), 
-                            content_type="tools")
                     else:
                         await model_context.add_message(FunctionExecutionResultMessage(
                             content=[FunctionExecutionResult(
@@ -1055,25 +997,18 @@ Current Session_ID is {self._thread_id}
                             ),]
                         ))
 
-                if pending_stop_message is not None:
-                    yield Response(
-                        chat_message=pending_stop_message,
-                        inner_messages=inner_messages,
-                    )
-                    return
-
         except asyncio.CancelledError:
-            # If the task is cancelled, we respond with a message.
+            # 任务被取消时，返回统一提示
             yield Response(
                 chat_message=TextMessage(
                     content="The task was cancelled by the user.",
-                    source=self._user_profile_manager.agent_name,
+                    source=self._agent_name,
                     metadata={"internal": "yes"},
                 ),
                 inner_messages=inner_messages,
             )
         except Exception as e:
-            logger.error(f"Error in {self._user_profile_manager.agent_name}: {e}")
+            logger.error(f"Error in {self._agent_name}: {e}")
             logger.error(traceback.format_exc())
             # add to chat history
             await self._model_context.add_message(
@@ -1085,21 +1020,18 @@ Current Session_ID is {self._thread_id}
             yield Response(
                 chat_message=TextMessage(
                     content=f"An error occurred while executing the task: {e}",
-                    source=self._user_profile_manager.agent_name,
+                    source=self._agent_name,
                     metadata={"internal": "no"},
                 ),
                 inner_messages=inner_messages,
             )
         finally:
-            # save/update the conversation to {worker_dir}/memories
+            # 收尾：上传会话到 ragflow（如启用）并清理当前消息缓存
             if isinstance(self._model_context, DrSaiChatCompletionContext):
                 if self._model_context._rag_flow_manager:
                     await self._model_context.upload_conversation_to_ragflow()
                 self._model_context._current_messages = []
-                current_session_memory = self._model_context._history_messages
-                # TODO: use updates instead of full writes
-                self._user_profile_manager.save_session_memory(current_session_memory)
-                
+
 
     async def _call_llm(
         self,
@@ -1114,9 +1046,7 @@ Current Session_ID is {self._thread_id}
         cancellation_token: CancellationToken,
         output_content_type: type[BaseModel] | None,
     ) -> AsyncGenerator[Union[CreateResult, ModelClientStreamingChunkEvent], None]:
-        """
-        Perform a model inference and yield either streaming chunk events or the final CreateResult.
-        """
+        """执行一次模型推理，流式产出 chunk，最后产出 CreateResult。"""
 
         if isinstance(model_context, DrSaiChatCompletionContext):
             all_messages = await model_context.get_messages(cancellation_token = cancellation_token)
@@ -1130,9 +1060,8 @@ Current Session_ID is {self._thread_id}
             llm_messages = await self._call_memory_function(llm_messages, model_client, cancellation_token, agent_name)
 
         all_tools = (await workbench.list_tools()) + handoff_tools + manager_tools
-        # model_result: Optional[CreateResult] = None
         if self._reply_function is not None:
-            # 自定义的reply_function，用于自定义对话回复的定制
+            # 自定义回复函数：允许上层接管模型调用流程
             async for chunk in self._call_reply_function(
                 llm_messages, 
                 model_client = model_client, 
@@ -1143,8 +1072,6 @@ Current Session_ID is {self._thread_id}
                 cancellation_token=cancellation_token,
                 db_manager=self._db_manager,
             ):
-                # if isinstance(chunk, CreateResult):
-                #     model_result = chunk
                 yield chunk
         else:
            async for chunk in self.call_llm(
@@ -1178,10 +1105,7 @@ Current Session_ID is {self._thread_id}
         output_content_type: type[BaseModel] | None,
         format_string: str | None = None,
     ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | Response, None]:
-        """
-        Handle final or partial responses from model_result, including tool calls, handoffs,
-        and reflection if needed.
-        """
+        """执行工具调用并把结果写回上下文，同时处理文件与图片事件。"""
         
         tool_call_msg = ToolCallRequestEvent(
             content=model_result.content,
@@ -1198,7 +1122,7 @@ Current Session_ID is {self._thread_id}
             content=str(tool_call_msg.content), 
             content_type="tools")
 
-        # STEP 4B: Execute tool calls
+        # 并发执行本轮工具调用
         executed_calls_and_results = await asyncio.gather(
             *[
                 cls._execute_tool_call(
@@ -1213,7 +1137,7 @@ Current Session_ID is {self._thread_id}
         )
         exec_results = [result for _, result in executed_calls_and_results]
 
-        # Unpack structured file events returned by tools and stream them to user.
+        # 解析工具返回的结构化文件事件并转发给用户
         for result in exec_results:
             try:
                 parsed = json.loads(result.content)
@@ -1238,26 +1162,25 @@ Current Session_ID is {self._thread_id}
             img_paths.extend(_extract_existing_image_paths_from_content(result.content))
         if img_paths:
             for img_path in img_paths:
-                #show user the images of this tool call result
+                # 把工具输出中的图片回显给用户
                 fig_url = show_file_to_user(model_client, file_path=img_path)
                 info2user = f"### ![image.png]({fig_url})\n\n"
                 yield ModelClientStreamingChunkEvent(content=info2user, source=agent_name)
 
-                # Show LLM the image in context as a true multimodal user message.
+                # 同时把图片作为多模态用户消息回注到上下文，便于后续推理
                 image_ob = Image.from_file(file_path=img_path)
                 multimodal_msg = UserMessage(
                     content=[f"the figure of {img_path}", image_ob],
                     source="user",
                 )
                 if isinstance(model_context, DrSaiChatCompletionContext):
-                    # Bypass add_message() because the local memory serializer currently
-                    # does not support multimodal message persistence.
+                    # 本地序列化暂不支持多模态持久化，直接写入运行时消息缓存
                     model_context._messages.append(multimodal_msg)
                     model_context._current_messages.append(multimodal_msg)
                 else:
                     await model_context.add_message(multimodal_msg)
 
-        # Intentionally do not emit tool summary chat messages to user after tool execution.
+        # 设计上不再额外输出工具摘要文本
         return
 
     async def handle_str_reponse(
@@ -1290,217 +1213,9 @@ Current Session_ID is {self._thread_id}
                 inner_messages=inner_messages,
             )
     
-    def get_tools_for_agent(self, agent_type: str) -> list:
-        """Filter tools based on agent type."""
-        allowed = self._user_sub_agents.get(agent_type, {}).get("tools", "*")
-        if allowed == "*":
-            return self._tools
-        return [t for t in self._workbench._tools if t.name in allowed]
-
-    async def handle_subagent_repsonse(
-        self,
-        agent_name: str,
-        model_client: ChatCompletionClient,
-        model_client_stream: bool,
-        model_context: ChatCompletionContext,
-        argument:Dict[str, Any],
-        tool_name: str,
-        call_id: str,
-        cancellation_token: CancellationToken,
-        output_content_type: type[BaseModel] | None,
-    ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage, None]:
-        """
-        Sub agent can actuate the sub task.
-
-        The types of sub agent:
-        1. code_executor
-        2. normal drsai agent
-        3. worker agent
-        """
-        try:
-            description, prompt, sub_agent_name = argument["description"], argument["prompt"], argument["agent_type"]
-
-            # get sub agent system prompt
-            sub_system = f"""You are a {sub_agent_name} subagent at {self._work_dir}.
-
-    {self._user_sub_agents[sub_agent_name].get("prompt", "")}
-
-    Complete the task and return a clear, concise summary."""
-            
-            # construct task messages
-            task_messages: Sequence[BaseChatMessage] = []
-            llm_messages = await model_context.get_messages()
-            # TODO: compress the background messages using  LLM
-            backgroud_message = "Below are the historical chat records between the user and various intelligent assistants, which can be referenced when executing the current task.\n\n"
-            for llm_message in llm_messages:
-                if isinstance(llm_message, UserMessage) or isinstance(llm_message, AssistantMessage):
-                    backgroud_message += f"{llm_message.source}: {llm_message.content}\n\n"
-            task_messages.append(TextMessage(content=backgroud_message, source="user"))
-            task_messages.append(TextMessage(content=f"Current task: \n\n{prompt}", source="user"))
-
-            # Get agent
-            if sub_agent_name in self._user_sub_agents:
-                sub_agent = self._user_sub_agents[sub_agent_name]
-                description=self._sub_agent_config[sub_agent_name].get("description", "")
-                sub_agent_type = sub_agent.get("type")
-                if sub_agent_type == "CodeExecutorAgent":
-                    venv_path = sub_agent.get("venv_path")
-                    if venv_path:
-                        executor = create_local_venv(work_dir=venv_path)
-                    else:
-                        executor = self._local_executor or create_local_venv(work_dir=self._user_profile_manager.tmp_dir)
-                    subagent = CodeExecutorAgent(
-                        name=sub_agent_name,
-                        code_executor=executor,
-                        model_client_stream=model_client_stream,
-                    )
-                elif sub_agent_type == "DrSaiAgent":
-                    tools = self.get_tools_for_agent(sub_agent_name)
-                    subagent = DrSaiAgent(
-                        name=sub_agent_name,
-                        system_message=sub_system,
-                        description=description,
-                        tools=tools,
-                        model_client=model_client,
-                        model_client_stream=model_client_stream,
-                        output_content_type=output_content_type,)
-                elif sub_agent_type == "HepAIWorkerAgent":
-                    model_remote_configs = sub_agent.get("model_remote_configs")
-                    url = model_remote_configs.get("url", "https://aiapi.ihep.ac.cn/apiv2")
-                    name = model_remote_configs.get("name")
-                    subagent = HepAIWorkerAgent(
-                        name=sub_agent_name,
-                        description=description,
-                        model_remote_configs={
-                            "url": url,
-                            "api_key": self._model_client._client.api_key,
-                            "name": name
-                        },
-                        chat_id=self._thread_id,
-                        run_info={"name": self._user_profile_manager.user_name, "email": self._user_id},
-
-                    )
-
-            
-            # Process task
-            #  TODO: handle turn count fro multi-turn task.
-            # turn_count = 0
-            # while turn_count < self._max_turn_count:
-            #     turn_count += 1
-            async for message in subagent.on_messages_stream(messages=task_messages, cancellation_token=cancellation_token):
-                if isinstance(message, Response):
-                    yield message.chat_message
-                    # await model_context.add_message(
-                    #     UserMessage(
-                    #         content=str(message.chat_message.content),
-                    #         source="user",
-                    #     )
-                    # )
-                    await model_context.add_message(FunctionExecutionResultMessage(
-                        content=[FunctionExecutionResult(
-                            content = str(message.chat_message.content),
-                            name = tool_name,
-                            call_id = call_id,
-                            is_error = False,
-                        ),]
-                    ))
-                    return
-                yield message
-
-        except Exception as e:
-            logger.exception(f"Error in {self.name}")
-            yield ModelClientStreamingChunkEvent(
-                content=str(e)+"\n\n",
-                source=self.name,
-            )
-            # await model_context.add_message(
-            #     UserMessage(
-            #         content=str(e),
-            #         source="user",
-            #     )
-            # )
-            await model_context.add_message(FunctionExecutionResultMessage(
-                content=[FunctionExecutionResult(
-                    content = str(e),
-                    name = tool_name,
-                    call_id = call_id,
-                    is_error = True,
-                ),]
-            ))
-            yield StopMessage(
-                content=str(e),
-                source=agent_name,
-            )
-
-    async def handle_todo_write(
-        self,
-        argument: Dict[str, Any],
-        tool_name: str,
-        call_id: str,
-        agent_name: str,
-        model_context: ChatCompletionContext,
-    ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage, None]:
-        try:
-            todo_list = self._todo_manager.update(argument["items"])
-            # send stream message
-            # yield ModelClientStreamingChunkEvent(
-            #     content=todo_list+"\n\n",
-            #     source=self._user_profile_manager.agent_name,
-            # )
-            # add message to model_context with user source
-            await model_context.add_message(FunctionExecutionResultMessage(
-                content=[FunctionExecutionResult(
-                    content = self._todo_manager.get_task_prompt(),
-                    name = tool_name,
-                    call_id = call_id,
-                    is_error = False,
-                ),]
-            ))
-            # await model_context.add_message(
-            #     UserMessage(
-            #         content=self._todo_manager.get_task_prompt(),
-            #         source="user",
-            #     )
-            # )
-            # send text message to save to db in drsai ui
-            yield TextMessage(
-                content=todo_list,
-                source=self._user_profile_manager.agent_name,
-                metadata={"internal": "no"},
-            )
-        except Exception as e:
-            logger.exception(f"Error in {self.name}")
-            yield TextMessage(
-                content=str(e)+"\n\n",
-                source=self._user_profile_manager.agent_name,
-                metadata={"interal": "no"},
-            )
-            # await model_context.add_message(
-            #     UserMessage(
-            #         content=str(e),
-            #         source="user",
-            #     )
-            # )
-            await model_context.add_message(FunctionExecutionResultMessage(
-                content=[FunctionExecutionResult(
-                    content = str(e),
-                    name = tool_name,
-                    call_id = call_id,
-                    is_error = True,
-                ),]
-            ))
-            yield StopMessage(
-                content=str(e),
-                source=agent_name,
-            )
-
-    # TODO: handle user tools and evenroment
-
-    # TODO: handle skills and self-learning -> # TODO: 支持动态获取skills
-
-    # TODO: fixed the config
+    # 后续可扩展：在不引入用户可写配置的前提下，增加更多系统级能力。
     def _to_config(self) -> DrSaiAssistantConfig:
-        """Convert the assistant agent to a declarative config."""
+        """将当前智能体实例导出为声明式配置。"""
 
         return DrSaiAssistantConfig(
             name=self.name,
@@ -1532,8 +1247,6 @@ Current Session_ID is {self._thread_id}
             only_in_workspace=self._only_in_workspace,
             extra_work_dirs=self._extra_work_dirs,
             executor=self._local_executor.dump_component(),
-            sub_agent_config=self._sub_agent_config,
-            max_turn_count=self._max_turn_count,
             token_limit=self._token_limit,
             rag_flow_url=self._rag_flow_url,
             rag_flow_token=self._rag_flow_token,
@@ -1588,8 +1301,6 @@ Current Session_ID is {self._thread_id}
             only_in_workspace=config.only_in_workspace,
             extra_work_dirs=config.extra_work_dirs,
             executor=CodeExecutor.load_component(config.executor),
-            sub_agent_config = config.sub_agent_config,
-            max_turn_count = config.max_turn_count,
             token_limit = config.token_limit,
             rag_flow_url = config.rag_flow_url,
             rag_flow_token = config.rag_flow_token,

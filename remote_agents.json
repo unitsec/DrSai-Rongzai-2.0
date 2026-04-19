@@ -13,7 +13,7 @@
             "minimax": "minimax/minimax-m2.7",
             "磐石": "scienceone/s1-base-ultra"
             },
-        "default_config_name": "gpt5.4",
+        "default_config_name": "quick refinement",
         "version": "0.1.0",
         "examples":["帮我把BL16的RUN0023568的group4的衍射谱精修好，cif文件是Si.cif"],
         "author": "wanghao96@ihep.ac.cn",

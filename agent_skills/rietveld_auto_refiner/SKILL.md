@@ -26,7 +26,6 @@ description: 面向中子粉末衍射 Rietveld 自动精修技能。以及获取
 1. 定位精修所需文件
    - 要开始精修，首先必须有衍射数据文件（.gsa或.dat或.txt）、仪器参数文件（.instprm）和至少一个结构文件（.cif）。
    - 用户可能上传文件,或者让你用他之前上传的文件。优先使用这些文件。
-      这些上传的文件默认存储在/home/wangh/rongzai-agent/tmp/drsai_ui/files/user/<user_id>/目录下，不在WORKERDIR"agentWorkSpace"下.
    - 如果有文件没有上传，需要你根据用户提供的信息去数据库中获取。用户可能会说类似“帮我把BL16的RUN0023568的group2的衍射谱精修好，cif文件是Si.cif”这类话，你需要从中提取出谱仪名称（BL16）、RUN号（RUN0023568）和探测器名称（group2），然后去数据库中寻找对应的文件。
       - 去数据库获取.gsa文件，需要用户提供：谱仪名称（如BL16）、RUN号（如RUN0021905）和探测器名称（如group5）。
       - 去数据库获取.instprm文件，需要用户提供：谱仪名称（如BL16）、探测器名称（如group5）。
@@ -52,27 +51,16 @@ description: 面向中子粉末衍射 Rietveld 自动精修技能。以及获取
    - 这一步的目的是：你要明确获取到所需文件的文件路径，并且这些文件必须是绝对路径。
 
 2. 检查并连接mcp工具
-   - 先检查当前可用工具列表中是否存在 `RefineToolsGSASII`。
-   - 如果不存在：
-      - 使用'run_write'或'run_edit'将用户'TOOLS_CONFIG.json'写入一条'mcp-sse'配置（指向GSAS服务），配置如下：
-         ```json
-         [
-            {
-               "name": "RefineToolsGSASII",
-               "type": "mcp-sse",
-               "config": {
-                  "url": "http://127.0.0.1:42501/sse",
-                  "timeout": 60,
-                  "sse_read_timeout": 300
-               }
-            }
-         ]
-         ```
-      - 继续后续步骤。
-   - 如果存在：继续后续步骤。
+   - 你需要确保已经连接上 GSAS-II 的 MCP 服务，并且已经拿到该服务暴露出的工具说明。
+   - 如果当前还没有可用的 GSAS-II MCP 代理工具，或者你无法确认该服务是否已经连接：
+      - 根据下列连接信息连接 MCP 服务：
+         - type: sse
+         - url: http://127.0.0.1:42501/sse
+      - 连接成功后，认真阅读该 MCP 服务返回的工具名称和 description，确认工具的用法
+   - 如果已经存在可用的 GSAS-II MCP 代理工具：继续后续步骤。
 
 3. 执行精修初始化
-   - 当根据用户提供的信息拿到3类原始数据时，需要先调用MCP工具RefineToolsGSASII进行精修的初始化，拿到gpx文件后再执行下一个步骤。
+   - 当根据用户提供的信息拿到3类原始数据时，需要先调用已连接的 GSAS-II MCP 工具中进行“精修初始化”，拿到 gpx 文件后再执行下一个步骤。
 
 4. 迭代精修
    - 执行完精修初始化后，或者用户直接提供了gpx文件后，就进入该精修迭代阶段。

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import GSASIIscriptable as G2sc
 import re,shutil
 from datetime import datetime
+import time
 import multiprocessing,queue
 import traceback
 from glob import glob
@@ -1293,7 +1294,8 @@ def export_neutron_results(gpx, hist, phases, original_cif_files,task_id=None, u
     # 生成图表
     plot_path = None  # 初始化plot_path变量，防止后续使用时未定义
     try:    
-        plt.figure(figsize=(16, 10))
+        # 使用较小画布与较低输出分辨率，避免图片过大占用上下文与带宽。
+        plt.figure(figsize=(10, 6))
         
         # 创建子图
         # plt.subplot(2, 1, 1)
@@ -1419,7 +1421,7 @@ def export_neutron_results(gpx, hist, phases, original_cif_files,task_id=None, u
                 # 布局：两列以节省空间，字体更大
                 # 放置在图内上方（使用轴坐标），防止跑出外框
                 # 将 legend 放到左上角内侧并增大字体，减少对数据的遮挡
-                ax.legend(cur_handles, cur_labels, fontsize=15, ncol=1, loc='upper left', bbox_to_anchor=(0.02, 0.98), bbox_transform=ax.transAxes, frameon=True, framealpha=0.95)
+                ax.legend(cur_handles, cur_labels, fontsize=9, ncol=1, loc='upper left', bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0, frameon=True, framealpha=0.9)
             except Exception:
                 pass
         except Exception:
@@ -1437,7 +1439,7 @@ def export_neutron_results(gpx, hist, phases, original_cif_files,task_id=None, u
         
         plt.tight_layout(pad=2.0)
         plot_path = save_dir / f'{task_id}_plot.png'
-        plt.savefig(str(plot_path), dpi=300, bbox_inches='tight')
+        plt.savefig(str(plot_path), dpi=120, bbox_inches='tight')
         plt.close()
         
         logger.info(f"验证图表已保存到: {plot_path}")
@@ -1750,7 +1752,7 @@ def RefineToolsGSASII(
     returns:
         字典{
             "task_id":task_id, 字符串，返回当前任务ID，便于用户后续查询和查看结果，
-            "state":字符串，当前精修任务状态，可能的值为 "created", "running", "completed"，表示刚创建、运行中、已完成，
+            "state":字符串，当前精修任务状态，通常为 "completed"；在超时场景下可能为 "running"，
             "result": 
                 字典{
                     'status': 字符串，可能的值为'success' or 'failed',表示精修成功或失败
@@ -1769,8 +1771,9 @@ def RefineToolsGSASII(
         - 精修初始化：不传入gpx文件路径，传入必要的gsa、instprm、cif文件路径，并给一个空的精修参数，工具会执行精修初始化并精修scale和拟合一个background,然后返回生成的gpx路径。
         - 精修：传入gpx文件路径，以及需要精修的参数，工具会加载该gpx项目继续精修，并返回精修结果和生成的文件路径等信息。
             - 由于每次精修后都会产生一个新gpx文件，之前的gpx文件也会保留，这意味着你可以拒绝不好的精修效果，随时回退到之前的状态，对之前的gpx文件进行不同参数的精修尝试。
-    该工具的查询模式：
-        - 任务查询：传入之前的task_id，工具会检查该任务当前的状态，如果任务已完成则返回结果，如果任务仍在运行中则返回运行状态。
+    默认执行语义：
+        - 工具内部会自动轮询任务直到完成后再返回结果（默认约20分钟超时保护）。
+        - 若超时，返回 state="running" 和 result.status="pending"；此时可携带同一个task_id再次调用以继续等待。
     
     
     refine_params的内容和结构：
@@ -1828,12 +1831,52 @@ def RefineToolsGSASII(
                 3. 单个数值：例如 `0.012`，应用于所有原子，最简单的方式。    
         
     """
-    result_json={"task_id":task_id,'state':None,'result':None}
-    if not task_id: # 没有task_id说明是新任务，生成一个新的ID
+    def _task_snapshot(_task_id: str) -> Dict:
+        snapshot = {"task_id": _task_id, "state": None, "result": None}
+
+        proc = id_to_task.get(_task_id)
+        resq = id_to_result.get(_task_id)
+
+        if proc is None:
+            snapshot["state"] = "completed"
+            snapshot["result"] = {
+                "status": "failed",
+                "content": f"task_id={_task_id} does not exist or has been cleaned up."
+            }
+            return snapshot
+
+        if proc.is_alive():
+            snapshot["state"] = "running"
+            return snapshot
+
+        # 任务已结束，尝试取结果并清理
+        info = None
+        try:
+            if resq is not None and not resq.empty():
+                info = resq.get_nowait()
+        except Exception:
+            info = None
+
+        try:
+            proc.join(timeout=0.1)
+        except Exception:
+            pass
+
+        id_to_task[_task_id] = None
+        snapshot["state"] = "completed"
+        snapshot["result"] = info or {
+            "status": "failed",
+            "content": "Task process exited but no result payload was returned."
+        }
+        return snapshot
+
+    creating_new_task = not task_id
+    if creating_new_task:
         task_id = str(uuid.uuid4())
-        result_json['task_id']=task_id
-        id_to_result[task_id]=multiprocessing.Queue()
-        id_to_task[task_id]=multiprocessing.Process(target=neutron_refinement,kwargs={
+        id_to_result[task_id] = multiprocessing.Queue()
+        id_to_task[task_id] = multiprocessing.Process(
+            target=neutron_refinement,
+            kwargs={
                 'neutron_data': gsa_path,
                 'neutron_inst': instprm_path,
                 'cif_files': cif_paths,
@@ -1842,29 +1885,32 @@ def RefineToolsGSASII(
                 'user_id': user_id,
                 'mission_name': mission_name,
                 'task_id': task_id,
-                'que': id_to_result[task_id]
+                'que': id_to_result[task_id],
             }
         )
-        result_json['state']='created'
         id_to_task[task_id].start()
-    else: # 有task_id说明是已有任务的后续调用，查看该任务当前结果
-        if not id_to_task[task_id].is_alive(): # 第一种情况，任务已经结束，获取结果并清理
-            info=id_to_result[task_id].get()
-            id_to_task[task_id].join()
-            if info.get('status') == 'error':
-                result_json['state'] = 'completed'
-                result_json['result'] = info
-                id_to_task[task_id] = None
-            else:
-                # 处理结果
-                # print(info)
-                id_to_task[task_id]=None
-                result_json['state']='completed'
-                result_json["result"] = info
-        else: # 第二种情况，任务仍在运行中
-            result_json['state']='running'
 
-    return result_json
+    # 默认自动轮询直到完成：调用方无需显式传等待参数。
+    safe_poll_interval = 1.0
+    timeout_sec = 1200.0
+    deadline = time.time() + timeout_sec
+
+    while True:
+        snapshot = _task_snapshot(task_id)
+        if snapshot["state"] == "completed":
+            return snapshot
+
+        if deadline is not None and time.time() >= deadline:
+            snapshot["result"] = {
+                "status": "pending",
+                "content": (
+                    f"Task is still running after timeout ({float(timeout_sec):.1f}s). "
+                    "Call again with the same task_id to continue waiting."
+                ),
+            }
+            return snapshot
+
+        time.sleep(safe_poll_interval)
 
 if __name__ == '__main__':
     # mcp.run(transport="stdio")
