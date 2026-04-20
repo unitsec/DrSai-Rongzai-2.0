@@ -194,8 +194,8 @@ class RongZaiAgent(DrSaiAgent):
             )
         # self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
         for func in self._basic_funcs:
-            # if func.__name__ in {"run_bash", "run_read", "run_write", "run_edit"}:
-            self._tools.append(FunctionTool(func, description=func.__doc__))
+            if func.__name__ in {"run_bash", "run_read", "run_write", "run_edit"}:
+                self._tools.append(FunctionTool(func, description=func.__doc__))
 
         # 将rongzai需要的特定的函数转换为FunctionTool对象并加入self._tools列表
         self._otherBasic_funcs: List[Callable] = get_operator_funcs_rongzai(source_name = self._name)
@@ -268,6 +268,51 @@ class RongZaiAgent(DrSaiAgent):
         # key: server_id，value: 该 server 注册到 workbench 的代理工具名列表
         self._mcp_server_tool_names: Dict[str, List[str]] = {}
         self._tools_names = [tool.name for tool in self._tools]
+
+        # === Ephemeral multimodal image context (Stage A) ===
+        # pending: 新注入图片，供“下一轮”推理可见
+        # inflight: 当前这轮推理正在消费，推理完成后清理
+        self._ephemeral_images_pending: List[UserMessage] = []
+        self._ephemeral_images_inflight: List[UserMessage] = []
+
+    def _record_ephemeral_image_message(self, multimodal_msg: UserMessage) -> None:
+        """记录新注入的临时图片消息，供下一轮推理使用。"""
+        self._ephemeral_images_pending.append(multimodal_msg)
+
+    def _arm_ephemeral_images_for_inference(self) -> None:
+        """在每轮推理开始前装载临时图片消息。"""
+        self._ephemeral_images_inflight = self._ephemeral_images_pending
+        self._ephemeral_images_pending = []
+
+    def _cleanup_inflight_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
+        """在每轮推理结束后清理已消费的临时图片消息。"""
+        if not self._ephemeral_images_inflight:
+            return
+        if not isinstance(model_context, DrSaiChatCompletionContext):
+            # 仅 DrSai 运行时上下文支持按对象身份清理。
+            self._ephemeral_images_inflight = []
+            return
+
+        target_ids = {id(msg) for msg in self._ephemeral_images_inflight}
+        if target_ids:
+            model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
+            model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
+        self._ephemeral_images_inflight = []
+
+    def _cleanup_all_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
+        """兜底清理：移除 pending/inflight 的所有临时图片消息。"""
+        if not isinstance(model_context, DrSaiChatCompletionContext):
+            self._ephemeral_images_pending = []
+            self._ephemeral_images_inflight = []
+            return
+
+        all_ephemeral = self._ephemeral_images_pending + self._ephemeral_images_inflight
+        target_ids = {id(msg) for msg in all_ephemeral}
+        if target_ids:
+            model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
+            model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
+        self._ephemeral_images_pending = []
+        self._ephemeral_images_inflight = []
 
     def _file_changed(self, path: Path) -> bool:
         """判断文件或目录是否变化，并更新 mtime 缓存。"""
@@ -820,26 +865,31 @@ class RongZaiAgent(DrSaiAgent):
             while True:
                 self._debug_log_system_prompt(system_messages)
                 model_result = None
-                async for inference_output in self._call_llm(
-                    model_client=model_client,
-                    model_client_stream=model_client_stream,
-                    system_messages=system_messages,
-                    model_context=model_context,
-                    workbench=workbench,
-                    handoff_tools=handoff_tools,
-                    manager_tools=manager_tools,
-                    agent_name=agent_name,
-                    cancellation_token=cancellation_token,
-                    output_content_type=output_content_type,
-                ):
-                    if self.is_paused:
-                        raise asyncio.CancelledError()
-                    
-                    if isinstance(inference_output, CreateResult):
-                        model_result = inference_output
-                    else:
-                        # 透传流式输出
-                        yield inference_output
+                self._arm_ephemeral_images_for_inference()
+                try:
+                    async for inference_output in self._call_llm(
+                        model_client=model_client,
+                        model_client_stream=model_client_stream,
+                        system_messages=system_messages,
+                        model_context=model_context,
+                        workbench=workbench,
+                        handoff_tools=handoff_tools,
+                        manager_tools=manager_tools,
+                        agent_name=agent_name,
+                        cancellation_token=cancellation_token,
+                        output_content_type=output_content_type,
+                    ):
+                        if self.is_paused:
+                            raise asyncio.CancelledError()
+                        
+                        if isinstance(inference_output, CreateResult):
+                            model_result = inference_output
+                        else:
+                            # 透传流式输出
+                            yield inference_output
+                finally:
+                    # 临时图片只保留到“当前推理”结束。
+                    self._cleanup_inflight_ephemeral_images(model_context)
 
                 assert model_result is not None, "No model result was produced."
                 
@@ -980,6 +1030,7 @@ class RongZaiAgent(DrSaiAgent):
                             tool_call_summary_prompt=self._tool_call_summary_prompt,
                             output_content_type=output_content_type,
                             format_string=format_string,
+                            image_message_recorder=self._record_ephemeral_image_message,
                         ):
                             if self.is_paused:
                                 raise asyncio.CancelledError()
@@ -1028,6 +1079,7 @@ class RongZaiAgent(DrSaiAgent):
         finally:
             # 收尾：上传会话到 ragflow（如启用）并清理当前消息缓存
             if isinstance(self._model_context, DrSaiChatCompletionContext):
+                self._cleanup_all_ephemeral_images(self._model_context)
                 if self._model_context._rag_flow_manager:
                     await self._model_context.upload_conversation_to_ragflow()
                 self._model_context._current_messages = []
@@ -1104,6 +1156,7 @@ class RongZaiAgent(DrSaiAgent):
         tool_call_summary_prompt: str | None,
         output_content_type: type[BaseModel] | None,
         format_string: str | None = None,
+        image_message_recorder: Callable[[UserMessage], None] | None = None,
     ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | Response, None]:
         """执行工具调用并把结果写回上下文，同时处理文件与图片事件。"""
         
@@ -1177,6 +1230,8 @@ class RongZaiAgent(DrSaiAgent):
                     # 本地序列化暂不支持多模态持久化，直接写入运行时消息缓存
                     model_context._messages.append(multimodal_msg)
                     model_context._current_messages.append(multimodal_msg)
+                    if image_message_recorder is not None:
+                        image_message_recorder(multimodal_msg)
                 else:
                     await model_context.add_message(multimodal_msg)
 

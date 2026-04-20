@@ -118,7 +118,13 @@ def get_operator_funcs_rongzai(source_name: str) -> list[callable]:
     def serve_files_for_user(files_list: list[str], descriptions_list: list[str]):
         """
         Serve the files to the user for downloading by showing it to the frontend.
-        if you need to serve files to user, you can call this function with the local paths of the files and their corresponding descriptions, then the files will be shown to user in the frontend and user can download them.
+        if you need to serve downloadable artifacts to user, you can call this function with the local paths of the files and their corresponding descriptions.
+        The files will be shown to user in the frontend and user can download them.
+
+        Important:
+            - Do NOT use this tool to send image files during intermediate steps.
+            - Image files produced by tool calls are already auto-displayed to the user.
+            - Prefer this tool for downloadable deliverables requested by the user.
 
         args:
             files_list (list[str]): The local paths of the files to serve.

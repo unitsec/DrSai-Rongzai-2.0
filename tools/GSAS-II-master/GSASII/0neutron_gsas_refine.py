@@ -14,9 +14,17 @@ import traceback
 from glob import glob
 import uuid
 import pprint
-from typing import List, Tuple, Dict, Union
+from typing import List, Tuple, Dict, Union, Optional
 from mcp.server.fastmcp import FastMCP
 from read_lst import prune_lst_keep_main
+
+try:
+    from src.core.tools import ProcessPollingMcpToolBase
+except ImportError:
+    repo_root = Path(__file__).resolve().parents[3]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from src.core.tools import ProcessPollingMcpToolBase
 
 TMP_DIR = (Path(__file__).resolve().parent.parent / 'tmp')
 TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -1553,59 +1561,107 @@ def ensure_fixed_background(gpx, hist):
     return
 
 def neutron_refinement(
-    neutron_data=None,
-    neutron_inst=None,
-    cif_files=None,
-    gpx_file=None,                 # 可选的已有gpx项目文件路径
-    refine_config={"refine_cycle":3,"refine_background":False,"refine_cell":False,"refine_scale":False,"refine_instrument":False,"refine_absorption":False,"refine_atoms":{}},          # 高级配置字典,支持所有GSAS-II精修参数
-    user_id=None,
-    mission_name=None,
-    task_id=None,                    # 用于日志记录和输出文件命名
-    que=multiprocessing.Queue()
-):
+    neutron_data: str = None,
+    neutron_inst: str = None,
+    cif_files: List[str] = None,
+    gpx_file: str = None,                 # 可选的已有gpx项目文件路径
+    refine_config: Dict = {"refine_cycle":3,"refine_background":False,"refine_cell":False,"refine_scale":False,"refine_instrument":False,"refine_absorption":False,"refine_atoms":{}},          # 高级配置字典,支持所有GSAS-II精修参数
+    user_id: str = None,
+    mission_name: str = None,
+    task_id: Optional[str] = None,                    # 由框架自动注入用于日志记录和输出文件命名
+) -> Dict:
     """
-    中子粉末衍射数据精修主函数 - 支持所有GSAS-II精修参数
-
-    参数:
-    neutron_data: 中子数据文件路径 (当gpx_file为None时必需)
-    neutron_inst: 仪器参数文件路径 (当gpx_file为None时必需)
-    cif_files: CIF结构文件列表 (当gpx_file为None时必需)
-    gpx_file: 可选,已有的GSAS-II项目文件(.gpx)路径,如果提供则加载现有项目继续精修
-
-    高级参数 (高级模式,提供更精细的控制):
-    refine_config: 字典,包含所有可用的精修参数,例如:
-        {
-            # 基础参数
-            'background_coeffs': 3,              # 背景系数数量
-
-            # 仪器参数 (单独控制)
-            'refine_instrument_difc': True,      # difC
-            'refine_instrument_difa': True,      # difA
-            'refine_instrument_difb': True,      # difB
-            'refine_instrument_zero': True,      # Zero
-            'refine_instrument_alpha': True,     # alpha
-            'refine_instrument_beta': True,      # beta-0, beta-1, beta-q
-            'refine_instrument_sig': True,       # sig-0, sig-1, sig-2, sig-q
-            'refine_instrument_x': True,         # X
-            'refine_instrument_y': True,         # Y
-            'refine_instrument_z': True,         # Z
-
-            # 原子参数 (单独控制)
-            'refine_atoms': {},            # dict - 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'}
-
-            # 高级参数
-            'refine_limits': True,               # Limits精修
-            'refine_sample_displacement': True,  # 样品位移
-            'refine_size': True,                 # 晶粒尺寸
-            'refine_mustrain': True,             # 微应变
-            'refine_phase_fraction': True,       # 相分数
+    使用GSAS-II的API接口进行中子衍射数据精修任务并返回结果信息
+    Args:
+        neutron_data: GSAS的gsa文件绝对路径 (当gpx_file为None时必需)
+        neutron_inst: GSAS的instprm文件绝对路径 (当gpx_file为None时必需)
+        cif_files: 结构文件列表 (当gpx_file为None时必需)
+        gpx_file: 可选,已有的GSAS-II项目文件(.gpx)路径,如果提供则加载现有项目继续精修
+        refine_config: 高级配置字典,支持所有GSAS-II精修参数，
+        user_id: 用户ID，字符串，标识当前用户身份，用于日志记录和权限控制
+        mission_name: 精修任务名称，字符串。同一个精修任务下会涉及多次该工具的调用，保持使用相同的mission_name,该工具会使用它和user_id一起用于指向保存该精修任务产生的文件的文件夹。
+        task_id: 任务ID，在开启一个新的工具调用时，这里写None或不传，工具会自动生成一个唯一ID；如果是对已有任务的结果查询，则必须传入之前的task_id
+         
+    returns:
+        字典{
+            "task_id":task_id, 字符串，返回当前任务ID，便于用户后续查询和查看结果，
+            "state":字符串，当前精修任务状态，通常为 "completed"；在超时场景下可能为 "running"，
+            "result": 
+                字典{
+                    'status': 字符串，可能的值为'success' or 'failed',表示精修成功或失败
+                    'content': 字典{
+                        'rwp': 当前Rwp值,
+                        'plot_path': 生成的fit plot图表路径, 蓝色X点线是实验谱线obsrved，红色线是计算谱线calculated，绿色线是背景，黑色线是拟合差值（obs-calc），竖虚线是Limits范围，
+                        'refined_cif_files': 生成的精修CIF文件列表,
+                        'refinement_log': 精修过程中的日志信息,
+                        'gpx_path': 精修后拿到的新gpx项目文件路径,
+                        'lst_content': 精修生成的lst文件内容文本
+                    } 或字符串（当status为'failed'时，content为错误信息字符串）
+                }
         }
 
-    que: 多进程队列
+    该工具的两种启用模式：
+        - 精修初始化：不传入gpx文件路径，传入必要的neutron_data、neutron_inst、cif_files，并给一个空的精修参数，工具会执行精修初始化并精修scale和拟合一个background,然后返回生成的gpx路径。
+        - 精修：传入gpx文件路径，以及需要精修的参数，工具会加载该gpx项目继续精修，并返回精修结果和生成的文件路径等信息。
+            - 由于每次精修后都会产生一个新gpx文件，之前的gpx文件也会保留，这意味着你可以拒绝不好的精修效果，随时回退到之前的状态，对之前的gpx文件进行不同参数的精修尝试。
+    默认执行语义：
+        - 工具内部会自动轮询任务直到完成后再返回结果（默认约20分钟超时保护）。
+        - 若超时，返回 state="running" 和 result.status="pending"；此时可携带同一个task_id再次调用以继续等待。
+    
+    
+    refine_config的内容和结构：
+        它是一个字典，键是你能够精修的所有参数名称，键值的格式如下
+        | 参数 | 类型 | 默认值 | 说明 |
+        | `refine_cycle` | int | 1 | 精修循环次数 (Refine Cycle) |
+        | `refine_background` | bool | False | 是否精修背景 |
+        | `background_coeffs` | int | 3 | 背景函数系数数量 |
+        | `refine_scale` | bool | False | scale |
+        | `refine_cell` | bool | False | 晶胞参数 (a, b, c, α, β, γ)，启用则在精修中调整晶胞 |
+        | `initial_cell` | dict/list | None | 在精修前设置晶胞初始值（见下文详细说明） |
+        | `refine_absorption` | bool | False | 吸收，用于修正由吸收导致的衍射峰强度系统性偏差 |
+        | `refine_instrument_alpha` | bool | False | 仪器参数alpha(仪器参数中影响最大的一个) | 
+        | `refine_instrument_beta` | bool | False | 仪器参数beta-0, beta-1, beta-q |
+        | `refine_instrument_sig` | bool | False | 仪器参数sig-0, sig-1, sig-2, sig-q |
+        | `refine_instrument_x` | bool | False | 仪器参数X |
+        | `refine_instrument_y` | bool | False | 仪器参数Y |
+        | `refine_instrument_z` | bool | False | 仪器参数Z |
+        | `refine_atoms` | dict | {} | 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'} |
+        注意：'X' 为位置，'U' 为等效各向同性温度因子，'F' 为占位率。例如 'XU' 表示同时精修位置和 U。
+        | `refine_size` | bool | False | 晶粒尺寸,一般不修,除非你有特殊需求 |
+        | `refine_mustrain` | bool | False | 微应变,一般不修,除非你有特殊需求|
+        | `initial_mustrain` | float/list/dict | None | 在精修前设置微应变初始值，仅支持isotropic模式（见下文详细说明） |
+        | `initial_atom_uiso` | dict/list/float | None | 在精修前设置原子热无序因子(Uiso)初始值，支持多种格式（见下文详细说明） |
+        | `refine_phase_fraction` | bool | False | 相分数, 仅多相精修中需要 |
 
-    注意:
-    - 如果提供了 advanced_config,它会覆盖基础参数
-    - 基础参数适合快速使用,高级参数适合精细控制
+        参数 `initial_cell`用途与使用方法：
+            - 目的：在执行任何晶胞精修之前设置相（phase）的初始晶胞数值，避免直接修改核心.
+            - 单位与空间：GSAS 使用实空间晶胞参数（a, b, c 单位 Å；α, β, γ 单位为度），不是倒空间参数。
+            - 支持格式：
+                1. 列表（按相索引）：例如 `[{'a':5.12,'b':5.12,'c':7.23,'alpha':90,'beta':90,'gamma':120}, ...]`，第 0 项对应第 1 个 phase。
+                2. 字典（按相名或索引）：例如 `{'Phase_1': {'a':...}, 0: {'a':...}}`，支持相名或数字索引（或索引的字符串形式）。
+            - 行为：如果 `initial_cell` 存在，代码会在精修前把实空间参数写入 `phase.data['General']['Cell']`，采用 GSAS 内部期望的格式：
+                `[refine_flag, a, b, c, alpha, beta, gamma, volume]`。
+                其中 `refine_flag` 保留原先的布尔值（或设为 False），`volume` 会自动计算并写入（若能计算）。
+            - 同时，如果 `refine_cell` 为 True，脚本会尝试调用 `phase.set_refinements({"Cell": True})` 来开启晶胞精修标志（若该方法可用）。
+
+        参数 `initial_mustrain`用途与使用方法：
+            - 目的：在执行微应变精修之前设置相（phase）的初始微应变数值。当拟合的衍射峰明显比实验数据宽，且无论如何精修都无法解决时，可将此值设为0来消除微应变的影响。
+            - 仅支持isotropic模式（单一数值），单位为 μstrain（微应变）。
+            - 支持格式：
+                1. 单个数值：例如 `1000.0`，适用于单相或所有相使用相同微应变值。
+                2. 列表（按相索引）：例如 `[1000.0, 1200.0]`，第 0 项对应第 1 个 phase。
+                3. 字典（按相名或索引）：例如 `{'Phase_1': 1000.0, 0: 1200.0}`，支持相名或数字索引。
+            - 行为：如果 `initial_mustrain` 存在，代码会在精修前把微应变参数写入 `gpx.data['Histograms'][hist.name]['Mustrain']`，仅修改参数值，保留原有的精修标志。
+            - 特殊用法：当设置 `initial_mustrain: 0` 时，可以消除微应变对衍射峰宽的贡献，用于诊断衍射峰过宽的原因。
+
+        参数 `initial_atom_uiso`用途与使用方法：
+            - 目的：在执行精修之前设置相（phase）的原子热无序因子（Uiso）初始值。这对以下情况特别有用：
+                当absorption和scale参数高度关联（一个增加另一个必须减小）导致精修卡顿时，将Uiso设为0来隔离这个问题。
+            - 单位：Ų（平方埃），典型范围 0.005-0.15。
+            - 支持格式：
+                1. 字典（按原子标签）：例如 `{'Si': 0.012, 'O': 0.015, 'Fe': 0.010}`，推荐用于简单情况。
+                2. 列表（按相和原子索引）：例如 `[[0.012, 0.015], [0.010, 0.014]]`，第 0 项对应第 1 个 phase。
+                3. 单个数值：例如 `0.012`，应用于所有原子，最简单的方式。    
     """
     print("精修配置 (展开):\n" + pprint.pformat(refine_config, width=120))
 
@@ -1710,350 +1766,23 @@ def neutron_refinement(
                 print(f"已将 gpx 恢复为备份: {backup_path} -> {gpx_file}")
         except Exception as e:
             print(f"恢复 gpx 备份失败: {e}")
-        que.put(results)
         return results
 
     except Exception as e:
         print("!"*50)
         print(f"精修失败: {str(e)}")
         print("!"*50)
-        que.put({
-            'status': 'failed',
-            'content': traceback.format_exc()
-        })
         raise
 
-id_to_task={}
-id_to_result={}
+refine_tools_runner = ProcessPollingMcpToolBase(
+    timeout_sec=1200.0,
+    poll_interval=1.0,
+    target_func=neutron_refinement,
+    # param_mapping auto-derived from neutron_refinement's signature
+)
 
-@mcp.tool()
-def RefineToolsGSASII(
-    gsa_path: str = '',
-    instprm_path: str = '',
-    cif_paths: List[str] = [],
-    gpx_path: str = '',                 # 可选的已有gpx项目文件路径               # 精修轮次索引
-    refine_params: Dict = {},
-    user_id: str = "",
-    mission_name: str = "",            # 高级配置字典
-    task_id: str|None = None,
-    ) -> Dict:
-    """
-    使用GSAS-II的API接口进行中子衍射数据精修任务并返回结果信息
-    Args:
-        gsa_path: GSAS的gsa文件绝对路径 (当gpx_path为None时必需)
-        instprm_path: GSAS的instprm文件绝对路径 (当gpx_path为None时必需)
-        cif_paths: 结构文件列表 (当gpx_path为None时必需)
-        gpx_path: 可选,已有的GSAS-II项目文件(.gpx)路径,如果提供则加载现有项目继续精修
-        refine_params: 高级配置字典,支持所有GSAS-II精修参数，
-        user_id: 用户ID，字符串，标识当前用户身份，用于日志记录和权限控制
-        mission_name: 精修任务名称，字符串。同一个精修任务下会涉及多次该工具的调用，保持使用相同的mission_name,该工具会使用它和user_id一起用于指向保存该精修任务产生的文件的文件夹。
-        task_id: 任务ID，在开启一个新的工具调用时，这里写None或不传，工具会自动生成一个唯一ID；如果是对已有任务的结果查询，则必须传入之前的task_id
-         
-    returns:
-        字典{
-            "task_id":task_id, 字符串，返回当前任务ID，便于用户后续查询和查看结果，
-            "state":字符串，当前精修任务状态，通常为 "completed"；在超时场景下可能为 "running"，
-            "result": 
-                字典{
-                    'status': 字符串，可能的值为'success' or 'failed',表示精修成功或失败
-                    'content': 字典{
-                        'rwp': 当前Rwp值,
-                        'plot_path': 生成的fit plot图表路径, 蓝色X点线是实验谱线obsrved，红色线是计算谱线calculated，绿色线是背景，黑色线是拟合差值（obs-calc），竖虚线是Limits范围，
-                        'refined_cif_files': 生成的精修CIF文件列表,
-                        'refinement_log': 精修过程中的日志信息,
-                        'gpx_path': 精修后拿到的新gpx项目文件路径,
-                        'lst_content': 精修生成的lst文件内容文本
-                    } 或字符串（当status为'failed'时，content为错误信息字符串）
-                }
-        }
-
-    该工具的两种启用模式：
-        - 精修初始化：不传入gpx文件路径，传入必要的gsa、instprm、cif文件路径，并给一个空的精修参数，工具会执行精修初始化并精修scale和拟合一个background,然后返回生成的gpx路径。
-        - 精修：传入gpx文件路径，以及需要精修的参数，工具会加载该gpx项目继续精修，并返回精修结果和生成的文件路径等信息。
-            - 由于每次精修后都会产生一个新gpx文件，之前的gpx文件也会保留，这意味着你可以拒绝不好的精修效果，随时回退到之前的状态，对之前的gpx文件进行不同参数的精修尝试。
-    默认执行语义：
-        - 工具内部会自动轮询任务直到完成后再返回结果（默认约20分钟超时保护）。
-        - 若超时，返回 state="running" 和 result.status="pending"；此时可携带同一个task_id再次调用以继续等待。
-    
-    
-    refine_params的内容和结构：
-        它是一个字典，键是你能够精修的所有参数名称，键值的格式如下
-        | 参数 | 类型 | 默认值 | 说明 |
-        | `refine_cycle` | int | 1 | 精修循环次数 (Refine Cycle) |
-        | `refine_background` | bool | False | 是否精修背景 |
-        | `background_coeffs` | int | 3 | 背景函数系数数量 |
-        | `refine_scale` | bool | False | scale |
-        | `refine_cell` | bool | False | 晶胞参数 (a, b, c, α, β, γ)，启用则在精修中调整晶胞 |
-        | `initial_cell` | dict/list | None | 在精修前设置晶胞初始值（见下文详细说明） |
-        | `refine_absorption` | bool | False | 吸收，用于修正由吸收导致的衍射峰强度系统性偏差 |
-        | `refine_instrument_alpha` | bool | False | 仪器参数alpha(仪器参数中影响最大的一个) | 
-        | `refine_instrument_beta` | bool | False | 仪器参数beta-0, beta-1, beta-q |
-        | `refine_instrument_sig` | bool | False | 仪器参数sig-0, sig-1, sig-2, sig-q |
-        | `refine_instrument_x` | bool | False | 仪器参数X |
-        | `refine_instrument_y` | bool | False | 仪器参数Y |
-        | `refine_instrument_z` | bool | False | 仪器参数Z |
-        | `refine_atoms` | dict | {} | 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'} |
-        注意：'X' 为位置，'U' 为等效各向同性温度因子，'F' 为占位率。例如 'XU' 表示同时精修位置和 U。
-        | `refine_size` | bool | False | 晶粒尺寸,一般不修,除非你有特殊需求 |
-        | `refine_mustrain` | bool | False | 微应变,一般不修,除非你有特殊需求|
-        | `initial_mustrain` | float/list/dict | None | 在精修前设置微应变初始值，仅支持isotropic模式（见下文详细说明） |
-        | `initial_atom_uiso` | dict/list/float | None | 在精修前设置原子热无序因子(Uiso)初始值，支持多种格式（见下文详细说明） |
-        | `refine_phase_fraction` | bool | False | 相分数, 仅多相精修中需要 |
-
-        参数 `initial_cell`用途与使用方法：
-            - 目的：在执行任何晶胞精修之前设置相（phase）的初始晶胞数值，避免直接修改核心.
-            - 单位与空间：GSAS 使用实空间晶胞参数（a, b, c 单位 Å；α, β, γ 单位为度），不是倒空间参数。
-            - 支持格式：
-                1. 列表（按相索引）：例如 `[{'a':5.12,'b':5.12,'c':7.23,'alpha':90,'beta':90,'gamma':120}, ...]`，第 0 项对应第 1 个 phase。
-                2. 字典（按相名或索引）：例如 `{'Phase_1': {'a':...}, 0: {'a':...}}`，支持相名或数字索引（或索引的字符串形式）。
-            - 行为：如果 `initial_cell` 存在，代码会在精修前把实空间参数写入 `phase.data['General']['Cell']`，采用 GSAS 内部期望的格式：
-                `[refine_flag, a, b, c, alpha, beta, gamma, volume]`。
-                其中 `refine_flag` 保留原先的布尔值（或设为 False），`volume` 会自动计算并写入（若能计算）。
-            - 同时，如果 `refine_cell` 为 True，脚本会尝试调用 `phase.set_refinements({"Cell": True})` 来开启晶胞精修标志（若该方法可用）。
-
-        参数 `initial_mustrain`用途与使用方法：
-            - 目的：在执行微应变精修之前设置相（phase）的初始微应变数值。当拟合的衍射峰明显比实验数据宽，且无论如何精修都无法解决时，可将此值设为0来消除微应变的影响。
-            - 仅支持isotropic模式（单一数值），单位为 μstrain（微应变）。
-            - 支持格式：
-                1. 单个数值：例如 `1000.0`，适用于单相或所有相使用相同微应变值。
-                2. 列表（按相索引）：例如 `[1000.0, 1200.0]`，第 0 项对应第 1 个 phase。
-                3. 字典（按相名或索引）：例如 `{'Phase_1': 1000.0, 0: 1200.0}`，支持相名或数字索引。
-            - 行为：如果 `initial_mustrain` 存在，代码会在精修前把微应变参数写入 `gpx.data['Histograms'][hist.name]['Mustrain']`，仅修改参数值，保留原有的精修标志。
-            - 特殊用法：当设置 `initial_mustrain: 0` 时，可以消除微应变对衍射峰宽的贡献，用于诊断衍射峰过宽的原因。
-
-        参数 `initial_atom_uiso`用途与使用方法：
-            - 目的：在执行精修之前设置相（phase）的原子热无序因子（Uiso）初始值。这对以下情况特别有用：
-                当absorption和scale参数高度关联（一个增加另一个必须减小）导致精修卡顿时，将Uiso设为0来隔离这个问题。
-            - 单位：Ų（平方埃），典型范围 0.005-0.15。
-            - 支持格式：
-                1. 字典（按原子标签）：例如 `{'Si': 0.012, 'O': 0.015, 'Fe': 0.010}`，推荐用于简单情况。
-                2. 列表（按相和原子索引）：例如 `[[0.012, 0.015], [0.010, 0.014]]`，第 0 项对应第 1 个 phase。
-                3. 单个数值：例如 `0.012`，应用于所有原子，最简单的方式。    
-        
-    """
-    def _task_snapshot(_task_id: str) -> Dict:
-        snapshot = {"task_id": _task_id, "state": None, "result": None}
-
-        proc = id_to_task.get(_task_id)
-        resq = id_to_result.get(_task_id)
-
-        if proc is None:
-            snapshot["state"] = "completed"
-            snapshot["result"] = {
-                "status": "failed",
-                "content": f"task_id={_task_id} does not exist or has been cleaned up."
-            }
-            return snapshot
-
-        if proc.is_alive():
-            snapshot["state"] = "running"
-            return snapshot
-
-        # 任务已结束，尝试取结果并清理
-        info = None
-        try:
-            if resq is not None and not resq.empty():
-                info = resq.get_nowait()
-        except Exception:
-            info = None
-
-        try:
-            proc.join(timeout=0.1)
-        except Exception:
-            pass
-
-        id_to_task[_task_id] = None
-        snapshot["state"] = "completed"
-        snapshot["result"] = info or {
-            "status": "failed",
-            "content": "Task process exited but no result payload was returned."
-        }
-        return snapshot
-
-    creating_new_task = not task_id
-    if creating_new_task:
-        task_id = str(uuid.uuid4())
-        id_to_result[task_id] = multiprocessing.Queue()
-        id_to_task[task_id] = multiprocessing.Process(
-            target=neutron_refinement,
-            kwargs={
-                'neutron_data': gsa_path,
-                'neutron_inst': instprm_path,
-                'cif_files': cif_paths,
-                'gpx_file': gpx_path,
-                'refine_config': refine_params,
-                'user_id': user_id,
-                'mission_name': mission_name,
-                'task_id': task_id,
-                'que': id_to_result[task_id],
-            }
-        )
-        id_to_task[task_id].start()
-
-    # 默认自动轮询直到完成：调用方无需显式传等待参数。
-    safe_poll_interval = 1.0
-    timeout_sec = 1200.0
-    deadline = time.time() + timeout_sec
-
-    while True:
-        snapshot = _task_snapshot(task_id)
-        if snapshot["state"] == "completed":
-            return snapshot
-
-        if deadline is not None and time.time() >= deadline:
-            snapshot["result"] = {
-                "status": "pending",
-                "content": (
-                    f"Task is still running after timeout ({float(timeout_sec):.1f}s). "
-                    "Call again with the same task_id to continue waiting."
-                ),
-            }
-            return snapshot
-
-        time.sleep(safe_poll_interval)
+refine_tools_runner.register_mcp_tool(mcp, name="RefineToolsGSASII")
 
 if __name__ == '__main__':
     # mcp.run(transport="stdio")
     mcp.run(transport="sse")
-
-# 使用示例
-# if __name__ == "__main__":
-#     import sys
-#     import traceback
-
-#     print("="*60)
-#     print("开始执行 GSAS-II 中子精修脚本")
-#     print("="*60)
-
-#     # 输入文件路径
-#     input_dir = "/aifs/user/home/liqingmeng/rozai_agent/datasets/BL09"
-#     output_dir = "/aifs/user/home/liqingmeng/rozai_agent/datasets/BL09/gsas_output20251222_6/output_gpx2"
-
-#     # 方式1: 从头开始创建新项目
-#     print("\n=== 方式1: 创建新项目 ===")
-#     gsa_file = os.path.join(input_dir, "RUNdataFiles/RUN0000719/RUN0000719_groupHA.gsa")
-#     inst_file = os.path.join(input_dir, "instrumentFIiles/groupHA_instr.instprm")
-#     cif_file = os.path.join(input_dir, "RUNdataFiles/RUN0000719/zeolite.cif")
-
-#     # 方式2: 使用已有的gpx文件继续精修
-#     # 取消下面的注释来使用已有gpx文件
-#     existing_gpx = "/aifs/user/home/liqingmeng/rozai_agent/datasets/BL09/gsas_output20251222_6/neutron_refinement.gpx"
-#     # existing_gpx = None
-
-#     print("\n检查输入文件:")
-#     if existing_gpx:
-#         print(f"模式: 加载现有GPX项目")
-#         if os.path.exists(existing_gpx):
-#             print(f"✓ GPX文件: {existing_gpx}")
-#         else:
-#             print(f"✗ GPX文件不存在: {existing_gpx}")
-#             sys.exit(1)
-#     else:
-#         print(f"模式: 创建新项目")
-#         for fpath, fname in [(gsa_file, "GSA文件"), (inst_file, "仪器参数文件"), (cif_file, "CIF文件")]:
-#             if os.path.exists(fpath):
-#                 size_mb = os.path.getsize(fpath) / (1024 * 1024)
-#                 print(f"✓ {fname}: {fpath} ({size_mb:.2f} MB)")
-#             else:
-#                 print(f"✗ {fname} 不存在: {fpath}")
-#                 sys.exit(1)
-
-#     print("\n开始精修流程...")
-
-#     try:
-#         # 执行中子精修（使用True/False控制精修参数）
-#         que = multiprocessing.Queue()
-
-#                 # 定义要精修的原子标签
-        
-#         atom_labels_example1 = None  # 示例1: 精修所有原子
-#         atom_labels_example2 = ["Si1", "Si2", "O1", "Al1"]  # 示例2: 只精修特定原子
-#         atom_labels_example3 = ["Si", "Al"]  # 示例3: 只精修所有以Si或Al开头的原子       
-#         atom_labels_example4 = ["O*"]  # 示例4: 使用通配符精修所有氧原子
-        
-#         # 选择要使用的原子标签配置
-#         selected_atom_labels = atom_labels_example2  # 这里选择示例1（精修所有原子）
-        
-#         if selected_atom_labels is None:
-#             print(f"原子精修设置: 精修所有原子")
-#         else:
-#             print(f"原子精修设置: 精修指定原子 {selected_atom_labels}")
-#         # 定义原子精修参数类型
-#         refine_atom_params = "XU"  # 精修原子位置(X)和温度因子(U)
-#         print(f"原子精修参数类型: {refine_atom_params}")
-
-#         if existing_gpx:
-#             # 使用已有gpx文件
-#             results = neutron_refinement(
-#                 output_dir=output_dir,
-#                 gpx_file=existing_gpx,          # 指定已有的gpx文件
-#                 refine_background=True,        # 精修背景
-#                 refine_cell=True,              # 精修晶胞
-#                 refine_scale=True,             # 精修标度因子
-#                 refine_instrument=True,        # 精修仪器参数
-#                 refine_absorption=False,       # 不精修吸收参数
-#                 refine_atoms=True,             # 精修原子参数和温度因子
-#                 atom_labels=selected_atom_labels,  # 指定要精修的原子
-#                 refine_atom_params=refine_atom_params,  # 原子精修参数类型
-#                 use_constraints=True,          # 使用约束
-#                 que=que
-#             )
-#         else:
-#             # 创建新项目
-#             results = neutron_refinement(
-#                 neutron_data=gsa_file,
-#                 neutron_inst=inst_file,
-#                 cif_files=[cif_file],
-#                 output_dir=output_dir,
-#                 refine_background=True,        # 精修背景
-#                 refine_cell=True,              # 精修晶胞
-#                 refine_scale=True,             # 精修标度因子
-#                 refine_instrument=True,        # 精修仪器参数
-#                 refine_absorption=False,       # 不精修吸收参数
-#                 refine_atoms=True,             # 精修原子参数和温度因子
-#                 atom_labels=selected_atom_labels,  # 指定要精修的原子
-#                 refine_atom_params=refine_atom_params,  # 原子精修参数类型
-#                 use_constraints=True,          # 使用约束
-#                 que=que
-#             )
-
-#         print("\n" + "="*60)
-#         print("精修完成!")
-#         print("="*60)
-#         print(f"最终Rwp: {results['rwp']:.2f}%")
-#         if results.get('refined_cif_files'):
-#             print(f"\n生成的精修CIF文件:")
-#             for cif_file_out in results['refined_cif_files']:
-#                 print(f"  - {cif_file_out}")
-#         print("="*60)
-
-#     except KeyboardInterrupt:
-#         print("\n\n用户中断执行")
-#         sys.exit(1)
-#     except Exception as e:
-#         print("\n" + "!"*60)
-#         print("精修过程中发生错误:")
-#         print("!"*60)
-#         print(f"错误类型: {type(e).__name__}")
-#         print(f"错误信息: {str(e)}")
-#         print("\n完整错误堆栈:")
-#         traceback.print_exc()
-#         print("!"*60)
-#         sys.exit(1)
-
-
-# import time,uuid
-# id_=str(uuid.uuid4())
-# for _ in range(1800):
-#     t=write_info("/aifs/user/home/liqingmeng/rozai_agent/tools/GSAS-II-master/GSASII/RUN0021905"
-#     ,"RUN0021905_group5.gsa"
-#     ,"RT_GROUP5.instprm"
-#     ,"mp-149.cif"
-#     ,"/aifs/user/home/liqingmeng/rozai_agent/tools/GSAS-II-master/GSASII/RUN0021905/gsas_output_20250908"
-#     ,id_)
-#     if t['state']=="completed":
-#         print(t)
-#         break
-#     else:
-#         print(t)
-#     time.sleep(100)
