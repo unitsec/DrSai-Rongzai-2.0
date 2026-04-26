@@ -11,7 +11,9 @@
             "qwen3 Max": "aliyun/qwen3-max",
             "qwen3 Coder+": "aliyun/qwen3-coder-plus",
             "minimax": "minimax/minimax-m2.7",
-            "磐石": "scienceone/s1-base-ultra"
+            "磐石": "scienceone/s1-base-ultra",
+            "intern-s1": "intern-ai/intern-s1",
+            "intern-s1-pro": "intern-ai/intern-s1-pro"
             },
         "default_config_name": "quick refinement",
         "version": "0.1.0",
