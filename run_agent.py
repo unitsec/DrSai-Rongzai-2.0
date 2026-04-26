@@ -4,6 +4,7 @@ import venv
 import asyncio, os
 
 from drsai.modules.components.model_client import  HepAIChatCompletionClient, ModelFamily
+
 from drsai.modules.components.model_client.anthropic import (
     HepAIAnthropicChatCompletionClient,
     get_info,
@@ -11,6 +12,8 @@ from drsai.modules.components.model_client.anthropic import (
     _MODEL_INFO
 )
 from drsai.modules.components.model_context import DrSaiChatCompletionContext
+from autogen_core.models import RequestUsage
+import autogen_ext.models.openai._openai_client as _openai_client_patch_target
 from drsai.modules.agents.skills_agent import SkillAgent, DrSaiAssistant
 from drsai.modules.baseagent import (
     DockerCommandLineCodeExecutor,
@@ -51,6 +54,18 @@ PERMISSION = (
     "owner: wanghao96@ihep.ac.cn"
 )
 print(f"PERMISSION: {PERMISSION}")
+
+
+def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
+    """兼容部分服务端在流式 chunk usage 中返回 None 的情况。"""
+    return RequestUsage(
+        prompt_tokens=(usage1.prompt_tokens or 0) + (usage2.prompt_tokens or 0),
+        completion_tokens=(usage1.completion_tokens or 0) + (usage2.completion_tokens or 0),
+    )
+
+
+# 保留流式输出，同时避免 _add_usage 因 None token 字段崩溃。
+_openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
     "quick refinement": "openai/gpt-4.1",
@@ -136,31 +151,17 @@ async def create_agent(
     WORKDIR=os.getenv("WORKDIR")
     USER_UPLOAD_DIR = os.getenv("USER_UPLOAD_DIR", "")
 
-    agent_introduction = """我是专门用于处理中子数据的科研狗，我的名字叫**蓉仔** 🐶
-
-                **我的专长能力：**
-                🔬 **中子衍射数据分析** - 使用GSAS-II进行Rietveld精修
-
-                **我可以帮您：**
-                - 处理RUN数据的衍射精修
-                - 进行多相精修（支持多个CIF文件）
-                - 自动生成精修结果和可视化图表
-
-                只需要提供数据文件给我，或者告诉我谱仪号、RUN号、探测器组和CIF文件, 我就能开始工作啦! """
 
     SYSTEM = f"""
-        你是中子散射数据专业分析智能体：蓉仔。
+        你是中子散射数据专业分析智能体：蓉仔🐶。
         你的工作模式是“skill驱动”：先读相关 skill，再按 skill 约束执行分析与工具调用。
-
-        可选自我介绍内容：
-        {agent_introduction}
 
         必须遵守以下规则：
         1. 全程使用与用户相同的语言。
         2. 专业任务必须先识别并阅读相关 skill；不得跳过 skill 直接凭经验执行。
         3. 当你阅读了skill，发现这是一个多步骤或多次循环任务时，应当将其提级为Core Skill；如果之前有已提级的skill，也需要考虑后续步骤是否要参考，不需要的话就给它降级；提级/降级/替换都要给出简洁理由。
         4. 当 skill 或任务表明需要外接 MCP 服务时，主动连接；连接后先依据返回的 description 与 inputSchema 选择工具，不假设固定工具名。
-        5. 每次调用除FinishTask的其他工具前，先用一到两句话说清“下一步做什么”和“为什么做”；禁止空泛理由。
+        5. 每次为完成专业任务调用工具前，先用一到两句话说清“下一步做什么”和“为什么做”；禁止空泛理由。
         6. 严格按 skill 的步骤、约束和验收标准执行。
         7. 仅使用当前可用工具；关键信息不足时先向用户澄清，不编造数据或结果。
         8. 了解并利用固定执行逻辑：
@@ -168,8 +169,7 @@ async def create_agent(
             - 在任务执行的中间过程，禁止调用 serve_files_for_user 传递图片文件，无论是否“同一图片”。
             - serve_files_for_user 仅用于可下载交付物，或用户明确要求你打包/下载文件时；不要用于中间过程传图。
             - 所有的图片均为“阅后即焚”机制：你看一遍后就会从上下文中删除，避免占用你大量上下文空间。
-            - 必须通过调用 FinishTask 工具才能结束循环并返回最终答案；纯文本回复不会结束循环。
-            - 当任务完成时，调用 FinishTask 并在 final_response 中给出最终答复。
+            - 当任务完成时，直接调用 FinishTask，并在 final_response 中给出面向用户的最终答复；因为必须通过调用 FinishTask 工具才能结束循环；纯文本回复不会结束循环。。
         9. 当用户意图是“请你直接把任务做好”时，你必须默认自主连续执行完整流程；中间可以简短汇报当前判断和下一步，但汇报后必须立即继续调用所需工具，不得只给出下一步策略后停下来等待用户回复。
         10. 连续两次得到相同或等价结果时，禁止继续重复调用同一个工具；必须先切换策略（更换参数、改用其他工具或直接总结当前结论）。
         11. 禁止在文本里伪造工具调用（例如 <invoke ...>、<minimaxtool_call> 等标记）。需要调用工具时，必须使用系统提供的原生函数调用机制。
@@ -183,7 +183,7 @@ async def create_agent(
         model_client=set_model_client(defult_config_name),
         system_message=SYSTEM,
         reflect_on_tool_use=False,
-        model_client_stream=True,  # Enable streaming tokens from the model client.
+        model_client_stream=True,
         # model_context=long_memory_context,
         tools=[],
         # drsaiAgent specific
