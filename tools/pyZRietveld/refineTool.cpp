@@ -7,6 +7,7 @@
 #include <map>
 #include <algorithm>
 #include <limits>
+#include <filesystem>
 #include "Z-Rietveld/Z-Rietveld/nlohmann/json.hpp"
 #include "Z-Rietveld/Z-Rietveld/Z-Rietveld.h"
 #include <stdexcept>
@@ -22,12 +23,12 @@ using namespace std;
 namespace py = pybind11;
 #endif
 
-void runRefine(shared_ptr<ZRTRietveld> rietveld, shared_ptr<ZRTFilePath> outPathObj);
+std::map<std::string,std::string> runRefine(shared_ptr<ZRTRietveld> rietveld, shared_ptr<ZRTFilePath> outPathObj, bool singleRun = false);
 
 // Configure a manual refinement: set which parameters to vary and initialize values.
 // New: configure manual refinement from a configuration dictionary
 // Supports both legacy parameter names and new standardized names
-void ManualRefinementWithDict(const std::string& ZRTnPathStr, const std::map<std::string,std::string>& cfg)
+std::map<std::string,std::string> ManualRefinementWithDict(const std::string& ZRTnPathStr, const std::map<std::string,std::string>& cfg)
 {
 
     // read the generated zrietveldn
@@ -35,8 +36,12 @@ void ManualRefinementWithDict(const std::string& ZRTnPathStr, const std::map<std
     std::shared_ptr<ZRTFilePath> outPathObj = ZRTFilePath::CreateWithUTF8String(ZRTnPathStr);
     shared_ptr<ZRTDocument> zrtnFile = ZRTDocument::CreateWithReadCborFile(outPathObj, &error);
     if (ZRTError::HasError(&error) || !zrtnFile) {
+        std::map<std::string,std::string> ret;
+        ret["ok"] = "false";
+        ret["fit_status"] = "load_error";
+        ret["error"] = error ? *error->GetAllMessage() : "Failed to open zrietveldn file.";
         if (error) cout << *error->GetAllMessage() << endl;
-        return;
+        return ret;
     }
 
     // Create and configure the Rietveld object from the read document
@@ -445,6 +450,47 @@ void ManualRefinementWithDict(const std::string& ZRTnPathStr, const std::map<std
                   << "Requires Z-Rietveld ProfileFunction API discovery." << std::endl;
     }
 
+    // === TOF FITTING RANGE ===
+    // cfg keys: "tof_min" and/or "tof_max" (numeric strings, in microseconds)
+    // Restricts the refinement window so Bragg-peak-dense low-TOF regions can be excluded.
+    {
+        std::string tofMinStr = trimCopy(getOrDefault("tof_min", ""));
+        std::string tofMaxStr = trimCopy(getOrDefault("tof_max", ""));
+        if (!tofMinStr.empty() || !tofMaxStr.empty()) {
+            try {
+                auto hists2 = rietveld->GetHistograms();
+                if (hists2) {
+                    for (auto &h : *hists2) {
+                        if (!h) continue;
+                        try {
+                            auto fr = h->GetFittingRange();
+                            if (!fr) {
+                                fr = std::make_shared<ZRTFittingRange>();
+                                h->SetFittingRange(fr);
+                            }
+                            fr->SetMode(ZRTFittingRangeModeDetail);
+                            auto detail = fr->GetDetail();
+                            if (!detail) {
+                                detail = std::make_shared<ZRTFittingRangeDetail>();
+                                fr->SetDetail(detail);
+                                detail->SetFittingRange(fr.get());
+                            }
+                            if (!tofMinStr.empty()) {
+                                try { detail->SetPeakRangeMin(std::stod(tofMinStr)); } catch(...) {}
+                            }
+                            if (!tofMaxStr.empty()) {
+                                try { detail->SetPeakRangeMax(std::stod(tofMaxStr)); } catch(...) {}
+                            }
+                            std::cerr << "[tof_range] histogram='" << h->GetLabel()
+                                      << "' tof_min=" << (tofMinStr.empty() ? "(keep)" : tofMinStr)
+                                      << " tof_max=" << (tofMaxStr.empty() ? "(keep)" : tofMaxStr) << std::endl;
+                        } catch(...) {}
+                    }
+                }
+            } catch(...) {}
+        }
+    }
+
     // === ABSORPTION REFINEMENT ===
     if (refineAbsorption || hasAbsorptionCfg) {
         try {
@@ -759,7 +805,86 @@ void ManualRefinementWithDict(const std::string& ZRTnPathStr, const std::map<std
         }
     } catch(...){}
 
-    runRefine(rietveld, outPathObj);
+    bool previewOnly = toBool(getOrDefault("preview_only", "false"), false);
+    bool anyRefineFlag =
+        scaleVary || refineBackground || refineProfileLevel0 || refineProfileLevel1 || refineProfileLevel2 ||
+        refineAlpha || refineBeta0 || refineBeta1 || refineR0 ||
+        varyMassRatio || varyLattice || varyOccupancy || varyPosition ||
+        refineSize || refineMustrain || refineAbsorption || hasAbsorptionCfg ||
+        refineInstrumentAlpha || refineInstrumentBeta || refineInstrumentSig ||
+        refineInstrumentX || refineInstrumentY || refineInstrumentZ ||
+        !refineAtomsMap.empty();
+
+    // If no parameter is opened for refinement, default to preview mode (single run).
+    if (!anyRefineFlag) {
+        previewOnly = true;
+    }
+
+    // === APPLY DATA FILTERING FOR TOF RANGE ===
+    // Before refinement, filter the histogram data to only include points within the specified tof range.
+    // This ensures that the refinement only uses data within [tof_min, tof_max].
+    {
+        std::string tofMinStr = trimCopy(getOrDefault("tof_min", ""));
+        std::string tofMaxStr = trimCopy(getOrDefault("tof_max", ""));
+        
+        if (!tofMinStr.empty() || !tofMaxStr.empty()) {
+            double minThreshold = !tofMinStr.empty() ? std::stod(tofMinStr) : -std::numeric_limits<double>::infinity();
+            double maxThreshold = !tofMaxStr.empty() ? std::stod(tofMaxStr) : std::numeric_limits<double>::infinity();
+            
+            try {
+                auto hists = rietveld->GetHistograms();
+                if (hists) {
+                    for (auto &h : *hists) {
+                        if (!h) continue;
+                        try {
+                            auto xs = h->GetXWaves();
+                            auto ys = h->GetYIntensities();
+                            auto errs = h->GetYErrors();
+                            auto ybgs = h->GetYBackgrounds();
+                            
+                            if (!xs || !ys || xs->size() != ys->size()) continue;
+                            
+                            // Filter data points within [minThreshold, maxThreshold]
+                            auto filteredXs = std::make_shared<std::vector<double>>();
+                            auto filteredYs = std::make_shared<std::vector<double>>();
+                            auto filteredErrs = std::make_shared<std::vector<double>>();
+                            auto filteredYbgs = std::make_shared<std::vector<double>>();
+                            
+                            for (size_t i = 0; i < xs->size(); ++i) {
+                                if ((*xs)[i] >= minThreshold && (*xs)[i] <= maxThreshold) {
+                                    filteredXs->push_back((*xs)[i]);
+                                    filteredYs->push_back((*ys)[i]);
+                                    if (errs && i < errs->size()) {
+                                        filteredErrs->push_back((*errs)[i]);
+                                    }
+                                    if (ybgs && i < ybgs->size()) {
+                                        filteredYbgs->push_back((*ybgs)[i]);
+                                    }
+                                }
+                            }
+                            
+                            // Replace the data with filtered versions
+                            h->SetXWaves(filteredXs);
+                            h->SetYIntensities(filteredYs);
+                            if (!filteredErrs->empty()) {
+                                h->SetYErrors(filteredErrs);
+                            }
+                            if (!filteredYbgs->empty()) {
+                                h->SetYBackgrounds(filteredYbgs);
+                            }
+                            
+                            std::cerr << "[data_filter] histogram='" << h->GetLabel()
+                                      << "' original_points=" << xs->size()
+                                      << " filtered_points=" << filteredXs->size()
+                                      << " range=[" << minThreshold << ", " << maxThreshold << "]" << std::endl;
+                        } catch(...) {}
+                    }
+                }
+            } catch(...) {}
+        }
+    }
+
+    return runRefine(rietveld, outPathObj, previewOnly);
 }
 
 void autoRefine(const std::string& ZRTnPathStr)
@@ -811,21 +936,63 @@ void autoRefine(const std::string& ZRTnPathStr)
     autoAnalyze->SetUse(true);
     rietveld->SetUseDefaultDebugDescription(true); 
 
-    runRefine(rietveld, outPathObj);
+    (void)runRefine(rietveld, outPathObj, false);
 }
 
-void runRefine(shared_ptr<ZRTRietveld> rietveld, shared_ptr<ZRTFilePath> outPathObj)
+static std::string ExtractResultSectionFromRunLog(const std::string& fullLog)
 {
+    if (fullLog.empty()) return fullLog;
+
+    size_t start = fullLog.find("Outputting...");
+    if (start == std::string::npos) {
+        start = fullLog.find("* S^2(Chi-square), Degree_of_freedom, Number_of_iteration");
+    }
+    if (start == std::string::npos) {
+        start = fullLog.find("* Histogram_");
+    }
+    if (start == std::string::npos) {
+        return fullLog;
+    }
+
+    size_t end = std::string::npos;
+    size_t historyOutput = fullLog.find("\n-- History --", start);
+    if (historyOutput != std::string::npos) {
+        end = historyOutput;
+    }
+
+    size_t finished = fullLog.find("---> Analysis finished <---", start);
+    if (finished != std::string::npos) {
+        size_t finishedLineEnd = fullLog.find('\n', finished);
+        size_t finishedEnd = (finishedLineEnd == std::string::npos) ? fullLog.size() : (finishedLineEnd + 1);
+        if (end == std::string::npos || finishedEnd < end) {
+            end = finishedEnd;
+        }
+    }
+
+    if (end == std::string::npos) {
+        end = fullLog.size();
+    }
+    return fullLog.substr(start, end - start);
+}
+
+std::map<std::string,std::string> runRefine(shared_ptr<ZRTRietveld> rietveld, shared_ptr<ZRTFilePath> outPathObj, bool singleRun)
+{
+    std::map<std::string,std::string> result;
+    result["ok"] = "false";
+    result["fit_status"] = "unknown";
+
     // excute the first run (simulation)
     shared_ptr<ZRTError> error = nullptr;
     ZRTRietveldFinishedMode finishedMode = rietveld->Run(&error);
     if (ZRTError::HasError(&error)) {
         cout << "Run error (first run): " << *error->GetAllMessage() << endl;
-        return;
+        result["fit_status"] = "run_error_first";
+        result["error"] = *error->GetAllMessage();
+        return result;
     }
 
     // check whether a second run is needed for fitting
-    if (finishedMode == ZRTRietveldFinishedModeSimulation) {
+    if (!singleRun && finishedMode == ZRTRietveldFinishedModeSimulation) {
         cout << "First run completed (Simulation). Running again for Fitting..." << endl;
 
         // 第二次运行进行实际的精修
@@ -833,7 +1000,9 @@ void runRefine(shared_ptr<ZRTRietveld> rietveld, shared_ptr<ZRTFilePath> outPath
         finishedMode = rietveld->Run(&error);
         if (ZRTError::HasError(&error)) {
             cout << "Run error (second run): " << *error->GetAllMessage() << endl;
-            return;
+            result["fit_status"] = "run_error_second";
+            result["error"] = *error->GetAllMessage();
+            return result;
         }
     }
 
@@ -856,117 +1025,161 @@ void runRefine(shared_ptr<ZRTRietveld> rietveld, shared_ptr<ZRTFilePath> outPath
         } catch(...) {
             cout << "Failed to retrieve fit statistics." << endl;
         }
-        // Export fit results (x, y_obs, y_calc, residual) for each histogram and plot via Python
-        try {
-            auto hists = rietveld->GetHistograms();
-            if (hists && 0 < hists->size()) {
-                std::filesystem::path outDir = outPathObj->GetPath().parent_path();
-                // write a small python plotting script once
-                std::string pyPath = (outDir / "tmp_plot_fit.py").string();
-                std::ofstream pof(pyPath);
-                pof << R"PY(import sys
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import csv
-import os
+    }
 
-csvfile = sys.argv[1]
-pngfile = sys.argv[2]
+    // Export fit/bragg CSVs for Python-side plotting in both simulation and fitting modes.
+    try {
+        auto hists = rietveld->GetHistograms();
+        if (hists && 0 < hists->size()) {
+            std::filesystem::path outDir = outPathObj->GetPath().parent_path();
+            std::vector<std::string> csvPaths;
+            std::vector<std::string> braggCsvPaths;
 
-xs = []
-ys = []
-yc = []
-with open(csvfile,'r') as f:
-    r = csv.reader(f)
-    hdr = next(r,None)
-    for row in r:
-        try:
-            xs.append(float(row[0])); ys.append(float(row[1])); yc.append(float(row[2]))
-        except:
-            pass
-
-res = [ (y - c) for y,c in zip(ys,yc) ]
-
-fig, (ax1, ax2) = plt.subplots(2,1, figsize=(8,6), gridspec_kw={'height_ratios':[3,1]}, sharex=True)
-ax1.plot(xs, ys, '-', label='Observed', lw=0.8)
-ax1.plot(xs, yc, '-', label='Calculated', lw=0.8)
-ax1.legend()
-ax1.set_ylabel('Intensity')
-ax1.set_title(os.path.basename(csvfile))
-
-ax2.plot(xs, res, '-', lw=0.6)
-ax2.axhline(0, color='k', lw=0.4)
-ax2.set_xlabel('X')
-ax2.set_ylabel('Residual')
-
-plt.tight_layout()
-plt.savefig(pngfile, dpi=150)
-print('Wrote', pngfile)
-)PY";
-                pof.close();
-
-                for (size_t hi = 0; hi < hists->size(); ++hi) {
-                    auto h = hists->at(hi);
-                    if (!h) continue;
-                    const vector<double>* xs = h->GetXWaves();
-                    const vector<double>* ys = h->GetYIntensities();
-                    const vector<double>* yc = h->GetYCals();
-                    if (!xs || !ys || !yc) continue;
-                    if (xs->size() != ys->size() || xs->size() != yc->size()) continue;
-                    std::string label = h->GetLabel();
-                    std::string csvPath = (outDir / (label + std::string("_fit.csv"))).string();
-                    std::ofstream ofs(csvPath);
-                    ofs << "x,y_obs,y_calc\n";
-                    for (size_t i = 0; i < xs->size(); ++i) ofs << (*xs)[i] << "," << (*ys)[i] << "," << (*yc)[i] << "\n";
-                    ofs.close();
-
-                    std::string pngPath = (outDir / (label + std::string("_fit.png"))).string();
-                    // Remove stale output to avoid reporting success from an old file.
-                    {
-                        std::error_code ec;
-                        std::filesystem::remove(pngPath, ec);
-                    }
-
-                    // run python script
-                    std::vector<std::string> launchers;
-                    if (const char* pyexe = std::getenv("PYTHON_EXECUTABLE"); pyexe && *pyexe) {
-                        launchers.emplace_back(pyexe);
-                    }
-                    if (const char* venv = std::getenv("VIRTUAL_ENV"); venv && *venv) {
-                        std::string venvPy = std::string(venv) + "/bin/python";
-                        launchers.push_back(venvPy);
-                    }
-                    launchers.push_back("python");
-                    launchers.push_back("python3");
-                    launchers.push_back("py -3");
-
-                    int rc = -1;
-                    bool plotGenerated = false;
-                    for (const auto &launcher : launchers) {
-                        std::string cmd = launcher + " \"" + pyPath + "\" \"" + csvPath + "\" \"" + pngPath + "\"";
-                        std::cerr << "Trying: " << cmd << std::endl;
-                        rc = std::system(cmd.c_str());
-                        std::cerr << "Return code: " << rc << std::endl;
-                        if (rc == 0 && std::filesystem::exists(pngPath)) {
-                            plotGenerated = true;
-                            break;
+            std::vector<std::string> phaseLabels;
+            try {
+                auto crystalModel = rietveld->GetCrystalModel();
+                auto phases = crystalModel ? crystalModel->GetPhases() : nullptr;
+                if (phases) {
+                    for (size_t pi = 0; pi < phases->size(); ++pi) {
+                        auto phase = phases->at(pi);
+                        if (phase) {
+                            phaseLabels.push_back(phase->GetLabelForGlobal());
+                        } else {
+                            phaseLabels.push_back(std::string("Phase ") + std::to_string(pi + 1));
                         }
                     }
-                    if (plotGenerated) {
-                        std::cerr << "Wrote plot: " << pngPath << std::endl;
-                    } else {
-                        std::cerr << "Failed to create plot for " << label
-                                    << ". CSV is at " << csvPath
-                                    << ". Hint: install matplotlib in the Python environment used by this process."
-                                    << std::endl;
+                }
+            } catch(...) {
+            }
+
+            for (size_t hi = 0; hi < hists->size(); ++hi) {
+                auto h = hists->at(hi);
+                if (!h) continue;
+                const vector<double>* xs = h->GetXWaves();
+                const vector<double>* ys = h->GetYIntensities();
+                const vector<double>* yc = h->GetYCals();
+                const vector<double>* yb = h->GetYBackgrounds();
+                if (!xs || !ys || !yc) continue;
+                if (xs->size() != ys->size() || xs->size() != yc->size()) continue;
+                bool hasBackground = (yb && yb->size() == xs->size());
+                std::string label = h->GetLabel();
+                std::string csvPath = (outDir / (label + std::string("_fit.csv"))).string();
+                
+                // Extract tof_min and tof_max from FittingRange if set.
+                double tofMinVal = std::numeric_limits<double>::quiet_NaN();
+                double tofMaxVal = std::numeric_limits<double>::quiet_NaN();
+                try {
+                    auto fr = h->GetFittingRange();
+                    if (fr && fr->GetMode() == ZRTFittingRangeModeDetail) {
+                        auto detail = fr->GetDetail();
+                        if (detail) {
+                            tofMinVal = detail->GetPeakRangeMin();
+                            tofMaxVal = detail->GetPeakRangeMax();
+                        }
+                    }
+                } catch(...) {}
+                
+                std::ofstream ofs(csvPath);
+                // Write metadata comments at the top.
+                ofs << "# tof_min=" << tofMinVal << "\n";
+                ofs << "# tof_max=" << tofMaxVal << "\n";
+                ofs << "x,y_obs,y_calc,y_bkg,residual\n";
+                
+                // Apply tof range filtering if tof_min and/or tof_max are set
+                bool hasRangeLimit = !std::isnan(tofMinVal) || !std::isnan(tofMaxVal);
+                double minForFilter = hasRangeLimit && !std::isnan(tofMinVal) ? tofMinVal : -std::numeric_limits<double>::infinity();
+                double maxForFilter = hasRangeLimit && !std::isnan(tofMaxVal) ? tofMaxVal : std::numeric_limits<double>::infinity();
+                
+                for (size_t i = 0; i < xs->size(); ++i) {
+                    // Skip points outside the tof range if filtering is active
+                    if (hasRangeLimit && ((*xs)[i] < minForFilter || (*xs)[i] > maxForFilter)) {
+                        continue;
+                    }
+                    double ybVal = hasBackground ? (*yb)[i] : 0.0;
+                    double residual = (*ys)[i] - (*yc)[i];
+                    ofs << (*xs)[i] << "," << (*ys)[i] << "," << (*yc)[i] << "," << ybVal << "," << residual << "\n";
+                }
+                ofs.close();
+                csvPaths.push_back(csvPath);
+
+                try {
+                    const auto* allPeaks = h->GetAllPhaseOriginalPeakPositions();
+                    if (allPeaks && !allPeaks->empty()) {
+                        std::string braggCsvPath = (outDir / (label + std::string("_bragg.csv"))).string();
+                        std::ofstream bof(braggCsvPath);
+                        bof << "phase_index,phase_label,position\n";
+
+                        for (size_t ip = 0; ip < allPeaks->size(); ++ip) {
+                            const std::vector<double>* phasePeaks = allPeaks->at(ip);
+                            if (!phasePeaks || phasePeaks->empty()) continue;
+
+                            std::string phaseLabel = (ip < phaseLabels.size() && !phaseLabels[ip].empty())
+                                ? phaseLabels[ip]
+                                : (std::string("Phase ") + std::to_string(ip + 1));
+                            std::replace(phaseLabel.begin(), phaseLabel.end(), ',', ' ');
+
+                            for (size_t k = 0; k < phasePeaks->size(); ++k) {
+                                bof << ip << "," << phaseLabel << "," << phasePeaks->at(k) << "\n";
+                            }
+                        }
+                        bof.close();
+                        braggCsvPaths.push_back(braggCsvPath);
+                    }
+                } catch(...) {
+                }
+            }
+
+            if (!csvPaths.empty()) {
+                std::string joined;
+                for (size_t i = 0; i < csvPaths.size(); ++i) {
+                    if (0 < i) joined += ";";
+                    joined += csvPaths[i];
+                }
+                result["fit_data_csvs"] = joined;
+            }
+
+            if (!braggCsvPaths.empty()) {
+                std::string joinedBragg;
+                for (size_t i = 0; i < braggCsvPaths.size(); ++i) {
+                    if (0 < i) joinedBragg += ";";
+                    joinedBragg += braggCsvPaths[i];
+                }
+                result["bragg_csvs"] = joinedBragg;
+            }
+        }
+    } catch(...) {
+        std::cerr << "Failed to export fit result CSVs." << std::endl;
+    }
+
+    result["fit_status"] = (finishedMode == ZRTRietveldFinishedModeFitting) ? "fitting" : "simulation";
+    result["ok"] = "true";
+
+    try {
+        ZRTDocument* doc = rietveld ? rietveld->GetDocument() : nullptr;
+        if (doc) {
+            int32_t historyIndex = doc->GetCurrentHistoryIndex();
+            auto logString = doc->GetLogStringWithHistoryIndex(historyIndex);
+            if (logString) {
+                const std::string fullLog = *logString;
+                const std::string resultLog = ExtractResultSectionFromRunLog(fullLog);
+                result["history_index"] = std::to_string(historyIndex);
+
+                if (outPathObj) {
+                    std::filesystem::path reportPath = outPathObj->GetPath();
+                    reportPath.replace_extension(".txt");
+                    std::ofstream of(reportPath.string());
+                    if (of.is_open()) {
+                        of << resultLog;
+                        of.close();
+                        result["report_path"] = reportPath.string();
                     }
                 }
             }
-        } catch(...) {
-            std::cerr << "Failed to export or plot fit results." << std::endl;
         }
+    } catch(...) {
     }
+
+    return result;
 }
 
 
@@ -1035,7 +1248,11 @@ static std::string PrepareHistogramFileForZRT(const std::string& inputPathStr)
 
 
 std::string
-generateZrietveldnFile(const std::string& histPathStr, const std::string& instrPathStr, const std::vector<std::string>& cifPathStrs)
+generateZrietveldnFile(
+    const std::string& histPathStr,
+    const std::string& instrPathStr,
+    const std::vector<std::string>& cifPathStrs,
+    const std::string& outputPathStr = "")
 {
     std::string adaptedHistPathStr = PrepareHistogramFileForZRT(histPathStr);
 
@@ -1189,7 +1406,22 @@ generateZrietveldnFile(const std::string& histPathStr, const std::string& instrP
 	doc->AppendRietveldCurrent(rietveld);
 
 	// 7) Save the document to a .zrietveldn file
-    auto outputPath = histPath->DeleteLastPathComponent()->Append(histPath->GetFileNameStem() + ".zrietveldn");
+    shared_ptr<ZRTFilePath> outputPath;
+    if (!outputPathStr.empty()) {
+        std::filesystem::path outFs(outputPathStr);
+        auto parent = outFs.parent_path();
+        if (!parent.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(parent, ec);
+            if (ec) {
+                throw std::runtime_error(std::string("create_directories failed: ") + ec.message());
+            }
+        }
+        outputPath = ZRTFilePath::CreateWithUTF8String(outputPathStr);
+    }
+    else {
+        outputPath = histPath->DeleteLastPathComponent()->Append(histPath->GetFileNameStem() + ".zrietveldn");
+    }
     {
         shared_ptr<ZRTError> err = nullptr;
         doc->SaveToCborFile(outputPath, nullptr, &err);
@@ -1206,7 +1438,14 @@ generateZrietveldnFile(const std::string& histPathStr, const std::string& instrP
 #if defined(BUILD_PYBIND)
 PYBIND11_MODULE(refineTool, m) {
     m.doc() = "RefineTool pybind11 bindings";
-    m.def("genZRTn", &generateZrietveldnFile, "Generate .zrietveldn file from paths: hist, instr, [cif,...]");
+    m.def(
+        "genZRTn",
+        &generateZrietveldnFile,
+        "Generate .zrietveldn file from paths: hist, instr, [cif,...], optional output path",
+        py::arg("histPathStr"),
+        py::arg("instrPathStr"),
+        py::arg("cifPathStrs"),
+        py::arg("outputPathStr") = "");
     m.def("refine", &ManualRefinementWithDict, "Perform manual refinement with a configuration dictionary");
     m.def("autoRefine", &autoRefine, "Perform auto refinement on a .zrietveldn file");
 }
