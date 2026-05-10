@@ -1,6 +1,6 @@
 ---
-name: rietveld-auto-refiner
-description: 面向中子粉末衍射 Rietveld 自动精修技能。以及获取和处理精修所需的文件的技能。当用户要求精修数据时，需要首先阅读这个skill
+name: gsas2-refine
+description: 面向中子粉末衍射使用gsas2引擎的 Rietveld 自动精修技能。以及获取和处理精修所需的文件的技能。当用户要求精修数据时，需要首先阅读这个skill
 ---
 
 # Rietveld Auto Refiner

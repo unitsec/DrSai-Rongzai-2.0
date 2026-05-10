@@ -29,12 +29,6 @@ except ImportError:
 TMP_DIR = (Path(__file__).resolve().parent.parent / 'tmp')
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-mcp=FastMCP(
-    name="RefineToolsGSASII",
-    instructions="A tool for refining neutron diffraction data and generating refined structure files.",
-    port = 42501, # for transport = "sse" to start a server-sent events (SSE) server
-    )
-
 def setup_logging(output_dir):
     """配置日志系统"""
     logging.basicConfig(
@@ -1780,6 +1774,12 @@ refine_tools_runner = ProcessPollingMcpToolBase(
     target_func=neutron_refinement,
     # param_mapping auto-derived from neutron_refinement's signature
 )
+
+mcp=FastMCP(
+    name="RefineToolsGSASII",
+    instructions="A tool for refining neutron diffraction data and generating refined structure files.",
+    port = 42501, # for transport = "sse" to start a server-sent events (SSE) server
+    )
 
 refine_tools_runner.register_mcp_tool(mcp, name="RefineToolsGSASII")
 
