@@ -30,6 +30,7 @@ files/*
 
 # 忽略智能体工作目录
 agentWorkSpace/
+userRecord/
 
 test_datesets/*
 # datasets/*
@@ -39,6 +40,14 @@ test_datesets/*
 *.lst
 *.txt
 *.csv
+
+# 忽略z-rietveld源文件
+tools/pyZRietveld/Z_DensityDistribution/*
+tools/pyZRietveld/Z-Rietveld/*
+tools/pyZRietveld/Z-CIF/*
+tools/pyZRietveld/Z-Foundation/*
+tools/pyZRietveld/.build/*
+tools/pyZRietveld/testData/*
 
 tools/GSAS-II-master/GSASII/0data_test/*
 tools/GSAS-II-master/GSASII/RUN0021905_20250904/*
