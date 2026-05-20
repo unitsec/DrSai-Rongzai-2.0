@@ -1,15 +1,20 @@
-import multiprocessing
+import json
 from pathlib import Path
 import logging
 import os
-from glob import glob
+import traceback
+import uuid
+from matplotlib import pyplot as plt
 from mcp.server.fastmcp import FastMCP
+import numpy as np
 
-mcp=FastMCP(
-    name="GSASII_Refinement_Tool",
-    instructions="A tool for refining neutron diffraction data and generating refined structure files.",
-    port = 42502, # for transport = "sse" to start a server-sent events (SSE) server
-    )
+from fit_method import SasViewFit, check_para, build_default_para
+from src.core.tools.mcp_task_runner import ProcessPollingMcpToolBase
+
+
+TMP_DIR = Path(__file__).resolve().parent.parent / 'tmp'
+TMP_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def setup_logging(output_dir):
     """配置日志系统"""
@@ -23,159 +28,389 @@ def setup_logging(output_dir):
             )
     return logging.getLogger(__name__)
 
-id_to_task={}
-id_to_result={}
-@mcp.tool()
+def _as_1d(arr):
+    a = np.asarray(arr)
+    return a.reshape(-1)
+
+def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, output_dir, fit_idx, data_stem="data"):
+    result_data = {}
+    thread_id = uuid.uuid4()
+    #########保存拟合图片############
+    # 统一转为1D数组，容错处理None
+    q = _as_1d(q) if q is not None else np.array([])
+    Ierr = _as_1d(Ierr) if Ierr is not None else None
+    I_data = _as_1d(I_data) if I_data is not None else np.array([])
+    I_fit_data = _as_1d(I_fit_data) if I_fit_data is not None else np.array([])
+    residual = _as_1d(residual) if residual is not None else np.array([])
+
+    # 使用matplotlib绘制到内存PNG
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(5, 4), gridspec_kw={'height_ratios': [2, 1]})
+    # 上：实验数据 + 拟合
+    if Ierr is not None and Ierr.size == I_data.size:
+        axs[0].errorbar(q, I_data, yerr=Ierr, fmt='o', label='Experiment', capsize=3, zorder=1)
+    else:
+        axs[0].plot(q, I_data, 'o', label='Experiment', zorder=1)
+    axs[0].plot(q, I_fit_data, '-', label='Fit Curve', zorder=2)
+    axs[0].set_xscale('log')
+    axs[0].set_yscale('log')
+    axs[0].set_ylabel("I")
+    axs[0].legend(loc='best')
+    axs[0].set_title(title)
+
+    # 下：残差
+    axs[1].plot(q, residual, 'r.', label='residual')
+    axs[1].axhline(0, color='gray', lw=1)
+    axs[1].set_xlabel("q")
+    axs[1].set_ylabel("res.")
+    axs[1].legend(loc='best')
+
+    fig.tight_layout()
+    plot_path = os.path.join(output_dir, f'{data_stem}_sasview_fit_{fit_idx}_{thread_id}.png')
+    fig.savefig(plot_path, format='png', dpi=400, bbox_inches='tight')
+    plt.close(fig)
+    result_data['plot_path'] = plot_path
+
+    # 假设上述变量已准备好（q, I_data, Ierr, I_fit_data, residual）
+    # 如果 Ierr 为 None，就用全0或 NAN 填充：
+    if Ierr is None:
+        Ierr = np.full_like(I_data, np.nan)
+    # 合并为二维数组，按列排列
+    # 注意都要为 1D，且长度一致
+    saved_data = np.column_stack([q, I_data, Ierr, I_fit_data, residual])
+    # 设置保存路径
+    dat_path = os.path.join(output_dir, f'{data_stem}_sasview_fit_{fit_idx}.dat')
+    # 设置标题字符串
+    header = 'q\tI_data\tIerr\tI_fit_data\tresidual'
+    # 保存为 .dat 文件
+    np.savetxt(dat_path, saved_data, header=header, fmt='%.8g', delimiter='\t', comments='')
+    result_data['plot_data_path'] = dat_path
+    ####################################
+    #########保存拟合结果############
+    # 保存拟合结果到json文件
+    json_path = os.path.join(output_dir, f'{data_stem}_sasview_fit_{fit_idx}.json')
+    with open(json_path, 'w') as f:
+        json.dump(pars, f, indent=4)
+    result_data['json_path'] = json_path
+    return result_data
+
 def refine_data(data_path: str = None,
-                 shape: str = None, 
-                 para: dict = None, 
-                 task_id: str = None) -> dict:
-    id_=task_id
-    if id_ not in id_to_task or id_to_task[id_]==None:
-        # 任务创建
-        id_to_result[id_]=multiprocessing.Queue()
-        id_to_task[id_]=multiprocessing.Process(target=neutron_refinement,kwargs={
-                    'output_dir': output_dir,
-                    'neutron_data': gsa_path,
-                    'neutron_inst': instprm_path,
-                    'cif_files': cif_paths,
-                    'gpx_file': gpx_path,
-                    'refine_idx': refine_idx,
-                'advanced_config': refine_params_norm,
-                    'refine_background': refine_background,
-                    'refine_cell': refine_cell,
-                    'refine_scale': refine_scale,
-                    'refine_instrument': refine_instrument,
-                    'refine_absorption': refine_absorption,
-                    'refine_atoms': refine_atoms,
-                    'use_constraints': use_constraints,
-                    'que': id_to_result[id_]
-                }
+                json_path: str = None, 
+                shape: str = None,
+                fit_params: dict = None,
+                fit_idx: int = None,
+                output_dir: str = None):
+    '''
+    
+    '''    
+    # 创建输出目录
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    fit_idx = fit_idx if fit_idx is not None else 0
+
+    with open(json_path, 'r') as f:
+        para = json.load(f)
+    try:
+        fit_params = fit_params or {}
+        has_param_adjustment = False
+        for cfg in fit_params.values():
+            if not isinstance(cfg, dict):
+                continue
+            if cfg.get('fit') or cfg.get('value') is not None:
+                has_param_adjustment = True
+                break
+
+        # 如果本轮没有任何参数被修正，默认开放 scale（或混合模型的 A_scale）进行拟合
+        if not has_param_adjustment:
+            fit_params = dict(fit_params)
+            # 找第一个可用的 scale 参数：优先顶层 scale，其次 A_scale 等前缀 scale
+            default_scale_key = None
+            for candidate in ['scale'] + sorted(k for k in para.get('para', {}) if k.endswith('_scale')):
+                if candidate in para.get('para', {}):
+                    default_scale_key = candidate
+                    break
+            if default_scale_key:
+                scale_cfg = fit_params.get(default_scale_key, {})
+                if not isinstance(scale_cfg, dict):
+                    scale_cfg = {}
+                scale_cfg['fit'] = True
+                if 'value' not in scale_cfg:
+                    scale_cfg['value'] = None
+                fit_params[default_scale_key] = scale_cfg
+
+        # 根据fit_params设置para中需要修改的参数
+        for key in para['para']:
+            if key in fit_params:
+                cfg = fit_params[key]
+                para['para'][key]['fit'] = cfg.get('fit', False)
+                if cfg.get('value') is not None:
+                    para['para'][key]['value'] = cfg['value']
+                # _pd 参数支持额外的 dispersity 子项：type / n / nsigma
+                if key.endswith('_pd'):
+                    if 'type' in cfg:
+                        para['dispersity'][f'{key}_type'] = cfg['type']
+                    if 'n' in cfg:
+                        para['dispersity'][f'{key}_n'] = cfg['n']
+                    if 'nsigma' in cfg:
+                        para['dispersity'][f'{key}_nsigma'] = cfg['nsigma']
+            else:
+                para['para'][key]['fit'] = False
+                
+        print(f"拟合参数：{para}")
+        # 检查输入参数格式与形状参数配置是否匹配
+        config_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.json')
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        if not check_para(shape, para, config):
+            print("输入参数格式与形状参数配置不匹配")
+        
+        # 开始拟合
+        svf = SasViewFit(data_path, shape, para)
+        q, Ierr, Iq_data, Iq_model, pars, fit_result = svf.fit()
+
+        # 组织拟合结果
+        for name, param in pars.items():
+            if name in para["para"]:
+                para["para"][name]["value"] = param.value
+                para["para"][name]["error"] = None
+                if para["para"][name]["fit"]:
+                    for idx, value in enumerate(fit_result['x']):
+                        if value == param.value:
+                            para["para"][name]["error"] = fit_result['dx'][idx]
+            if name in para["dispersity"]:
+                para["dispersity"][name] = param.value
+        print(f"拟合结果：{para}")
+        residual = (Iq_data - Iq_model) / Ierr
+        data_length = len(q)
+        chisquare = sum(residual ** 2)/(data_length-3)
+        print(f"拟合结果的χ²值: {chisquare}")
+
+        #########保存拟合结果#
+        data_stem = Path(data_path).stem
+        result_data = export_fit_results(q, Ierr, Iq_data, Iq_model, para, residual, f"model：{shape}_chi2:{chisquare:.2f}_fit_idx:{fit_idx}", output_dir, fit_idx, data_stem=data_stem)
+
+        # 输出要重新组织
+        result_data['data_path'] = data_path
+        result_data['shape'] = shape
+        result_data['para'] = para
+        result_data['chisquare'] = chisquare
+        result_data['fit_idx'] = fit_idx
+        return result_data
+
+    except Exception as e:
+        raise
+
+def sasview_refinement(
+    data_path: str = None,
+    json_path: str = None,
+    model: str = None,
+    fit_params: dict = None,
+    user_id: str = None,
+    mission_name: str = None,
+    task_id: str = None,
+) -> dict:
+    """
+    使用 SasView 对小角散射数据进行拟合并返回结果。
+
+    Args:
+        data_path: 小角散射数据文件路径。
+        json_path: 初始参数 JSON 路径。为 None 时将根据 model 自动生成默认参数文件。
+        model: 拟合模型名称（如 guinier_porod、sphere+cylinder）。
+        fit_params: 本轮拟合参数覆盖项，结构与参数 JSON 的 para 字段一致。
+        user_id: 用户 ID，用于输出目录组织。
+        mission_name: 任务名；同一任务多轮调用建议保持一致。
+        task_id: 任务 ID。首次调用传 None 由框架生成；轮询时传上次返回的 task_id。
+
+    Returns:
+        该函数作为 ProcessPollingMcpToolBase 的业务函数，返回：
+        {
+            'status': 'success' | 'failed',
+            'content': {
+                'data_path': 原始数据路径,
+                'json_path': 参数文件路径,
+                'model': 使用的模型名,
+                'shape': 与历史接口兼容的模型名别名,
+                'params': 拟合后的参数,
+                'chisquare': 最终拟合 χ²,
+                'plot_path': 拟合图路径,
+                'plot_data_path': 拟合曲线导出数据路径,
+                'output_dir': 输出目录,
+                'fit_idx': 拟合轮次索引
+            } 或字符串（失败时）
+        }
+
+    MCP 最终对外返回结构由框架包装为：
+    {
+        'task_id': '...',
+        'state': 'completed' | 'running',
+        'result': {
+            'status': 'success' | 'failed' | 'pending',
+            'content': ...
+        }
+    }
+    """
+    try:
+        # 与 GSAS 工具保持一致：按 user_id/mission_name 组织输出目录
+        user_key = user_id or 'default_user'
+        mission_key = mission_name or task_id or 'default_mission'
+        output_dir = TMP_DIR / user_key / mission_key
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        if not data_path or not os.path.exists(data_path):
+            return {
+                'status': 'failed',
+                'content': f'数据文件不存在: {data_path}'
+            }
+
+        if not model:
+            return {
+                'status': 'failed',
+                'content': '缺少必填参数 model。'
+            }
+
+        # 若未提供 json_path，则基于模型生成默认参数
+        if not json_path:
+            initial_para = build_default_para(model)
+            json_path = str(output_dir / 'sasview_fit_0.json')
+            with open(json_path, 'w') as _f:
+                json.dump(initial_para, _f, indent=4)
+            print(f'初始参数已生成并保存: {json_path}')
+
+        fit_idx = 0
+        result = refine_data(
+            data_path=data_path,
+            json_path=json_path,
+            shape=model,
+            fit_params=fit_params,
+            fit_idx=fit_idx,
+            output_dir=str(output_dir),
         )
 
-        result_json['state']='created'
-        id_to_task[id_].start()
-        # id_to_task[id_].kill()
-        # id_to_task.pop(id_)
+        return {
+            'status': 'success',
+            'content': {
+                'data_path': result.get('data_path'),
+                'json_path': result.get('json_path'),
+                'model': result.get('shape'),
+                'shape': result.get('shape'),
+                'params': result.get('para'),
+                'chisquare': result.get('chisquare'),
+                'plot_path': result.get('plot_path'),
+                'plot_data_path': result.get('plot_data_path'),
+                'output_dir': str(output_dir),
+                'fit_idx': result.get('fit_idx'),
+            }
+        }
+    except Exception:
+        return {
+            'status': 'failed',
+            'content': traceback.format_exc(),
+        }
 
-    else:
-        if not id_to_task[id_].is_alive():
-            info=id_to_result[id_].get()
-            id_to_task[id_].join()
-            if (not info) or (isinstance(info, dict) and info.get('status') == 'error'):
-                error_msg = info.get('error') if isinstance(info, dict) else "中子精修处理失败"
-                traceback_msg = info.get('traceback') if isinstance(info, dict) else None
+refine_tools_runner = ProcessPollingMcpToolBase(
+    timeout_sec=1200.0,
+    poll_interval=1.0,
+    target_func=sasview_refinement,
+    # param_mapping auto-derived from sasview_refinement's signature
+)
 
-                result_json['state'] = 'completed'
-                result_json['status'] = 'error'
-                result_json['result'] = {
-                    "status": "error",
-                    "error": error_msg,
-                    "traceback": traceback_msg,
-                    "suggestion": "请检查输入文件格式、仪器参数或结构文件是否正确"
-                }
-                result_json["summary"] = f"GSAS-II中子粉末衍射精修失败: {error_msg}"
-                id_to_task[id_] = None
-            else:
-                # 处理结果
-                # print(info)
-                id_to_task[id_]=None
-                result_json['state']='completed'
-                result_json['status']='success'
-                result_json["name"] = f"{task_id}_neutron_refinement"
-                
-                # 计算输出文件大小并构建结果信息
-                output_files = []
-                total_size_bytes = 0
-                total_size_mb = 0
-                
-                # 检查输出目录中的所有文件
-                if os.path.exists(output_dir):
-                    for filename in os.listdir(output_dir):
-                        file_path = os.path.join(output_dir, filename)
-                        if os.path.isfile(file_path):
-                            file_size = os.path.getsize(file_path)
-                            file_size_mb = file_size / (1024 * 1024)
-                            
-                            output_files.append({
-                                "filename": filename,
-                                "path": file_path,
-                                "size_bytes": file_size,
-                                "size_mb": round(file_size_mb, 3)
-                            })
-                            
-                            total_size_bytes += file_size
-                            total_size_mb += file_size_mb
-                
-                # 构建摘要信息
-                rwp = info.get('rwp', 0.0)
-                result_json["summary"] = f"GSAS-II中子粉末衍射精修完成，最终Rwp: {rwp:.2f}%\n"
+mcp=FastMCP(
+    name="SasAnalysisToolsSasview",
+    instructions="A tool for refining small-angle neutron scattering (SANS) data using SasView. It accepts raw SANS data files, optional parameter JSON files, and model specifications to perform fitting and return refined parameters, fit quality metrics, and diagnostic plots.",
+    port = 42503, # for transport = "sse" to start a server-sent events (SSE) server
+    )
 
-                # 显示启用的精修参数
-                enabled_params = []
-                if refine_background:
-                    enabled_params.append("背景")
-                if refine_cell:
-                    enabled_params.append("晶胞")
-                if refine_scale:
-                    enabled_params.append("标度")
-                if refine_instrument:
-                    enabled_params.append("仪器")
-                if refine_absorption:
-                    enabled_params.append("吸收")
-                if refine_atoms:
-                    enabled_params.append("原子")
-
-                result_json["summary"] += f"精修参数: {', '.join(enabled_params) if enabled_params else '无'}\n"
-                result_json["summary"] += f"总输出文件大小: {round(total_size_mb, 3)} MB\n"
-                result_json["summary"] += f"生成文件数量: {len(output_files)}\n"
-                
-                # 添加主要文件信息
-                if info.get('refined_cif_files'):
-                    result_json["summary"] += f"精修CIF文件: {os.path.basename(info['refined_cif_files'][0])}\n"
-                
-                # 构建详细结果
-                result_json['result'] = {
-                    "status": "success",
-                    "gpx_path": str(Path(output_dir) / f'neutron_refinement_{refine_idx}.gpx'),
-                    "lst_path": str(Path(output_dir) / f'neutron_refinement_{refine_idx}.lst'),
-                    "plot_path": info.get('plot_path', ''),
-                    "refinement_log": info.get('refinement_log', '没有获取到本次精修的日志信息。'),
-                    "input_files": {
-                        "gsa_file": gsa_path,
-                        "instprm_file": instprm_path,
-                        "cif_file": cif_paths,
-                        "gpx_file": gpx_path
-                    },
-                    "refinement_config": {
-                        "refine_background": refine_background,
-                        "refine_cell": refine_cell,
-                        "refine_scale": refine_scale,
-                        "refine_instrument": refine_instrument,
-                        "refine_absorption": refine_absorption,
-                        "refine_atoms": refine_atoms,
-                        "use_constraints": use_constraints
-                    },
-                    "output_dir": output_dir,
-                    "output_files": output_files,
-                    "total_files": len(output_files),
-                    "total_size_bytes": total_size_bytes,
-                    "total_size_mb": round(total_size_mb, 3),
-                    "refinement_results": {
-                        "rwp": rwp,
-                        "cell_parameters": info.get('cell_params', []),
-                        "refined_cif_files": info.get('refined_cif_files', []) or glob(os.path.join(output_dir, '*_refined.cif')),
-                        "data_quality": info.get('data_quality', {})
-                    },
-                    "processing_info": "中子粉末衍射数据精修完成，包含晶胞参数精修、原子位置优化等"
-                }
-
-        else:
-            result_json['state']='running'
-    return result_json
-
-
+refine_tools_runner.register_mcp_tool(mcp, name="SasAnalysisToolsSasview")
 
 if __name__ == '__main__':
-    # 以 SSE 方式启动服务，监听端口 50052
-    mcp.run(transport='sse')
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == 'test':
+        # ----------------------------------------------------------------
+        # 本地测试入口：无需启动 agent，直接调用 refine_data 验证混合模型拟合
+        # 用法：python 0sasview_refine.py test
+        # ----------------------------------------------------------------
+        import tempfile
+
+        _DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'IQ_39191_SubEB_PC_0.dat')
+        _OUTPUT_DIR = os.path.join(tempfile.gettempdir(), 'sasview_test_output')
+
+        # ---------- 测试1：单模型（sphere），与现有逻辑保持一致 ----------
+        print("\n========== 测试1: 单模型 sphere ==========")
+        res1 = sasview_refinement(
+            data_path=_DATA_PATH,
+            json_path=None,
+            model='guinier_porod',
+            fit_params={
+                'scale':      {'fit': True,  'value': 0.05}
+            },
+            user_id='test_user',
+            mission_name='sasview_test',
+            task_id='local_test_1',
+        )
+        if res1.get('status') != 'success':
+            print(f"[FAIL] {res1.get('content')}")
+        else:
+            c1 = res1.get('content', {})
+            print(f"[OK] chi²={c1.get('chisquare', 'N/A'):.4f}")
+            print(f"     plot -> {c1.get('plot_path')}")
+            print(f"     json -> {c1.get('json_path')}")
+
+        # ---------- 测试2：混合模型（sphere+cylinder），不提供 json_path ----------
+        print("\n========== 测试2: 混合模型 sphere+cylinder ==========")
+        res2 = sasview_refinement(
+            data_path=_DATA_PATH,
+            json_path=None,           # 无预设 json，动态构建混合模型默认参数
+            model='sphere+cylinder',
+            fit_params={
+                'scale':       {'fit': True,  'value': 1.0},
+                'background':  {'fit': True,  'value': 0.001},
+                'A_scale':     {'fit': True,  'value': 0.5},
+                'A_radius':    {'fit': True,  'value': 50.0},
+                'A_sld':       {'fit': False, 'value': 1.0},
+                'A_sld_solvent':{'fit': False,'value': 6.0},
+                'B_scale':     {'fit': True,  'value': 0.5},
+                'B_radius':    {'fit': False, 'value': 20.0},
+                'B_length':    {'fit': True,  'value': 200.0},
+                'B_sld':       {'fit': False, 'value': 4.0},
+                'B_sld_solvent':{'fit': False,'value': 1.0},
+            },
+            user_id='test_user',
+            mission_name='sasview_test',
+            task_id='local_test_2',
+        )
+        if res2.get('status') != 'success':
+            print(f"[FAIL] {res2.get('content')}")
+        else:
+            c2 = res2.get('content', {})
+            print(f"[OK] chi²={c2.get('chisquare', 'N/A'):.4f}")
+            print(f"     plot -> {c2.get('plot_path')}")
+            print(f"     json -> {c2.get('json_path')}")
+
+        # ---------- 测试3：混合模型，提供 json_path ----------
+        print("\n========== 测试3: 混合模型 sphere+cylinder（从 json 加载参数） ==========")
+        import tempfile as _tf
+        _mixed_para = build_default_para('sphere+cylinder')
+        _mixed_para['para']['A_scale']['fit'] = True
+        _mixed_para['para']['A_radius']['fit'] = True
+        _mixed_para['para']['B_scale']['fit'] = True
+        _mixed_para['para']['B_length']['fit'] = True
+        _mixed_para['para']['background']['fit'] = True
+        _tmp_json = os.path.join(_OUTPUT_DIR, 'mixed_model_test.json')
+        os.makedirs(_OUTPUT_DIR, exist_ok=True)
+        with open(_tmp_json, 'w') as _f:
+            json.dump(_mixed_para, _f, indent=4)
+        print(f"  临时参数 json 已写入: {_tmp_json}")
+
+        res3 = refine_data(
+            data_path=_DATA_PATH,
+            json_path=_tmp_json,
+            shape='sphere+cylinder',
+            fit_params={},            # 使用 json 中已设好的 fit 标志
+            fit_idx=2,
+            output_dir=_OUTPUT_DIR,
+        )
+        print(f"[OK] chi²={res3.get('chisquare', 'N/A'):.4f}")
+        print(f"     plot -> {res3.get('plot_path')}")
+
+    else:
+        mcp.run(transport='sse')
