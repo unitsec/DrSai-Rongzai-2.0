@@ -11,11 +11,12 @@ description: Z-Rietveld refinement skill for neutron powder diffraction using th
 
 ## Tools and Expert Knowledge
 
-1. The MCP server RefineToolsZRietveld exposes two tools: zrt_generate_project and zrt_manual_refine
+1. The MCP server RefineToolsZRietveld exposes three tools: zrt_generate_project, zrt_manual_refine, and zrt_export_cif
    - zrt_generate_project: Generates an initial .zrietveldn project file from raw data (e.g. .histogramIgor, .zDiffractometer, .cif).
    - zrt_manual_refine: Performs refinement based on an input .zrietveldn project file and cfg configuration parameters, outputting a new .zrietveldn file and refinement results.
+   - zrt_export_cif: Exports a phase from an existing .zrietveldn file to .cif. Use this when the user requests final CIF delivery or phase-level CIF output for downstream analysis.
    - The report_text returned by zrt_manual_refine is a condensed log (lines 36-109 of zrietveld_runlog.txt have been removed to save LLM context). If you need to view the complete log, you must read the original log file at report_path.
-   - The input/output structure and parameter meanings of these two tools are described in detail in the MCP tool descriptions themselves. You must construct the correct input parameters based on the information provided by the user and parse the tool output to guide the next step.
+   - The detailed input/output structure and parameter semantics of all three tools are defined in the MCP tool descriptions. Do not duplicate or re-invent them in this skill; construct inputs from user context and interpret outputs to decide the next step.
 
 2. The expert knowledge required for refinement is summarized in detail in the "Expert Knowledge" section of this skill. You must review all of it before making each refinement decision and strictly follow it.
 
@@ -55,7 +56,7 @@ If you determine that the user wants you to refine the data yourself, follow the
    - The purpose of this step: you must clearly obtain the file paths of the required files, and these paths must be absolute paths.
 
 2. Check and connect to MCP tools
-   - You must ensure that you are connected to the Z-Rietveld MCP service and have obtained the tool descriptions (zrt_generate_project and zrt_manual_refine) exposed by that service.
+   - You must ensure that you are connected to the Z-Rietveld MCP service and have obtained the tool descriptions (zrt_generate_project, zrt_manual_refine, zrt_export_cif) exposed by that service.
    - If no Z-Rietveld MCP tools are currently available, or you cannot confirm whether the service is connected:
       - Connect to the MCP service using the following connection information:
          - Server address: http://127.0.0.1:42511/sse
@@ -80,6 +81,7 @@ If you determine that the user wants you to refine the data yourself, follow the
    - When you determine that the refinement has reached a satisfactory state (e.g. goodness-of-fit metrics have stabilized, the fit curve matches experimental data well, and the physical reasonableness of refined parameters is acceptable), report the current refinement results to the user.
    - Report content includes: current refinement status (key metric values), current refined parameter values, and your analysis and evaluation of the current refinement results.
    - You may also provide recommendations, such as whether further iteration is needed or whether certain parameters need adjustment.
+   - If the user requests a CIF output (or final delivery in CIF format), call zrt_export_cif using the latest accepted .zrietveldn file and return the exported cif_path to the user.
 
 6. Continue iteration based on user feedback
    - The user may provide feedback based on the refinement results and analysis you provided, such as requesting further iteration or adjustment of certain parameters.
@@ -158,7 +160,7 @@ All cfg parameter values must be in string format. Even boolean values must be e
 
 ### TOF Refinement Range Control (tof_min / tof_max)
 
-When you call the refinement tool and find that the tool has timed out, consider whether the dataset has a large number of dense Bragg peaks in the low-TOF region, causing refinement to converge extremely slowly or even diverge. If this is the problem, **set refinement range to exclude the problematic region**. Note: if you want to set a refinement range to avoid dense Bragg peaks causing slow convergence, you must first run the full spectrum once to verify it is actually slow (the tool did not return a normal result but indicated a timeout) before setting the range.
+When you call the refinement tool and find that the tool has timed out, check the fitting figure that whether the dataset has a large number of dense Bragg peaks in the low-TOF region, causing refinement to converge extremely slowly or even diverge. If this is the problem, **set refinement range to exclude the problematic region**. Note: if you want to set a refinement range to avoid dense Bragg peaks causing slow convergence, you must first run the full spectrum once to verify it is actually slow (the tool did not return a normal result but indicated a timeout) before setting the range.
 
 `cfg` supports the following two parameters (unit: microseconds, string format):
 - `tof_min`: Lower TOF refinement limit; data points below this value do not participate in refinement.

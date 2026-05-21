@@ -47,7 +47,7 @@ tools/pyZRietveld/Z-Rietveld/*
 tools/pyZRietveld/Z-CIF/*
 tools/pyZRietveld/Z-Foundation/*
 tools/pyZRietveld/.build/*
-tools/pyZRietveld/testData/*
+tools/pyZRietveld/testData/
 
 # 保留 pyZRietveld 运行期必需资源（用于 refineTool 运行时读取）
 !tools/pyZRietveld/Z-Rietveld/lib/
