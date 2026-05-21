@@ -1459,6 +1459,93 @@ generateZrietveldnFile(
     return outputPath->GetPath().string();
     }
 
+std::string exportCifFromZrtn(
+    const std::string& zrtnPathStr,
+    const std::string& outputCifPathStr = "",
+    const std::string& phaseLabel = "")
+{
+    shared_ptr<ZRTError> error = nullptr;
+    auto zrtnPath = ZRTFilePath::CreateWithUTF8String(zrtnPathStr);
+    auto doc = ZRTDocument::CreateWithReadCborFile(zrtnPath, &error);
+    if (ZRTError::HasError(&error) || !doc) {
+        std::string detail = "Failed to open zrietveldn file";
+        if (error && error->GetAllMessage()) {
+            detail += ": " + *error->GetAllMessage();
+        }
+        throw std::runtime_error(detail);
+    }
+
+    auto rietveld = doc->GetCurrentRietveld();
+    if (!rietveld) {
+        throw std::runtime_error("No current rietveld object found in zrietveldn file");
+    }
+
+    auto crystalModel = rietveld->GetCrystalModel();
+    if (!crystalModel || !crystalModel->GetPhases() || crystalModel->GetPhases()->empty()) {
+        throw std::runtime_error("No phase found in zrietveldn file");
+    }
+
+    shared_ptr<ZRTPhase> selectedPhase = nullptr;
+    if (phaseLabel.empty()) {
+        selectedPhase = crystalModel->GetPhases()->at(0);
+    }
+    else {
+        for (const auto& phase : *crystalModel->GetPhases()) {
+            if (!phase) continue;
+            if (phase->GetLabelForAnalyze() == phaseLabel || phase->GetLabelForGlobal() == phaseLabel) {
+                selectedPhase = phase;
+                break;
+            }
+        }
+        if (!selectedPhase) {
+            std::string available;
+            for (const auto& phase : *crystalModel->GetPhases()) {
+                if (!phase) continue;
+                if (!available.empty()) available += ", ";
+                available += phase->GetLabelForAnalyze();
+            }
+            throw std::runtime_error("Phase label not found: " + phaseLabel + ". Available phases: [" + available + "]");
+        }
+    }
+
+    const std::string cifContent = selectedPhase->GetCifString();
+    if (cifContent.empty()) {
+        throw std::runtime_error("Generated CIF content is empty");
+    }
+
+    std::filesystem::path outPath;
+    if (!outputCifPathStr.empty()) {
+        outPath = std::filesystem::path(outputCifPathStr);
+    }
+    else {
+        const std::string label = selectedPhase->GetLabelForAnalyze().empty() ? "phase" : selectedPhase->GetLabelForAnalyze();
+        std::filesystem::path basePath(zrtnPathStr);
+        outPath = basePath.parent_path() / (basePath.stem().string() + "_" + label + ".cif");
+    }
+
+    if (outPath.extension() != ".cif") {
+        outPath.replace_extension(".cif");
+    }
+
+    std::error_code ec;
+    auto parent = outPath.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            throw std::runtime_error(std::string("Failed to create output directory: ") + ec.message());
+        }
+    }
+
+    std::ofstream out(outPath.string());
+    if (!out.is_open()) {
+        throw std::runtime_error("Failed to open output CIF file: " + outPath.string());
+    }
+    out << cifContent;
+    out.close();
+
+    return outPath.string();
+}
+
 
     
 #if defined(BUILD_PYBIND)
@@ -1474,6 +1561,13 @@ PYBIND11_MODULE(refineTool, m) {
         py::arg("outputPathStr") = "");
     m.def("refine", &ManualRefinementWithDict, "Perform manual refinement with a configuration dictionary");
     m.def("autoRefine", &autoRefine, "Perform auto refinement on a .zrietveldn file");
+    m.def(
+        "exportCif",
+        &exportCifFromZrtn,
+        "Export a phase from .zrietveldn file to CIF. If phaseLabel is empty, export the first phase.",
+        py::arg("zrtnPathStr"),
+        py::arg("outputCifPathStr") = "",
+        py::arg("phaseLabel") = "");
 }
 #endif
 

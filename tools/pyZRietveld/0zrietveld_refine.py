@@ -22,7 +22,11 @@ except ImportError:
     from src.core.tools import ProcessPollingMcpToolBase
 
 
-# Ensure this repository root is importable so that refineTool can be imported.
+# Ensure refineTool module directory and repository tool root are importable.
+MODULE_DIR = Path(__file__).resolve().parent
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -735,6 +739,71 @@ def zrt_manual_refine(
         }
 
 
+def zrt_export_cif(
+    zrtn_path: str,
+    output_cif_path: str = "",
+    phase_label: str = "",
+    user_id: str = "default",
+    mission_name: str = "default",
+    task_id: Optional[str] = None,
+) -> Dict[str, object]:
+    """
+    Export one phase from a .zrietveldn project file to a CIF file.
+
+    Args:
+        zrtn_path: Absolute path to an existing .zrietveldn file.
+        output_cif_path: Optional output .cif path. If empty, refineTool chooses a default path
+                         near the input .zrietveldn file.
+        phase_label: Optional phase label. If empty, export the first phase.
+        user_id: User identifier used for log/run directory organization.
+        mission_name: Mission name used for log/run directory organization.
+        task_id: Optional task ID injected by MCP wrapper.
+
+    Returns:
+        A dictionary with:
+        - ok: bool, success status.
+        - cif_path: str, exported CIF path (on success).
+        - phase_label: str, requested phase label.
+        - task_id: str, effective task id.
+        - run_dir: str, task run directory.
+        - error/traceback: failure details (on failure).
+    """
+    run_dir = TMP_DIR / user_id / mission_name
+    logger = _setup_logging(run_dir)
+    _ensure_env(
+        "/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data",
+        "/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib",
+    )
+
+    effective_task_id = str(task_id).strip() if task_id is not None and str(task_id).strip() else str(uuid.uuid4())
+    logger.info("Export CIF start: zrtn=%s phase_label=%s", zrtn_path, phase_label)
+
+    try:
+        cif_path = refineTool.exportCif(zrtn_path, output_cif_path, phase_label)
+        out_path = Path(cif_path)
+        if not out_path.exists():
+            raise FileNotFoundError(f"Exported CIF not found: {cif_path}")
+
+        logger.info("Export CIF done: %s", out_path)
+        return {
+            "ok": True,
+            "cif_path": str(out_path),
+            "phase_label": phase_label,
+            "task_id": effective_task_id,
+            "run_dir": str(run_dir),
+        }
+    except Exception as e:
+        logger.error("Export CIF failed: %s", e)
+        logger.error(traceback.format_exc())
+        return {
+            "ok": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "task_id": effective_task_id,
+            "run_dir": str(run_dir),
+        }
+
+
 
 zrt_generate_runner = ProcessPollingMcpToolBase(
     timeout_sec=60.0,
@@ -748,9 +817,16 @@ zrt_manual_runner = ProcessPollingMcpToolBase(
     target_func=zrt_manual_refine,
 )
 
+zrt_export_cif_runner = ProcessPollingMcpToolBase(
+    timeout_sec=60.0,
+    poll_interval=1.0,
+    target_func=zrt_export_cif,
+)
+
 
 zrt_generate_runner.register_mcp_tool(mcp, name="zrt_generate_project")
 zrt_manual_runner.register_mcp_tool(mcp, name="zrt_manual_refine")
+zrt_export_cif_runner.register_mcp_tool(mcp, name="zrt_export_cif")
 
 
 if __name__ == "__main__":

@@ -351,6 +351,9 @@ class RongZaiAgent(DrSaiAgent):
         if self._user_id:
             enhanced_system_message = (
                 f"{enhanced_system_message}\n\nCurrent user_id is {self._user_id}. ")
+        if self._work_dir:
+            enhanced_system_message = (
+                f"{enhanced_system_message}\n\nThe files user uploaded are in {self._work_dir}/downloads. ")
         enhanced_system_message += f"\n\n{self._core_skill_policy_prompt}"
         core_skill_prompt = self._build_core_skill_prompt()
         if core_skill_prompt:
