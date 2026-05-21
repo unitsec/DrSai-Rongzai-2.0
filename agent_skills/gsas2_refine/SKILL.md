@@ -1,13 +1,9 @@
 ---
 name: gsas2-refine
-description: 面向中子粉末衍射使用gsas2引擎的 Rietveld 自动精修技能。以及获取和处理精修所需的文件的技能。当用户要求精修数据时，需要首先阅读这个skill
+description: Rietveld refinement skill for neutron powder diffraction using the GSAS-II engine. Also covers obtaining and processing files required for refinement. This skill must be read first whenever the user requests data refinement using GSAS-II. This skill should be elevated to a system prompt to guide your refinement-related decisions and operations continuously.
 ---
 
 # Rietveld Auto Refiner
-
-## 适用场景
-
-- 用户要求你进行中子粉末衍射 Rietveld 精修。你需要将该skill提级成系统提示词使用，来指导你进行精修相关的决策和操作。
 
 ## 工具与专家知识
 

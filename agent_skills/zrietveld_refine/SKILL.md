@@ -1,13 +1,9 @@
 ---
 name: zrietveld-refine
-description: Z-Rietveld refinement skill for neutron powder diffraction using the Z-Rietveld engine. Also covers obtaining and processing files required for refinement. This skill must be read first whenever the user requests data refinement using Z-Rietveld.
+description: Rietveld refinement skill for neutron powder diffraction using the Z-Rietveld engine. Also covers obtaining and processing files required for refinement. This skill must be read first whenever the user requests data refinement using Z-Rietveld. This skill should be elevated to a system prompt to guide your refinement-related decisions and operations continuously.
 ---
 
 # Z-Rietveld Refiner
-
-## Applicable Scenarios
-
-- The user requests you to perform Rietveld refinement of neutron powder diffraction data using the Z-Rietveld tool. This skill should be elevated to a system prompt to guide your refinement-related decisions and operations.
 
 ## Tools and Expert Knowledge
 
@@ -151,22 +147,8 @@ The following expert knowledge items take priority over any other knowledge you 
 
    9. **Physical Reasonableness Check:** After each refinement step, ensure all parameters are physically reasonable. For example, unit cell parameters must not deviate too much, atomic occupancies must not exceed 1 or be negative, thermal factors must not be negative, etc. If they are, return to the previous refinement result and re-select parameters.
 
-   10. **Iteration Count Adjustment:** refine_cycle (maxCycle) must be adjusted based on the situation each time. It can be repeatedly rolled back and adjusted, with the goal of achieving the best convergence result for each refinement call. Do not leave it unchanged.
-
+   10. **TOF Refinement Range Control (tof_min / tof_max)** When you call the refinement tool and find that the tool has timed out, check the fitting figure after refinement or (if the time of refinement is too long to wait it finishing) restart a refinement without refining any parameters(it would finish quickly and show the Bragg Peaks on the figure) to determine whether the dataset has a large number of dense Bragg peaks in the low-TOF region, causing refinement to converge extremely slowly or even diverge. If this is the problem, set refinement range by using `tof_min` and `tof_max` to exclude the problematic region. 
 ### Notes
 Before each refinement step, inform the user of all parameters you are releasing for the upcoming refinement. What is the rationale for this refinement decision? The user must clearly know what you are about to do and why.
 
 All cfg parameter values must be in string format. Even boolean values must be expressed as "true"/"false", and numbers must also be wrapped in strings.
-
-### TOF Refinement Range Control (tof_min / tof_max)
-
-When you call the refinement tool and find that the tool has timed out, check the fitting figure that whether the dataset has a large number of dense Bragg peaks in the low-TOF region, causing refinement to converge extremely slowly or even diverge. If this is the problem, **set refinement range to exclude the problematic region**. Note: if you want to set a refinement range to avoid dense Bragg peaks causing slow convergence, you must first run the full spectrum once to verify it is actually slow (the tool did not return a normal result but indicated a timeout) before setting the range.
-
-`cfg` supports the following two parameters (unit: microseconds, string format):
-- `tof_min`: Lower TOF refinement limit; data points below this value do not participate in refinement.
-- `tof_max`: Upper TOF refinement limit; data points above this value do not participate in refinement.
-
-**Usage:**
-- After running the zero-parameter preview from "Step 0" above to obtain the Bragg peak distribution plot, observe the peak density in the low-TOF region.
-- If the low-TOF region has excessively dense peaks, add `tof_min` to the cfg in all subsequent refinement steps to exclude the dense region.
-- Example: `{"refine_scale": "true", "refine_background": "true", "tof_min": "10000", "refine_cycle": "3"}`
