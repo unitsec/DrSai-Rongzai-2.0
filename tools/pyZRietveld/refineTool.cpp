@@ -116,18 +116,7 @@ std::map<std::string,std::string> ManualRefinementWithDict(const std::string& ZR
     // disable autoAnalyze
     try { if (rietveld->GetAutoAnalyze()) rietveld->GetAutoAnalyze()->SetUse(false); } catch(...) {}
 
-    // === CONVERGENCE SETTINGS ===
-    int maxCycle = toInt(getWithAlias("refine_cycle", "maxCycle", "10"), 10);
-    try {
-        auto conv = rietveld->GetConvergenceCondition();
-        if (conv) {
-            auto sel = conv->GetSelectedModeObject();
-            if (sel) {
-                sel->SetMaxCycle((uint_fast32_t)maxCycle);
-            }
-        }
-    }
-    catch (...) {}
+    // Keep convergence condition from the input project in manual refine.
     
     // === SPACE GROUP SETTINGS ===
     // cfg key: "space_group", value: dict string e.g. "{'LNO':'166_1','phase2':'225_1'}"
@@ -277,13 +266,37 @@ std::map<std::string,std::string> ManualRefinementWithDict(const std::string& ZR
     } catch(...) {}
 
     // === === PROFILE FUNCTION (PEAK SHAPE) REFINEMENT ===
-    bool refineProfileLevel0 = toBool(getOrDefault("refine_profile_level0", "false"), false);
-    bool refineProfileLevel1 = toBool(getOrDefault("refine_profile_level1", "false"), false);
-    bool refineProfileLevel2 = toBool(getOrDefault("refine_profile_level2", "false"), false);
-	bool refineAlpha = toBool(getOrDefault("refine_profile_alpha", "false"), false);
-	bool refineBeta0 = toBool(getOrDefault("refine_profile_beta0", "false"), false);
-	bool refineBeta1 = toBool(getOrDefault("refine_profile_beta1", "false"), false);
-	bool refineR0 = toBool(getOrDefault("refine_profile_r0", "false"), false);
+    // Accept a single "refine_profile" key whose value is a comma/space-separated list of tokens:
+    //   level0 / level1 / level2  -> SetPresetIDLevel(0/1/2)  (mutually exclusive; level0 takes priority)
+    //   alpha                     -> refine alpha parameters
+    //   beta0                     -> refine beta0 parameters
+    //   beta1                     -> refine beta1 parameters
+    //   r0                        -> refine r0 parameters
+    // Example: "refine_profile" = "level1,alpha,beta0"
+    // Legacy per-key names (refine_profile_level0, etc.) are still accepted as fallback.
+    auto parseProfileTokens = [](const std::string& s) -> std::set<std::string> {
+        std::set<std::string> tokens;
+        std::string cur;
+        for (char c : s) {
+            if (c == ',' || c == ' ' || c == ';') {
+                if (!cur.empty()) { tokens.insert(cur); cur.clear(); }
+            } else {
+                cur += (char)std::tolower((unsigned char)c);
+            }
+        }
+        if (!cur.empty()) tokens.insert(cur);
+        return tokens;
+    };
+    std::string refineProfileRaw = trimCopy(getOrDefault("refine_profile", ""));
+    std::set<std::string> profileTokens = parseProfileTokens(refineProfileRaw);
+    // Fallback: also honour legacy per-key flags so old callers keep working.
+    bool refineProfileLevel0 = profileTokens.count("level0") > 0 || toBool(getOrDefault("refine_profile_level0", "false"), false);
+    bool refineProfileLevel1 = profileTokens.count("level1") > 0 || toBool(getOrDefault("refine_profile_level1", "false"), false);
+    bool refineProfileLevel2 = profileTokens.count("level2") > 0 || toBool(getOrDefault("refine_profile_level2", "false"), false);
+    bool refineAlpha = profileTokens.count("alpha") > 0 || toBool(getOrDefault("refine_profile_alpha", "false"), false);
+    bool refineBeta0 = profileTokens.count("beta0") > 0 || toBool(getOrDefault("refine_profile_beta0", "false"), false);
+    bool refineBeta1 = profileTokens.count("beta1") > 0 || toBool(getOrDefault("refine_profile_beta1", "false"), false);
+    bool refineR0    = profileTokens.count("r0")    > 0 || toBool(getOrDefault("refine_profile_r0",    "false"), false);
 
     auto hists = rietveld->GetHistograms();
     if (hists) {
@@ -544,6 +557,19 @@ std::map<std::string,std::string> ManualRefinementWithDict(const std::string& ZR
                             }
                             if (absorptionCfg.contains(histLabel)) {
                                 applyAbsorptionNode(absorptionCfg.at(histLabel));
+                            }
+
+                            // Compatibility for LLM-generated keys like "Histogram_A".
+                            // Internal histogram label is typically "A", while reports print "Histogram_A".
+                            const std::string prefixedLabel = std::string("Histogram_") + histLabel;
+                            if (absorptionCfg.contains(prefixedLabel)) {
+                                applyAbsorptionNode(absorptionCfg.at(prefixedLabel));
+                            }
+                            if (histLabel.rfind("Histogram_", 0) == 0 && histLabel.size() > std::string("Histogram_").size()) {
+                                const std::string unprefixedLabel = histLabel.substr(std::string("Histogram_").size());
+                                if (absorptionCfg.contains(unprefixedLabel)) {
+                                    applyAbsorptionNode(absorptionCfg.at(unprefixedLabel));
+                                }
                             }
                         }
 
@@ -845,37 +871,37 @@ std::map<std::string,std::string> ManualRefinementWithDict(const std::string& ZR
                             if (!xs || !ys || xs->size() != ys->size()) continue;
                             
                             // Filter data points within [minThreshold, maxThreshold]
-                            auto filteredXs = std::make_shared<std::vector<double>>();
-                            auto filteredYs = std::make_shared<std::vector<double>>();
-                            auto filteredErrs = std::make_shared<std::vector<double>>();
-                            auto filteredYbgs = std::make_shared<std::vector<double>>();
+                            std::vector<double> filteredXs;
+                            std::vector<double> filteredYs;
+                            std::vector<double> filteredErrs;
+                            std::vector<double> filteredYbgs;
                             
                             for (size_t i = 0; i < xs->size(); ++i) {
                                 if ((*xs)[i] >= minThreshold && (*xs)[i] <= maxThreshold) {
-                                    filteredXs->push_back((*xs)[i]);
-                                    filteredYs->push_back((*ys)[i]);
+                                    filteredXs.push_back((*xs)[i]);
+                                    filteredYs.push_back((*ys)[i]);
                                     if (errs && i < errs->size()) {
-                                        filteredErrs->push_back((*errs)[i]);
+                                        filteredErrs.push_back((*errs)[i]);
                                     }
                                     if (ybgs && i < ybgs->size()) {
-                                        filteredYbgs->push_back((*ybgs)[i]);
+                                        filteredYbgs.push_back((*ybgs)[i]);
                                     }
                                 }
                             }
                             
                             // Replace the data with filtered versions
-                            h->SetXWaves(filteredXs);
-                            h->SetYIntensities(filteredYs);
-                            if (!filteredErrs->empty()) {
-                                h->SetYErrors(filteredErrs);
+                            h->SetXWaves(&filteredXs);
+                            h->SetYIntensities(&filteredYs);
+                            if (!filteredErrs.empty()) {
+                                h->SetYErrors(&filteredErrs);
                             }
-                            if (!filteredYbgs->empty()) {
+                            if (!filteredYbgs.empty()) {
                                 h->SetYBackgrounds(filteredYbgs);
                             }
                             
                             std::cerr << "[data_filter] histogram='" << h->GetLabel()
                                       << "' original_points=" << xs->size()
-                                      << " filtered_points=" << filteredXs->size()
+                                      << " filtered_points=" << filteredXs.size()
                                       << " range=[" << minThreshold << ", " << maxThreshold << "]" << std::endl;
                         } catch(...) {}
                     }
@@ -1383,14 +1409,14 @@ generateZrietveldnFile(
     }
 
 
-    // set default convergence condition
+    // Use library default convergence settings and only pin max cycle.
     auto conv = ZRTConvergenceCondition::CreateForDefault();
-    // 切换到 SQP 模式（枚举名视库定义）
-    conv->SetMode(ZRTConvergenceConditionModeSQP);
-
-    // 创建并设置 SQP 对象（或从 existed 拷贝）
-    auto sqp = ZRTConvergenceConditionSQP::CreateForDefault();
-    conv->SetSequentialQuadraticProgramming(sqp);
+    if (conv) {
+        auto sel = conv->GetSelectedModeObject();
+        if (sel) {
+            sel->SetMaxCycle(10);
+        }
+    }
 
     // 最后把 convergenceCondition 绑到 rietveld
     rietveld->SetConvergenceCondition(conv);

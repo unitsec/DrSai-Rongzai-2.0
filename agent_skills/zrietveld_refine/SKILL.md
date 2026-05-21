@@ -1,39 +1,39 @@
 ---
 name: zrietveld-refine
-description: 面向中子粉末衍射使用Z-Rietveld引擎的 Z-Rietveld 精修技能。以及获取和处理精修所需的文件的技能。当用户要求用Z-Rietveld进行精修数据时，需要首先阅读这个skill
+description: Z-Rietveld refinement skill for neutron powder diffraction using the Z-Rietveld engine. Also covers obtaining and processing files required for refinement. This skill must be read first whenever the user requests data refinement using Z-Rietveld.
 ---
 
 # Z-Rietveld Refiner
 
-## 适用场景
+## Applicable Scenarios
 
-- 用户要求你使用 Z-Rietveld 工具进行中子粉末衍射 Rietveld 精修。你需要将该skill提级成系统提示词使用，来指导你进行精修相关的决策和操作。
+- The user requests you to perform Rietveld refinement of neutron powder diffraction data using the Z-Rietveld tool. This skill should be elevated to a system prompt to guide your refinement-related decisions and operations.
 
-## 工具与专家知识
+## Tools and Expert Knowledge
 
-1. MCP 服务器 RefineToolsZRietveld下有两个工具 zrt_generate_project 和 zrt_manual_refine
-   - zrt_generate_project：从原始数据（如 .histogramIgor、.zDiffractometer、.cif）生成初始的 .zrietveldn 项目文件。
-   - zrt_manual_refine：根据输入的 .zrietveldn 项目文件和 cfg 配置参数进行精修，输出新的 .zrietveldn 文件和精修结果。
-   - zrt_manual_refine 返回的 report_text 是精简版日志（为了节省大模型上下文，已删除 zrietveld_runlog.txt 的第36-109行）。如果你需要查看完整日志内容，必须读取 report_path 指向的原始日志文件。
-   - 这两个工具的输入和输出结构、参数含义在MCP工具本身的描述中有详细说明，你需要根据用户提供的信息构造正确的输入参数，并解析工具的输出结果来指导下一步操作。
+1. The MCP server RefineToolsZRietveld exposes two tools: zrt_generate_project and zrt_manual_refine
+   - zrt_generate_project: Generates an initial .zrietveldn project file from raw data (e.g. .histogramIgor, .zDiffractometer, .cif).
+   - zrt_manual_refine: Performs refinement based on an input .zrietveldn project file and cfg configuration parameters, outputting a new .zrietveldn file and refinement results.
+   - The report_text returned by zrt_manual_refine is a condensed log (lines 36-109 of zrietveld_runlog.txt have been removed to save LLM context). If you need to view the complete log, you must read the original log file at report_path.
+   - The input/output structure and parameter meanings of these two tools are described in detail in the MCP tool descriptions themselves. You must construct the correct input parameters based on the information provided by the user and parse the tool output to guide the next step.
 
-2. 你精修数据需要的专家知识，在该skill的"专家知识"中已经有详细总结，你需要在每次做出精修决策前，全部考虑这些专家知识，确保严格遵守。
+2. The expert knowledge required for refinement is summarized in detail in the "Expert Knowledge" section of this skill. You must review all of it before making each refinement decision and strictly follow it.
 
 
 
-## 标准流程
+## Standard Workflow
 
-如果你认为用户是希望你自己先把数据修好，那么你要按照下面的流程，不停地进行FunctionCall，直到严格执行完步骤4。
+If you determine that the user wants you to refine the data yourself, follow the workflow below, making continuous function calls until step 4 is strictly completed.
 
-1. 定位精修所需文件
-   - 要开始精修，首先必须有衍射数据文件（.histogramIgor）、仪器参数文件（.zDiffractometer）和至少一个结构文件（.cif）。
-   - 用户可能上传文件，或者让你用他之前上传的文件。优先使用这些文件。
-   - 如果有文件没有上传，需要你根据用户提供的信息去数据库中获取。用户可能会说类似"帮我把BL16的RUN0023568的group2的衍射谱精修好，cif文件是Si.cif"这类话，你需要从中提取出谱仪名称（BL16）、RUN号（RUN0023568）和探测器名称（group2），然后去数据库中寻找对应的文件。
-      - 去数据库获取.histogramIgor文件，需要用户提供：谱仪名称（如BL16）、RUN号（如RUN0021905）和探测器名称（如group5）。
-      - 去数据库获取.zDiffractometer文件，需要用户提供：谱仪名称（如BL16）、探测器名称（如group5）。
-      - 去数据库获取.cif文件，需要用户提供：谱仪名称（如BL16）、RUN号（如RUN0021905）。
-      - 如果用户给的信息不完整，询问用户。
-      - 数据库的位置：/home/wangh/rongzai-agent/datasets/，数据库下的文件组织结构如下：
+1. Locate files required for refinement
+   - To begin refinement, you must first have the diffraction data file (.histogramIgor), instrument parameter file (.zDiffractometer), and at least one structure file (.cif).
+   - The user may upload files or ask you to use previously uploaded files. Prioritize these files.
+   - If any files have not been uploaded, obtain them from the database based on information provided by the user. The user may say something like "Help me refine the BL16 RUN0023568 group2 diffraction spectrum, the cif file is Si.cif". You need to extract the instrument name (BL16), RUN number (RUN0023568), and detector name (group2), then search the database for the corresponding files.
+      - To retrieve a .histogramIgor file from the database, the user must provide: instrument name (e.g. BL16), RUN number (e.g. RUN0021905), and detector name (e.g. group5).
+      - To retrieve a .zDiffractometer file from the database, the user must provide: instrument name (e.g. BL16), detector name (e.g. group5).
+      - To retrieve a .cif file from the database, the user must provide: instrument name (e.g. BL16), RUN number (e.g. RUN0021905).
+      - If the information provided by the user is incomplete, ask the user.
+      - Database location: /home/wangh/rongzai-agent/datasets/. The file organization under the database is as follows:
          ```
          datasets/
          |--BLXXX/
@@ -47,151 +47,124 @@ description: 面向中子粉末衍射使用Z-Rietveld引擎的 Z-Rietveld 精修
          |         |--XXX.histogramIgor  
          |--BLYYY/
          ```
-         其中XXX、YYY代表不同的谱仪号、探测器名称和RUN号，你需要根据用户提供的信息自己去寻找。
-         注意仪器参数文件的名称不固定，但都会在名称中包含探测器名称相关信息（如group5或BM、HA等），你需要根据用户提供的探测器名称去寻找对应的.zDiffractometer文件。
+         where XXX and YYY represent different instrument numbers, detector names, and RUN numbers. You need to search based on the information provided by the user.
+         Note that instrument parameter file names are not fixed, but always contain information related to the detector name (e.g. group5, BM, HA, etc.). You need to search for the corresponding .zDiffractometer file based on the detector name provided by the user.
                   
-   - 如果用户直接给一个.zrietveldn文件，也能够直接使用这个文件进行精修，跳过项目生成步骤。
-   - 若缺失任何关键文件，明确告知用户并结束本轮。
-   - 这一步的目的是：你要明确获取到所需文件的文件路径，并且这些文件必须是绝对路径。
+   - If the user directly provides a .zrietveldn file, it can be used directly for refinement, skipping the project generation step.
+   - If any critical file is missing, clearly inform the user and end the current round.
+   - The purpose of this step: you must clearly obtain the file paths of the required files, and these paths must be absolute paths.
 
-2. 检查并连接mcp工具
-   - 你需要确保已经连接上 Z-Rietveld 的 MCP 服务，并且已经拿到该服务暴露出的工具说明（zrt_generate_project 和 zrt_manual_refine）。
-   - 如果当前还没有可用的 Z-Rietveld MCP 工具，或者你无法确认该服务是否已经连接：
-      - 根据下列连接信息连接 MCP 服务：
-         - 服务器地址：http://127.0.0.1:42511/sse
-      - 连接成功后，认真阅读该 MCP 服务返回的工具名称和 description，确认工具的用法。
-   - 如果已经存在可用的 Z-Rietveld MCP 工具：继续后续步骤。
+2. Check and connect to MCP tools
+   - You must ensure that you are connected to the Z-Rietveld MCP service and have obtained the tool descriptions (zrt_generate_project and zrt_manual_refine) exposed by that service.
+   - If no Z-Rietveld MCP tools are currently available, or you cannot confirm whether the service is connected:
+      - Connect to the MCP service using the following connection information:
+         - Server address: http://127.0.0.1:42511/sse
+      - After successfully connecting, carefully read the tool names and descriptions returned by the MCP service to confirm usage.
+   - If Z-Rietveld MCP tools are already available: proceed to the next step.
 
-3. 执行项目生成初始化
-   - 当根据用户提供的信息拿到3类原始数据时，需要先调用已连接的 Z-Rietveld MCP 工具中的 zrt_generate_project 函数进行"项目生成"，拿到 .zrietveldn 文件后再执行下一个步骤。
-   - zrt_generate_project 的输入参数：
-      - neutron_data：.histogramIgor 文件的绝对路径
-      - neutron_inst：.zDiffractometer 文件的绝对路径
-      - cif_files：CIF 文件的绝对路径列表
-   - 如果用户直接提供了 .zrietveldn 文件，跳过该步骤。
+3. Execute project generation initialization
+   - When you have obtained the 3 types of raw data based on the information provided by the user, you must first call the zrt_generate_project function from the connected Z-Rietveld MCP tools for "project generation". Only after obtaining the .zrietveldn file should you proceed to the next step.
+   - Input parameters for zrt_generate_project:
+      - neutron_data: absolute path to the .histogramIgor file
+      - neutron_inst: absolute path to the .zDiffractometer file
+      - cif_files: list of absolute paths to CIF files
+   - If the user directly provides a .zrietveldn file, skip this step.
 
-4. 迭代精修
-   - 执行完项目生成初始化后，或者用户直接提供了 .zrietveldn 文件后，就进入该精修迭代阶段。
-   - 该阶段需要你多次反复调用 MCP 工具 zrt_manual_refine 进行精修迭代，每次迭代后都要根据返回的结果来判断下一步的参数调整。
-   - 你的核心决策就是下一步要放开哪些精修参数、固定哪些精修参数，以及是否继续迭代。你对精修结果的分析以及下一步的精修决策要基于该skill最后的专家知识中总结的经验、你自身的粉末中子衍射数据精修知识。
-   - 每次你执行一步精修前，要先告诉用户当前的精修状态、接下来的精修参数是哪些，做出这个决策的理由是什么，然后自行执行决策。
-   - 迭代阶段不要额外执行"传图给用户"的动作。工具返回中的图片路径会由系统自动展示给用户，你只需在文本中说明你看到的图像结论。
+4. Iterative refinement
+   - After completing the project generation initialization, or after the user directly provides a .zrietveldn file, enter the refinement iteration phase.
+   - This phase requires you to repeatedly call the MCP tool zrt_manual_refine for refinement iterations. After each iteration, analyze the returned results to determine parameter adjustments for the next step.
+   - Your core decision is which refinement parameters to release and which to fix in the next step, and whether to continue iterating. Your analysis of refinement results and next refinement decisions should be based on the expert knowledge summarized at the end of this skill, combined with your own knowledge of powder neutron diffraction data refinement.
+   - Before each refinement step, inform the user of the current refinement status, what parameters will be used next, and the rationale for that decision, then proceed to execute it autonomously.
 
-   **⚠️ 正式精修前必做：Bragg峰分布预览（第0步）**
-   - 在开始任何实质性精修之前，**必须**先执行一次"零参数预运行"，目的是生成 Bragg 峰分布图，判断是否需要设置 tof_min/tof_max。
-   - 调用方式：cfg 中**不放开任何精修参数**，仅设置 `refine_cycle: "1"`：
-     ```python
-     cfg = {"refine_cycle": "1"}
-     ```
-    - 该零参数调用会自动走单次 preview 流程（不再触发第二次 fitting），返回 `fit_status=simulation` 属于正常现象。
-   - 此次运行会输出衍射谱和各相的 Bragg 峰标记（下方蓝色竖线），耗时极短。
-   - 查看图像后，判断衍射谱的低TOF区是否存在 Bragg 峰过密现象（蓝色竖线连成片、难以区分单峰）：
-     - 若低TOF区峰密度明显过高 → **必须**设置 `tof_min`，将密集区排除在精修范围之外，再开始第1阶段精修。
-     - 若峰分布均匀、无过密区 → 直接进入正常精修流程。
+5. Report refinement results to the user
+   - When you determine that the refinement has reached a satisfactory state (e.g. goodness-of-fit metrics have stabilized, the fit curve matches experimental data well, and the physical reasonableness of refined parameters is acceptable), report the current refinement results to the user.
+   - Report content includes: current refinement status (key metric values), current refined parameter values, and your analysis and evaluation of the current refinement results.
+   - You may also provide recommendations, such as whether further iteration is needed or whether certain parameters need adjustment.
 
-5. 将精修结果反馈给用户
-   - 当你认为精修已经达到一个比较好的状态时（如拟合优度指标已经趋于稳定，拟合曲线与实验数据的匹配已经比较好，精修参数的物理合理性也比较好），你就可以将当前的精修结果反馈给用户。
-   - 反馈内容包括：当前的精修状态（关键指标值），当前的精修参数值，以及你对当前精修结果的分析和评价。
-   - 同时，你也可以给用户一些建议，比如是否需要继续迭代精修，或者是否需要调整某些参数等。
+6. Continue iteration based on user feedback
+   - The user may provide feedback based on the refinement results and analysis you provided, such as requesting further iteration or adjustment of certain parameters.
+   - Adjust your refinement strategy based on user feedback and continue iterative refinement until the user is satisfied.
 
-6. 根据用户反馈继续迭代
-   - 用户可能会根据你提供的精修结果和分析，给出一些反馈，比如要求继续迭代精修，或者调整某些参数等。
-   - 你需要根据用户的反馈来调整你的精修策略，继续进行迭代精修，直到用户满意为止。
+7. End refinement
+   - When the user determines the refinement is complete, or you determine further optimization is no longer possible, end the refinement.
+   - Before ending, you may summarize the entire refinement process, including parameter adjustments and result changes at each iteration, as well as the final refinement results and your evaluation.
+   - Finally, provide the final refinement result (.zrietveldn file) to the user for download; use the system's file delivery capability to transfer the final downloadable file.
 
-7. 结束精修
-   - 当用户认为精修已经完成，或者你认为已经无法继续优化精修结果时，就可以结束精修。
-   - 在结束前，你可以总结一下整个精修过程，包括每次迭代的参数调整和结果变化，以及最终的精修结果和你的评价。
-   - 最后，你需要将最终的精修结果（.zrietveldn 文件）提供给用户下载；使用系统提供的文件交付能力传递最终可下载文件。
+## Expert Knowledge
+The following expert knowledge items take priority over any other knowledge you have. Review all of them before making each refinement decision and strictly follow them:
 
-## 专家知识
-下面的12条专家知识优先于你的任何其他知识，每次做出精修决定前要全部考虑一遍，确保严格遵守：
+   1. **Refinement Goal:** Typically, Rwp (weighted profile R-factor) should reach below 5% for a satisfactory result. If after many rounds of refinement with all available parameters tried, Rwp has not reached below 5%, you have fallen into a local minimum. You must restart from the beginning and re-plan the refinement strategy and parameter selection. You should repeat this process at least 3 times on your own before considering asking the user.
 
-   1. **精修目标：** 通常 Rwp（加权的拟合不可信值）应该修到 5% 以下为较好结果。如果多轮精修把所有能尝试的参数都尝试过，Rwp 没有修到 5% 以下，就是陷入了局部最小值，你要从最开始重新规划精修路线，重新选择精修参数。在达到目标之前，这个过程你至少要自己反复 3 次后才考虑问用户。
-
-   2. **精修顺序：** 一般的精修理念是从少到多逐步放开参数，推荐顺序：
-      - 第1阶段：scale（整体缩放因子），背景参数，一般保持常开
-      - 第2阶段：cell（晶胞参数），一般保持常开
-      - 第3阶段：峰形参数。
-      - 第4阶段：样品相关的参数（吸收、原子热无序/位置/占位等）
-      这个顺序不是绝对的，但通常是比较合理的。你在精修过程中一定要仔细看精修结果中的所有细节，仔细对比精修结果的变化，一旦发现不好的趋势，要立刻回退并改变策略。
+   2. **Refinement Order:** The general refinement philosophy is to gradually release parameters from fewer to more. Recommended order:
+      - Stage 1: scale (overall scale factor) and background parameters — generally keep these always active.
+      - Stage 2: cell (unit cell parameters) — generally keep this always active.
+      - Stage 3: peak profile parameters.
+      - Stage 4: sample-related parameters (absorption, atomic thermal disorder/positions/occupancy, etc.)
+      This order is not absolute but is generally reasonable. During refinement, carefully examine all details of the refinement results and carefully compare changes between iterations. As soon as you detect an unfavorable trend, immediately roll back and change strategy.
      
-   3. **参数修改保守性：** 一般一次只多放开一个参数或参数组。不要一次性放开太多参数，这样容易导致精修发散或陷入局部最小值。
+   3. **Parameter Modification Conservatism:** Generally release only one parameter or parameter group at a time. Do not release too many parameters at once, as this easily leads to divergence or falling into a local minimum.
 
-   4. **空间群参数修改：**
-      在精修遇到“强度型”残差时，在考虑精修原子位置等影响强度的参数之前，你要首先考虑是否是空间群设置不对导致的拟合缺失。
+   
+   4. **Space Group Parameter Modification:**
+      When encountering "intensity-type" residuals during refinement, before considering refining atomic positions or other intensity-affecting parameters, you must first consider whether the mismatch is caused by an incorrect space group setting.
+   
+
+   5. **Instrument Parameter Adjustment:** Instrument-related parameters (such as resolution parameters) are not adjusted as a priority. Only consider adjusting them after finding that peak shapes, peak widths, etc. cannot be refined satisfactorily.
+
+   6. **Refinement Result Evaluation:** The fitting details of the observed versus calculated spectra (such as peak shape, peak position, and regional fitting deficiencies) are the primary basis for judging refinement quality, not just numerical metrics like Rwp. After each refinement, strictly inspect whether there are any anomalies in the fit plot, and whether Rwp has increased or not decreased significantly. If there are issues, do not accept this result. Do not hesitate to roll back!
+
+   7. **Difference Pattern Analysis:** If there are prominent peak features in the difference pattern (obs-calc), this indicates remaining fit deficiencies; continue refinement until there are no prominent peak features in the difference pattern. The peak shape characteristics in the difference pattern contain clues about the nature of fit deviations. For example, a wave-like oscillation (positive followed by negative) at a peak position in the difference pattern indicates peak position misalignment.
+
+   8. **Intensity-Type Residuals in the Difference Pattern:** The difference pattern may show "intensity-type" residuals, where certain peak positions exhibit a unidirectional prominent positive or negative peak, indicating that the fit deficiency is primarily in intensity rather than peak position. Several different causes lead to different characteristic features in the difference pattern:
+      - If multiple Bragg peak positions (the blue vertical tick marks at the bottom of the fit plot) do not match the experimental spectrum, leading to intensity-type residuals, this is usually caused by an incorrect space group setting. In this case, before refining atomic positions, first consider whether the space group setting needs to be changed, rather than blindly adjusting unit cell parameters.
+         Regarding the `space_group` parameter, you must additionally follow these rules:
+         - `cfg["space_group"]` in `zrt_manual_refine` must use the Z-Rietveld internal space group ID.
+         - Correct format examples: `{"phase_name":"203_2"}`, `{"LNO":"166_1"}`, `{"Si":"225_1"}`.
+         - The "available values" for Z-Rietveld space groups are based on the source table; the authoritative source is:
+         - `tools/pyZRietveld/Z-Rietveld/lib/Wyckoff_Seed.dat`
+         - This table is not simply 230 international space group numbers. It expands `Origin choice`, `Unique axis / permutation`, and `Hexagonal / Rhombohedral setting` into different internal IDs. Therefore the same HM symbol may correspond to multiple available values.
+         - `Wyckoff_Seed.dat` explicitly states: the first 534 entries are Z-Rietveld space group definitions expanded by unique symmetry operations and cannot be treated as a simple "one-to-one correspondence with 230 numbers".
+
+         When you need to change the space group, the decision order must be:
+         - First confirm the target HM symbol from the CIF, user description, existing .zrietveldn project, or GUI screenshot.
+         - Then find the internal ID corresponding to that HM symbol in the Z-Rietveld space group table.
+         - If there is only one internal ID for that HM, use it directly.
+         - If there are multiple internal IDs for that HM:
+         - Prefer the one consistent with the current project's setting/origin choice;
+         - If the current refinement shows obvious peak position/systematic residual anomalies, unreasonable atomic positions, or you suspect an origin choice mismatch, you may switch to another internal ID while keeping the HM symbol unchanged;
+         - After switching origin choice or setting, treat it as a significant structural change, re-check unit cell constraints, atomic coordinate reasonableness, and fit curve. Do not mechanically compare parameters before and after the switch.
+         - For `R`-type space groups, unless the user specifies otherwise, generally prefer the hexagonal setting first (e.g. `166_1`, `167_1`). Only switch to rhombohedral setting (e.g. `166_2`, `167_2`) when you confirm the project requires it.
+
+         Whenever `space_group` is involved, you must clearly state three things in your response to the user:
+         - What HM symbol you intend to use.
+         - What Z-Rietveld internal ID you intend to pass to the tool, e.g. `203_2`.
+         - If that HM has other origin choice / setting candidates, why you chose the current one first rather than another.
+
+      - If peak positions are well aligned but there is systematic intensity-type deviation (the degree of deviation changes systematically along the horizontal axis), absorption refinement is likely needed.
+      - When configuring `absorption`, the name must be the internal diffraction spectrum label (usually `A`). Do not write `Histogram_A`. If the report shows `Histogram_A`, the corresponding absorption name should be written as `A`.
       
-      关于 `space_group` 参数，你必须额外遵守以下规则
-      - `zrt_manual_refine` 的 `cfg["space_group"]` 不能写普通的 HM 符号，也不能只写国际空间群号；必须写 Z-Rietveld 内部空间群 ID。
-      - 正确格式示例：`{"phase_name":"203_2"}`、`{"LNO":"166_1"}`、`{"Si":"225_1"}`。
-      - Z-Rietveld 的空间群“可选值”以源码表为准，权威来源是：
-      - `tools/pyZRietveld/Z-Rietveld/Z-Rietveld/ZRTSpaceGroup.cc`
-      - `tools/pyZRietveld/Z-Rietveld/lib/Wyckoff_Seed.dat`
-      - 这套表不是只有 230 个国际空间群号，而是把 `Origin choice`、`Unique axis / permutation`、`Hexagonal / Rhombohedral setting` 都拆成了不同的内部 ID。因此同一个 HM 符号可能对应多个可选值。
-      - `Wyckoff_Seed.dat` 中明确说明：前 534 个条目是按 unique symmetry operation 展开的 Z-Rietveld 空间群定义，不能把它当作简单的“230 个编号一一对应”。
+      - If the calculated intensities for the vast majority of diffraction peaks differ significantly from the experimental spectrum, the absorption `function` parameter may need to be changed, i.e., using a different formula to calculate absorption. Once you decide to try changing the absorption function, you must try all of "cylindrical", "spherical", "plate", "lobanov1", "lobanov2" — do not try only some of them.
 
-      你在决定 `space_group` 时，必须理解 Z-Rietveld ID 的含义
-      - 最常见形式是 `国际空间群号_变体编号`，例如：`225_1` 对应 `Fm-3m`，`203_1` 和 `203_2` 都对应 `Fd-3`，但 origin choice 不同。
-      - 三方晶中还有 hexagonal / rhombohedral setting 的区别。例如：
-      - `160_1` = `R3m`，Hexagonal setting
-      - `160_2` = `R3m`，Rhombohedral setting
-      - `166_1` = `R-3m`，Hexagonal setting
-      - `166_2` = `R-3m`，Rhombohedral setting
-      - `167_1` = `R-3c`，Hexagonal setting
-      - `167_2` = `R-3c`，Rhombohedral setting
-      - 单斜、斜方等晶系还可能出现 unique axis、permutation、cell choice 的分裂，所以后缀不一定只是 `_1`、`_2`，也可能出现 `_a`、`_b`、`_c` 或更多编号。你不能自行猜测，必须按 Z-Rietveld 表中的原样 ID 使用。
-      - 如果用户已经从 Z-Rietveld GUI 中给出具体候选项，你应优先使用 GUI 中显示的那个内部 ID，而不是自己重新翻译成别的写法。
+   8. **Unit Cell Parameter Refinement:** When cell refinement fails to align Bragg peak positions with experimental peak positions, appropriate initial unit cell parameters need to be set before re-refining. Consider the influence of unit cell parameters on diffraction peak positions and the constraints of symmetry on unit cell parameters. You may need to roll back several times until suitable initial unit cell parameters are found.
 
-      下面这些“同一 HM 符号对应多个内部 ID”的情况，在精修时尤其要注意
-      - 立方晶常见的 origin choice 变体：
-      - `201_1` / `201_2` = `Pn-3`
-      - `203_1` / `203_2` = `Fd-3`
-      - `222_1` / `222_2` = `Pn-3n`
-      - `224_1` / `224_2` = `Pn-3m`
-      - `227_1` / `227_2` = `Fd-3m`
-      - 斜方晶源码注释中也明确列出了带 origin choice 的代表性群，例如：`48`、`50`、`59`、`68` 等。
-      - 这类变体不是“只是写法不同”。origin choice 或 setting 改变后，原子坐标系和 Wyckoff 位置解释会变，可能明显影响精修稳定性与最终结果。
+   9. **Physical Reasonableness Check:** After each refinement step, ensure all parameters are physically reasonable. For example, unit cell parameters must not deviate too much, atomic occupancies must not exceed 1 or be negative, thermal factors must not be negative, etc. If they are, return to the previous refinement result and re-select parameters.
 
-      当你需要修改空间群时，决策顺序必须是
-      - 先从 CIF、用户说明、已有 .zrietveldn 项目、或 GUI 截图确认目标 HM 符号。
-      - 再去 Z-Rietveld 空间群表中找到该 HM 符号对应的内部 ID。
-      - 如果该 HM 只有一个内部 ID，就直接使用它。
-      - 如果该 HM 有多个内部 ID：
-      - 优先选与当前项目 setting/origin choice 一致的那个；
-      - 若当前精修出现明显的峰位/系统性残差异常、原子位置不合理、或你怀疑是 origin choice 不匹配，则可以在保持 HM 符号不变的前提下切换到另一个内部 ID 再试；
-      - 切换 origin choice 或 setting 后，要把它当成一次重要结构变更，重新检查晶胞约束、原子坐标合理性和拟合曲线，不要把切换前后的参数直接机械比较。
-      - 对于 `R` 系空间群，如果用户没有特别说明，通常优先从 hexagonal setting（如 `166_1`、`167_1`）开始；只有在确认项目需要 rhombohedral setting 时，才改用 `166_2`、`167_2`。
+   10. **Iteration Count Adjustment:** refine_cycle (maxCycle) must be adjusted based on the situation each time. It can be repeatedly rolled back and adjusted, with the goal of achieving the best convergence result for each refinement call. Do not leave it unchanged.
 
-      只要涉及 `space_group`，你在回复用户时必须明确说清楚三件事
-      - 你准备使用的 HM 符号是什么。
-      - 你准备传给工具的 Z-Rietveld 内部 ID 是什么，例如 `203_2`。
-      - 如果该 HM 还有别的 origin choice / setting 候选，你为什么这一步先选当前这个，而不是另一个。
+### Notes
+Before each refinement step, inform the user of all parameters you are releasing for the upcoming refinement. What is the rationale for this refinement decision? The user must clearly know what you are about to do and why.
 
-   5. **仪器参数调整：** 仪器相关参数（如分辨率参数等）不会优先调整，发现峰形、峰宽等无法修好后再调整。
+All cfg parameter values must be in string format. Even boolean values must be expressed as "true"/"false", and numbers must also be wrapped in strings.
 
-   6. **精修结果评估：** observed 谱与 calculated 谱的拟合细节（如峰形、峰位、区域拟合缺失等）是你判断精修结果好坏的主要依据，而不仅仅是 Rwp 等数值指标。每次精修后都要严格审查拟合图上是否有任何异常，Rwp 是否上升或没有明显降低。如果有问题，就不要接受这次结果。不要吝啬回退！
+### TOF Refinement Range Control (tof_min / tof_max)
 
-   7. **差值谱分析：** 差值谱（obs-calc）中如果有明显的峰形，说明还有拟合缺失，需要继续精修，直到差值谱中没有明显的峰形了才算拟合好了。差值谱的峰形特征蕴含着拟合偏差的线索，比如某个峰位处差值谱出现一高一低的波浪式震荡，说明峰位没有对好。
+When you call the refinement tool and find that the tool has timed out, consider whether the dataset has a large number of dense Bragg peaks in the low-TOF region, causing refinement to converge extremely slowly or even diverge. If this is the problem, **set refinement range to exclude the problematic region**. Note: if you want to set a refinement range to avoid dense Bragg peaks causing slow convergence, you must first run the full spectrum once to verify it is actually slow (the tool did not return a normal result but indicated a timeout) before setting the range.
 
-   8. **晶胞参数精修：** 当精修 cell 无法对齐 bragg 峰位和实验峰位时，需要设置合适的初始晶胞参数重新精修。设置的时候要考虑晶胞参数对衍射峰位置的影响规律以及对称性对晶胞参数的约束，你可能需要多回退几次，直到找到合适的初始晶胞参数。
+`cfg` supports the following two parameters (unit: microseconds, string format):
+- `tof_min`: Lower TOF refinement limit; data points below this value do not participate in refinement.
+- `tof_max`: Upper TOF refinement limit; data points above this value do not participate in refinement.
 
-   9. **物理合理性检查：** 每一步精修后确保各参数物理上合理，比如晶胞参数不能偏离太多，原子占位率不能大于 1 或小于 0，温度因子不能为负值等，否则就要返回上一次精修结果，重新选择精修参数。
-
-   10. **迭代次数调整：** refine_cycle（maxCycle）每次都需要根据情况改动，可以反复回退调节，目的是让每次 refine 的收敛结果达到最好。不要固定不变。
-
-### 注意事项
-你每次精修前，都要告诉用户，接下来你放开的所有精修参数是哪些？你做出这个精修决策的理由是什么？你要让用户清楚地知道你接下来要做什么，为什么要这么做。
-
-所有的cfg参数值都必须是字符串格式，即使是布尔值也要用 "true"/"false" 表示，数字也要用字符串包裹。
-
-### TOF 精修范围控制（tof_min / tof_max）
-
-当数据集在低TOF区（如BM探测器组）存在大量密集Bragg峰，导致精修收敛极慢甚至发散时，**必须设置精修范围来排除问题区域**。
-
-`cfg` 中支持以下两个参数（单位：微秒，字符串格式）：
-- `tof_min`：精修TOF下限，低于该值的数据点不参与精修。
-- `tof_max`：精修TOF上限，高于该值的数据点不参与精修。
-
-**使用方式：**
-- 按照上面"第0步"的零参数预运行拿到 Bragg 峰分布图后，观察低TOF区的峰密度。
-- 若低TOF区峰过密，在后续所有精修步骤的 cfg 中加入 `tof_min`，将密集区排除。
-- 示例：`{"refine_scale": "true", "refine_background": "true", "tof_min": "10000", "refine_cycle": "3"}`
+**Usage:**
+- After running the zero-parameter preview from "Step 0" above to obtain the Bragg peak distribution plot, observe the peak density in the low-TOF region.
+- If the low-TOF region has excessively dense peaks, add `tof_min` to the cfg in all subsequent refinement steps to exclude the dense region.
+- Example: `{"refine_scale": "true", "refine_background": "true", "tof_min": "10000", "refine_cycle": "3"}`

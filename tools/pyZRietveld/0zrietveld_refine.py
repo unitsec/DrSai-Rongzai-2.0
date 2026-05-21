@@ -482,60 +482,66 @@ def zrt_generate_project(
     task_id: Optional[str] = None,
 ) -> Dict[str, object]:
     """
-    生成Z-Rietveld .zrietveldn项目文件，为后续精修做准备。
-    
-    此工具从中子粉末衍射数据、仪器参数文件和晶体结构文件生成完整的Z-Rietveld项目。
-    生成的项目文件可用于后续的手动精修或自动精修。
-    
-    Args:
-        neutron_data: 中子粉末衍射数据文件的绝对路径。
-                      支持格式：.histogramIgor（Z-Rietveld专有的中子衍射直方图格式）。
-                      文件必须存在，且包含有效的衍射强度数据。
-        
-        neutron_inst: Z-Rietveld仪器参数文件的绝对路径。
-                      文件格式为 .zDiffractometer（Z-Rietveld专有格式）。
-                      包含仪器几何、探测器参数等信息。
-        
-        cif_files: 晶体结构文件列表，每项为绝对路径的字符串。
-                   支持标准CIF格式(.cif)，包含晶胞参数、空间群、原子位置等。
-                   可传入多个CIF文件用于多相精修。
-        
-        user_id: 用户标识符，字符串，用于文件管理和日志追踪。
-                 默认值为 "default"。
-        
-        mission_name: 任务名称，字符串，标识当前精修任务。
-                      用于组织生成的项目文件和日志。
-                      默认值为 "default"。
+    Generate a Z-Rietveld .zrietveldn project file in preparation for subsequent refinement.
 
-        task_id: 任务唯一标识（可选）。
-             在开启一次工具调用时，这里写None或不传，工具会自动生成一个唯一ID；如果是对已有任务的结果查询，则必须传入之前的task_id
-    
+    This tool generates a complete Z-Rietveld project from neutron powder diffraction data,
+    instrument parameter files, and crystal structure files. The generated project file can
+    be used for subsequent manual or automatic refinement.
+
+    Args:
+        neutron_data: Absolute path to the neutron powder diffraction data file.
+                      Supported format: .histogramIgor (Z-Rietveld proprietary neutron
+                      diffraction histogram format). The file must exist and contain valid
+                      diffraction intensity data.
+
+        neutron_inst: Absolute path to the Z-Rietveld instrument parameter file.
+                      File format is .zDiffractometer (Z-Rietveld proprietary format).
+                      Contains instrument geometry, detector parameters, and related information.
+
+        cif_files: List of crystal structure files, each item as an absolute path string.
+                   Supports standard CIF format (.cif), containing unit cell parameters,
+                   space group, atomic positions, etc. Multiple CIF files can be passed
+                   for multi-phase refinement.
+
+        user_id: User identifier string, used for file management and logging.
+                 Default value is "default".
+
+        mission_name: Task name string identifying the current task. For refinement of one
+                      dataset, the same mission_name should be used. Used to organize
+                      generated project files and logs.
+
+        task_id: Unique task identifier (optional).
+                 When starting a new tool call, pass None or omit this parameter; the tool
+                 will automatically generate a unique ID. If querying the result of an
+                 existing task, the previous task_id must be passed.
+
     Returns:
-        字典，包含以下键值：
-        - 'ok': bool，表示操作成功（True）或失败（False）。
-        - 'zrietveldn': str，生成的.zrietveldn项目文件的绝对路径（成功时）。
-        - 'run_dir': str，任务运行目录，存放日志和中间文件。
-        - 'error': str，错误信息（失败时）。
-        - 'traceback': str，完整的异常堆栈（失败时，用于调试）。
-    
-    使用示例:
+        A dictionary containing the following keys:
+        - 'ok': bool, indicates success (True) or failure (False).
+        - 'zrietveldn': str, absolute path to the generated .zrietveldn project file (on success).
+        - 'run_dir': str, task run directory storing logs and intermediate files.
+        - 'error': str, error message (on failure).
+        - 'traceback': str, complete exception stack trace (on failure, for debugging).
+
+    Usage example:
         result = zrt_generate_project(
             neutron_data="/data/sample.xye",
             neutron_inst="/data/instrument.zDiffractometer",
             cif_files=["/data/structure1.cif", "/data/structure2.cif"],
             user_id="wanghao96",
-            mission_name="LNO_refinement_v1"
+            mission_name="LNO_refinement"
         )
         if result['ok']:
             zrtn_file = result['zrietveldn']
-            print(f"项目生成成功：{zrtn_file}")
+            print(f"Project generated successfully: {zrtn_file}")
         else:
-            print(f"项目生成失败：{result['error']}")
-    
-    注意事项:
-        - 生成过程可能耗时数秒到数十秒，取决于数据量和结构复杂性。
-        - 若多个CIF文件指向同一结构，只会加载一次。
-        - 生成的.zrietveldn文件可被 zrt_manual_refine 工具加载并精修。
+            print(f"Project generation failed: {result['error']}")
+
+    Notes:
+        - Generation may take several seconds to tens of seconds depending on data volume
+          and structural complexity.
+        - If multiple CIF files point to the same structure, it will only be loaded once.
+        - The generated .zrietveldn file can be loaded and refined by the zrt_manual_refine tool.
     """
     run_dir = TMP_DIR / user_id / mission_name
     logger = _setup_logging(run_dir)
@@ -581,87 +587,78 @@ def zrt_manual_refine(
     task_id: Optional[str] = None,
 ) -> Dict[str, object]:
     """
-    对现有Z-Rietveld项目文件执行手动精修，按用户指定的参数配置进行精修。
-    
-    此工具加载已生成的 .zrietveldn 项目文件，按 cfg 配置的参数精修中子粉末衍射数据。
-    支持灵活的精修参数组合，包括标度因子、背景、晶胞、仪器参数、原子坐标等。
-    
-    Args:
-        zrtn_path: 已生成的Z-Rietveld项目文件的绝对路径（.zrietveldn格式）。
-                   文件必须由 zrt_generate_project 工具或Z-Rietveld GUI生成。
-        
-        cfg: 精修配置字典（可选，默认为None表示不进行任何精修）。
-             所有配置值必须以字符串形式传入。
-             支持的配置键及其值如下表所示：
-             
-             | 参数 | 类型 | 默认值 | 说明 |
-             |------|------|--------|------|
-             | `scaleVary` / `refine_scale` | str | "false" | 是否精修整体标度因子。值为"true"或"false"。 |
-             | `scaleInit` | str | （无） | 标度因子初值，格式为数字字符串，如"1.0"。 |
-             | `varyBackground` / `refine_background` | str | "false" | 是否精修背景。值为"true"或"false"。 |
-             | `bgOrder` / `background_coeffs` | str | "6" | 背景多项式项数，如"3"、"6"。 |
-             | `bgInit` | str | "1.0,0,0,0,0,0" | 背景初值，逗号分隔的数值列表。 |
-             | `bgMode` | str | "legendre" | 背景类型，目前主要支持"legendre"。 |
-             | `refine_cell` / `varyLattice` | str | "false" | 是否精修晶胞参数。根据空间群自动应用约束（立方/四方/六方/正交/单斜/三斜）。 |
-             | `refine_atoms` | str | （无） | 针对指定原子的精修控制。格式：'{"Fe1":"XU","O2":"YZF","all":"U"}' 支持标记：X/Y/Z（坐标），U/UISO（热因子），F/OCC/OCCUPANCY（占有率）。 |
-             | `space_group` | str | （无） | 修改空间群，格式：'{"phase_name":"203_2"}'。相名来自CIF文件名(去扩展名)。 |
-             | `absorption` | str | （无） | 吸收修正配置，格式：'{"DataLabel":{"refine":true,"function":"spherical"}}'。function可选值："none"、"cylindrical"、"spherical"、"plate"、"flatplate"、"lobanov1"、"lobanov2"。 |
-             | `tof_min` | str | （无） | 精修 TOF 下限（微秒）。排除低TOF区（Bragg峰密集区），如 "10000"。 |
-             | `tof_max` | str | （无） | 精修 TOF 上限（微秒）。排除高TOF区噪声，如 "100000"。 |
-             
-             ⚠️ BM 谱仪等大数据量数据集，Bragg峰在低TOF区极为密集，**强烈建议**第一步精修设置 `tof_min` 跳过低TOF区，例如：
-                cfg = {"refine_scale": "true", "refine_background": "true", "tof_min": "10000", "refine_cycle": "3"}
-             
-             典型配置示例:
-                cfg = {
-                    "refine_scale": "true",
-                    "refine_background": "true",
-                    "background_coeffs": "6",
-                    "bgInit": "1.0,0.1,0,0,0,0",
-                    "refine_cell": "true",
-                    "refine_atoms": "{"all":"U"}"
-                }
-        
-        user_id: 用户标识符，字符串，用于文件管理和日志追踪。
-                 默认值为 "default"。
-        
-        mission_name: 任务名称，字符串，标识当前精修任务。
-                      用于组织日志和输出文件。
-                      默认值为 "default"。
+    Execute manual refinement on an existing Z-Rietveld project file according to
+    user-specified parameter configuration.
 
-        task_id: 任务唯一标识（可选）。
-             该参数由 MCP 包装层自动注入，用于任务跟踪。
-             业务逻辑中通常无需手动传入。
-        
-    
+    This tool loads an already-generated .zrietveldn project file and refines neutron powder
+    diffraction data according to the cfg-configured parameters. Supports flexible combinations
+    of refinement parameters including scale factor, background, unit cell, instrument
+    parameters, atomic coordinates, etc.
+
+    Args:
+        zrtn_path: Absolute path to an already-generated Z-Rietveld project file
+                   (.zrietveldn format). The file must have been generated by the
+                   zrt_generate_project tool or the Z-Rietveld GUI.
+
+        cfg: Refinement configuration dictionary (optional, default None means no refinement
+             is performed). All configuration values must be passed as strings.
+             Supported configuration keys and their values are shown in the table below:
+
+             | Parameter | Type | Default | Description |
+             |-----------|------|---------|-------------|
+             | `scaleVary` / `refine_scale` | str | "false" | Whether to refine the overall scale factor. Value is "true" or "false". |
+             | `scaleInit` | str | (none) | Initial value of the scale factor, as a numeric string, e.g. "1.0". |
+             | `varyBackground` / `refine_background` | str | "false" | Whether to refine the background. Value is "true" or "false". |
+             | `bgOrder` / `background_coeffs` | str | "6" | Number of background polynomial terms, e.g. "3", "6". |
+             | `bgInit` | str | "1.0,0,0,0,0,0" | Initial background values, comma-separated numeric list. |
+             | `bgMode` | str | "legendre" | Background type, currently mainly supports "legendre". |
+             | `refine_cell` / `varyLattice` | str | "false" | Whether to refine unit cell parameters. Automatically applies constraints based on space group (cubic/tetragonal/hexagonal/orthorhombic/monoclinic/triclinic). |
+             | `refine_atoms` | str | (none) | Refinement control for specified atoms. Format: '{"Fe1":"XU","O2":"YZF","all":"U"}'. Supported flags: X/Y/Z (coordinates), U/UISO (thermal factor), F/OCC/OCCUPANCY (occupancy). The available atoms can be found in the document at 'report_path' returned after refinement. |
+             | `space_group` | str | (none) | Modify space group, format: '{"phase_name":"203_2"}'. Phase name comes from CIF filename (without extension). |
+             | `absorption` | str | (none) | Absorption correction configuration, format: '{"name":{"refine":true,"function":"cylindrical"}}'. name should be the internal diffraction spectrum label (usually `A`), not the prefixed `Histogram_A`. If the report shows `Histogram_A`, write `A` in absorption. The tool layer is compatible with both `A` and `Histogram_A`. Available function values: "cylindrical", "spherical", "plate", "flatplate", "lobanov1", "lobanov2". Default to "cylindrical"; if adjustment is needed, try "lobanov2" or "lobanov1" first; if further change is required, ask the user about the sample shape. |
+             | `tof_min` | str | (none) | Lower TOF refinement limit (microseconds). Excludes the low-TOF region (dense Bragg peaks), e.g. "10000". |
+             | `tof_max` | str | (none) | Upper TOF refinement limit (microseconds). Excludes the high-TOF noise region, e.g. "100000". |
+             | `refine_profile` | str | (none) | Peak profile parameter refinement control (TOF neutron diffraction only). Available values: `level0` / `level1` / `level2`, mutually exclusive. Parameters opened at each level: `level0` opens σ₁², γ₁; `level1` opens σ₀², σ₂², γ₀, γ₂; `level2` simultaneously opens σ₀², σ₁², σ₂², γ₀, γ₁, γ₂ (all Gaussian/Lorentzian peak width parameters). α, β₀, β₁, r₀ remain fixed at any level. Recommended to enable only after completing scale/background/unit cell refinement, typically starting with `level0`. |
+
+        user_id: User identifier string, used for file management and logging.
+                 Default value is "default".
+
+        mission_name: Task name string identifying the current task. For refinement of one
+                      dataset, the same mission_name should be used. Used to organize
+                      generated project files and logs.
+
+        task_id: Unique task identifier (optional).
+                 This parameter is automatically injected by the MCP wrapper layer for task
+                 tracking. Usually does not need to be manually passed in business logic.
+
     Returns:
-        字典，包含以下键值：
-        - 'ok': bool，表示操作成功（True）或失败（False）。
-        - 'zrietveldn': str，本次精修实际使用并产出的 .zrietveldn 路径（task_id命名副本）。
-        - 'cfg': dict或str，使用的配置参数（成功时）。
-        - 'refine_result': dict，底层 pybind 返回的详细结果（成功时）。
-        - 'report_text': str，从 report_path 对应日志中提取的精简文本（已删除第36-109行，成功时）。
-        - 'report_path': str，RunLog 文本落盘路径（成功时）。
-        - 'task_id': str，本次精修使用的任务ID。
-        - 'run_dir': str，任务运行目录，存放日志和中间文件。
-        - 'error': str，错误信息（失败时）。
-        - 'traceback': str，完整的异常堆栈（失败时，用于调试）。
-    
-    使用示例:
-        # 精修scale和背景
+        A dictionary containing the following keys:
+        - 'ok': bool, indicates success (True) or failure (False).
+        - 'zrietveldn': str, the .zrietveldn path actually used and produced in this refinement (task_id named copy).
+        - 'cfg': dict or str, the configuration parameters used (on success).
+        - 'refine_result': dict, detailed result returned by the underlying pybind (on success).
+        - 'report_text': str, condensed text extracted from the log at report_path (lines 36-109 removed, on success).
+        - 'report_path': str, the path where the RunLog text was saved (on success).
+        - 'plot_files': list, list of generated fit plot image paths (on success).
+        - 'task_id': str, the task ID used in this refinement.
+        - 'run_dir': str, task run directory storing logs and intermediate files.
+        - 'error': str, error message (on failure).
+        - 'traceback': str, complete exception stack trace (on failure, for debugging).
+
+    Usage examples:
+        # Refine scale and background
         result = zrt_manual_refine(
             zrtn_path="/output/project.zrietveldn",
             cfg={
                 "refine_scale": "true",
                 "refine_background": "true",
-                "background_coeffs": "6",
-                "refine_cycle": "5"
+                "background_coeffs": "6"
             },
             user_id="wanghao96",
             mission_name="LNO_step1"
         )
-        
-        # 进一步精修晶胞和原子位置
+
+        # Further refine unit cell and atomic positions
         result = zrt_manual_refine(
             zrtn_path="/output/project.zrietveldn",
             cfg={
@@ -672,13 +669,31 @@ def zrt_manual_refine(
             user_id="wanghao96",
             mission_name="LNO_step2"
         )
-    
-    注意事项:
-        - cfg中的所有值都必须是字符串。若要传入布尔值，请使用"true"或"false"。
-        - 若cfg为None或为空字典，则不会进行任何精修，仅加载项目。
-        - 精修过程通常耗时10秒到数分钟，取决于迭代次数和数据量。
-        - 旧参数名（如varyLattice）与新参数名（如refine_cell）通常兼容。
-        - refine_atoms中的标记X表示该原子的X坐标（历史原因，实际等价XYZ）；F表示占有率。
+
+    Notes:
+        - All values in cfg must be strings. For boolean values, use "true" or "false".
+        - If cfg is None or an empty dict, no refinement is performed; the project is only loaded.
+        - Refinement typically takes 10 seconds to several minutes depending on iteration count and data volume.
+        - Old parameter names (e.g. varyLattice) are generally compatible with new names (e.g. refine_cell).
+        - The flag X in refine_atoms refers to the X coordinate of that atom (for historical reasons,
+          actually equivalent to XYZ); F refers to occupancy.
+
+    Fit plot element descriptions (images corresponding to plot_files):
+        - Black solid line `Difference (Obs-Calc)`: Residual curve, equal to observed intensity minus
+          calculated intensity; closer to 0 generally means better fit.
+        - Blue crosses `Observed`: Experimental observed intensity points (vertically shifted upward
+          for display alongside the residual).
+        - Red solid line `Calculated`: Model calculated intensity curve (also shifted upward
+          consistently with the observed curve).
+        - Green solid line `Background`: Background intensity curve (also shifted upward).
+        - Magenta dashed vertical line `Refine TOF Min`: Lower TOF limit used in this refinement
+          (if present in input or data metadata).
+        - Cyan dashed vertical line `Refine TOF Max`: Upper TOF limit used in this refinement
+          (if present in input or data metadata).
+        - Short vertical ticks at bottom `Bragg peaks (phase)`: Bragg peak positions for each phase,
+          different colors for different phases.
+        - `Rwp: xx.xx%` in title: Weighted profile R-factor (percentage), measuring goodness of fit;
+          generally lower is better.
     """
     run_dir = TMP_DIR / user_id / mission_name
     logger = _setup_logging(run_dir)
@@ -722,13 +737,13 @@ def zrt_manual_refine(
 
 
 zrt_generate_runner = ProcessPollingMcpToolBase(
-    timeout_sec=1200.0,
+    timeout_sec=60.0,
     poll_interval=1.0,
     target_func=zrt_generate_project,
 )
 
 zrt_manual_runner = ProcessPollingMcpToolBase(
-    timeout_sec=1200.0,
+    timeout_sec=60.0,
     poll_interval=1.0,
     target_func=zrt_manual_refine,
 )
@@ -741,15 +756,34 @@ zrt_manual_runner.register_mcp_tool(mcp, name="zrt_manual_refine")
 if __name__ == "__main__":
     mcp.run(transport="sse")
 
-    # difPath = "/home/wangh/rongzai-agent/tools/pyZRietveld/testData/RUN0000410_groupMA.histogramIgor"
-    # cifPath = "/home/wangh/rongzai-agent/tools/pyZRietveld/testData/run410-zeolyte.cif"
-    # instruPath = "/home/wangh/rongzai-agent/tools/pyZRietveld/testData/MA.zDiffractometer"
+    # difPath = "/home/wangh/rongzai-agent/tools/pyZRietveld/testData/RUN0001094_groupBM.histogramIgor"
+    # cifPath = "/home/wangh/rongzai-agent/tools/pyZRietveld/testData/LNO.cif"
+    # instruPath = "/home/wangh/rongzai-agent/tools/pyZRietveld/testData/BM.zDiffractometer"
 
     # result = zrt_generate_project(difPath, instruPath, [cifPath], user_id="test_user", mission_name="test_mission")
     # print(result)
+
+    # zrietveldnPath = "/home/wangh/rongzai-agent/userRecord/wanghao96/LNO_RUN0001094_BM/6862ac44-3adb-4427-a8af-730310406243.zrietveldn"
+    
+    # cfg0 = {
+    # "refine_scale": "true",
+    # "refine_background": "true",
+    # "background_coeffs": "6",
+    # "refine_cell": "true",
+    # # "refine_atoms": '{"O1":"Z","all":"U"}',
+    # # "absorption": '{"A":{"refine":"true","function":"cylindrical"}}'
+    # }
+    
     # cfg1 = {
-    # "scaleVary": "true",
-    # "varyBackground": "true"
+    # "refine_scale": "true",
+    # "refine_background": "true",
+    # "background_coeffs": "6",
+    # "refine_cell": "true",
+    # "absorption": '{"A":{"refine":"true","function":"Lobanov2"}}',
+    # "refine_cycle": "10"
     #     }
-    # result = zrt_manual_refine(result["zrietveldn"], cfg1, user_id="test_user", mission_name="test_mission")
-    # print(result)
+    # result1 = zrt_manual_refine(result['zrietveldn'], cfg0, user_id="test_user", mission_name="test_mission")
+    
+    # result2 = zrt_manual_refine(result1['zrietveldn'], cfg1, user_id="test_user", mission_name="test_mission")
+    # print(result1)
+    # print(result2)
