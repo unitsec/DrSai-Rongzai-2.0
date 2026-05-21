@@ -351,9 +351,7 @@ class RongZaiAgent(DrSaiAgent):
             enhanced_system_message = f"{enhanced_system_message}\n\nCurrent Session_ID is {self._thread_id}"
         if self._user_id:
             enhanced_system_message = (
-                f"{enhanced_system_message}\n\nCurrent user_id is {self._user_id}. "
-                f"Uploaded user files are under /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/{self._user_id}/. If user has uploaded any files, they are in this directory."
-            )
+                f"{enhanced_system_message}\n\nCurrent user_id is {self._user_id}. ")
         enhanced_system_message += f"\n\n{self._core_skill_policy_prompt}"
         core_skill_prompt = self._build_core_skill_prompt()
         if core_skill_prompt:
