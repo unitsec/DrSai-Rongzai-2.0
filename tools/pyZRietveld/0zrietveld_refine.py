@@ -644,6 +644,22 @@ def zrt_manual_refine(
         - 'report_text': str, condensed text extracted from the log at report_path (lines 36-109 removed, on success).
         - 'report_path': str, the path where the RunLog text was saved (on success).
         - 'plot_files': list, list of generated fit plot image paths (on success).
+            Fit plot element descriptions (images corresponding to plot_files):
+                - Black solid line `Difference (Obs-Calc)`: Residual curve, equal to observed intensity minus
+                calculated intensity; closer to 0 generally means better fit.
+                - Blue crosses `Observed`: Experimental observed intensity points (vertically shifted upward
+                for display alongside the residual).
+                - Red solid line `Calculated`: Model calculated intensity curve (also shifted upward
+                consistently with the observed curve).
+                - Green solid line `Background`: Background intensity curve (also shifted upward).
+                - Magenta dashed vertical line `Refine TOF Min`: Lower TOF limit used in this refinement
+                (if present in input or data metadata).
+                - Cyan dashed vertical line `Refine TOF Max`: Upper TOF limit used in this refinement
+                (if present in input or data metadata).
+                - Short vertical ticks at bottom `Bragg peaks (phase)`: Bragg peak positions for each phase,
+                different colors for different phases.
+                - `Rwp: xx.xx%` in title: Weighted profile R-factor (percentage), measuring goodness of fit;
+                generally lower is better.
         - 'task_id': str, the task ID used in this refinement.
         - 'run_dir': str, task run directory storing logs and intermediate files.
         - 'error': str, error message (on failure).
@@ -682,22 +698,7 @@ def zrt_manual_refine(
         - The flag X in refine_atoms refers to the X coordinate of that atom (for historical reasons,
           actually equivalent to XYZ); F refers to occupancy.
 
-    Fit plot element descriptions (images corresponding to plot_files):
-        - Black solid line `Difference (Obs-Calc)`: Residual curve, equal to observed intensity minus
-          calculated intensity; closer to 0 generally means better fit.
-        - Blue crosses `Observed`: Experimental observed intensity points (vertically shifted upward
-          for display alongside the residual).
-        - Red solid line `Calculated`: Model calculated intensity curve (also shifted upward
-          consistently with the observed curve).
-        - Green solid line `Background`: Background intensity curve (also shifted upward).
-        - Magenta dashed vertical line `Refine TOF Min`: Lower TOF limit used in this refinement
-          (if present in input or data metadata).
-        - Cyan dashed vertical line `Refine TOF Max`: Upper TOF limit used in this refinement
-          (if present in input or data metadata).
-        - Short vertical ticks at bottom `Bragg peaks (phase)`: Bragg peak positions for each phase,
-          different colors for different phases.
-        - `Rwp: xx.xx%` in title: Weighted profile R-factor (percentage), measuring goodness of fit;
-          generally lower is better.
+    
     """
     run_dir = TMP_DIR / user_id / mission_name
     logger = _setup_logging(run_dir)
