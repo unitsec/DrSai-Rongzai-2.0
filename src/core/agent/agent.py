@@ -240,7 +240,6 @@ class RongZaiAgent(DrSaiAgent):
             self._get_promote_skill_tool(),
             self._get_demote_skill_tool(),
             self._get_replace_core_skill_tool(),
-            self._get_finish_task_tool(),
         ]
         self._core_skill_slots: List[Dict[str, Any]] = []
         self._max_core_skill_slots = 2
@@ -608,26 +607,6 @@ class RongZaiAgent(DrSaiAgent):
             strict=False,
         )
 
-    def _get_finish_task_tool(self) -> ToolSchema:
-        """供模型调用：结束当前任务循环。"""
-        parameters = ParametersSchema(
-            type="object",
-            properties={
-                "final_response": {
-                    "type": "string",
-                    "description": "Final natural-language response to the user.",
-                },
-            },
-            required=["final_response"],
-            additionalProperties=False,
-        )
-        return ToolSchema(
-            name="FinishTask",
-            description="End the current loop and deliver final_response to the user.",
-            parameters=parameters,
-            strict=False,
-        )
-
     def _extract_core_skill_rules(self, skill_content: str, focus: str = "") -> str:
         """提取 Core Skill 规则正文，尽量保留完整内容。"""
         text = (skill_content or "").strip()
@@ -878,8 +857,6 @@ class RongZaiAgent(DrSaiAgent):
                 messages=messages,
             )
 
-            text_only_retry = 0
-            text_only_fallback_threshold = 2
             while True:
                 self._debug_log_system_prompt(system_messages)
                 model_result = None
@@ -924,48 +901,28 @@ class RongZaiAgent(DrSaiAgent):
                     )
                 )
                 
-                # 纯文本响应不允许直接结束循环；必须通过 FinishTask 显式结束
+                # 纯文本响应：不调用工具，直接结束循环。
                 if isinstance(model_result.content, str):
-                    text_only_retry += 1
-                    plain_text = model_result.content.strip()
-
-                    # 兜底：兼容不支持工具调用的模型，避免无限循环无输出。
-                    if text_only_retry >= text_only_fallback_threshold:
-                        fallback_text = plain_text or "任务已完成。"
-                        yield Response(
-                            chat_message=TextMessage(
-                                content=fallback_text,
-                                source=agent_name,
-                                models_usage=model_result.usage,
-                            ),
-                            inner_messages=inner_messages,
-                        )
-                        break
-
-                    guidance = (
-                        "You just returned plain text. Plain text cannot terminate this loop. "
-                        "If the task is finished, call FinishTask with final_response. "
-                        "If not finished, continue with necessary tool calls."
+                    for buffered_event in buffered_stream_events:
+                        yield buffered_event
+                    response = await self.handle_str_reponse(
+                        model_result=model_result,
+                        agent_name=agent_name,
+                        format_string=format_string,
+                        inner_messages=inner_messages,
+                        output_content_type=output_content_type,
                     )
-                    await model_context.add_message(AssistantMessage(content=guidance, source=self._name))
-                    continue
+                    yield response
+                    break
 
                 # 否则进入工具调用分支
                 assert isinstance(model_result.content, list) and all(
                     isinstance(item, FunctionCall) for item in model_result.content
                 )
-                text_only_retry = 0
-
-                has_finish_task = any(call.name == "FinishTask" for call in model_result.content)
-
-                # 普通工具轮次仍可显示模型流式文本；FinishTask 轮次则丢弃这些文本，避免结束前重复输出。
-                if not has_finish_task:
-                    for buffered_event in buffered_stream_events:
-                        yield buffered_event
+                for buffered_event in buffered_stream_events:
+                    yield buffered_event
 
                 # 处理模型请求的工具调用
-                finish_requested = False
-                finish_response_text = ""
                 for i in range(len(model_result.content)):
                     argument = json.loads(model_result.content[i].arguments)
                     tool_name = model_result.content[i].name
@@ -1056,20 +1013,6 @@ class RongZaiAgent(DrSaiAgent):
                             content=str(argument),
                             content_type="tools",
                         )
-                    elif tool_name == "FinishTask":
-                        tool_feedback = "Loop termination requested via FinishTask."
-                        finish_response_text = str(argument.get("final_response", "")).strip()
-                        if not finish_response_text:
-                            finish_response_text = "任务已完成。"
-                        await model_context.add_message(FunctionExecutionResultMessage(
-                            content=[FunctionExecutionResult(
-                                content=tool_feedback,
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
-                            )]
-                        ))
-                        finish_requested = True
                     elif tool_name in self._tools_names:
                         async for message in self._process_model_result(
                             model_result=model_result,
@@ -1105,27 +1048,6 @@ class RongZaiAgent(DrSaiAgent):
                                 is_error = False,
                             ),]
                         ))
-
-                if finish_requested:
-                    await model_context.add_message(
-                        AssistantMessage(
-                            content=finish_response_text,
-                            source=self._name,
-                        )
-                    )
-                    yield ModelClientStreamingChunkEvent(
-                        content=finish_response_text,
-                        source=agent_name,
-                    )
-                    yield Response(
-                        chat_message=TextMessage(
-                            content=finish_response_text,
-                            source=agent_name,
-                            models_usage=model_result.usage,
-                        ),
-                        inner_messages=inner_messages,
-                    )
-                    break
 
         except asyncio.CancelledError:
             # 任务被取消时，返回统一提示

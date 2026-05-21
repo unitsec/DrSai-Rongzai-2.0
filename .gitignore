@@ -49,6 +49,14 @@ tools/pyZRietveld/Z-Foundation/*
 tools/pyZRietveld/.build/*
 tools/pyZRietveld/testData/*
 
+# 保留 pyZRietveld 运行期必需资源（用于 refineTool 运行时读取）
+!tools/pyZRietveld/Z-Rietveld/lib/
+!tools/pyZRietveld/Z-Rietveld/lib/**
+!tools/pyZRietveld/Z-Rietveld/Z-Rietveld/
+tools/pyZRietveld/Z-Rietveld/Z-Rietveld/*
+!tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data/
+!tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data/**
+
 tools/GSAS-II-master/GSASII/0data_test/*
 tools/GSAS-II-master/GSASII/RUN0021905_20250904/*
 tools/GSAS-II-master/GSASII/0neutron_multi.py

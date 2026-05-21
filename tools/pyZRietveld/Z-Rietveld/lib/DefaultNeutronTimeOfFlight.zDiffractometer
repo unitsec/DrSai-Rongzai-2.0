@@ -1,0 +1,474 @@
+[File format version] 1
+[Diffracto meter format version] 1
+
+# [Beam type]
+# X-Ray
+# Neutron
+[Beam type] Neutron
+
+# [Measurement method]
+# Time Of Flight
+# Dispersive Automatic Slit
+# Dispersive Conventional Slit
+[Measurement method] Time Of Flight
+
+[Global fitting range]
+	# [Type]
+	# Detail For Fitting
+	# Simple For Fitting
+	[Type] Detail For Fitting
+	[Peak position]
+		[Min] 5626
+		[Max] 40767.4
+	[End]
+	[Exclude range]
+		[Min] MIN
+		[Max] 5800
+	[Exclude range]
+		[Min] 39580
+		[Max] MAX
+	[End]
+[End]
+
+[Intensity correction parameters]
+	[Diffraction angle] 155
+	[Radius of crystal] 0.46
+	[Powder density]
+		[Value] 1.014
+		[ID] Vary
+	[End]
+[End]
+
+[Scale factor]
+	[Mode] For Whole
+	[Value] 744142.4
+	[ID] Vary
+[End]
+
+[Background parameters]
+	[Value] 7.640060E-002
+	[ID] Vary
+[Background parameters]
+	[Value] -9.304131E-003
+	[ID] Vary
+[Background parameters]
+	[Value] 0.009159334999999999
+	[ID] Vary
+[Background parameters]
+	[Value] -2.438336E-004
+	[ID] Vary
+[Background parameters]
+	[Value] 1.548446E-003
+	[ID] Vary
+[Background parameters]
+	[Value] -1.342767E-004
+	[ID] Vary
+[Background parameters]
+	[Value] -2.021213E-003
+	[ID] Vary
+[Background parameters]
+	[Value] -2.161140E-003
+	[ID] Vary
+[Background parameters]
+	[Value] 1.871580E-003
+	[ID] Vary
+[Background parameters]
+	[Value] 1.383946E-003
+	[ID] Vary
+[Background parameters]
+	[Value] -8.327491E-004
+	[ID] Vary
+[End]
+
+[Conversion parameters]
+	[Value] 12.51819
+	[ID] Fix
+[Conversion parameters]
+	[Value] 9965.02
+	[ID] Fix
+[Conversion parameters]
+	[Value] 6.085288
+	[ID] Fix
+[End]
+
+
+[Default profile model function identifier] Type2
+
+[Profile function]
+	[Identifier] Type2
+	[Sigma01]
+		[Value] 0.814060
+		[ID] Phase
+	[End]
+	[Sigma02]
+		[Value] 0.000000
+		[ID] Phase
+	[End]
+	[Sigma03]
+		[Value] 2.015100
+		[ID] Phase
+	[End]
+	[Sigma11]
+		[Value] 5.938200
+		[ID] Phase
+	[End]
+	[Sigma12]
+		[Value] -4.358900
+		[ID] Phase
+	[End]
+	[Sigma13]
+		[Value] -3.652500
+		[ID] Phase
+	[End]
+	[eta1]
+		[Value] 0.079339
+		[ID] Phase
+	[End]
+	[eta2]
+		[Value] 0.003984
+		[ID] Phase
+	[End]
+	[sigma21]  
+		[Value] 0.291930
+		[ID] Phase
+	[End]
+	[sigma22]
+		[Value] 2.312000
+		[ID] Phase
+	[End]
+	[gamma11]
+		[Value] 0.005727
+		[ID] Phase
+	[End]
+	[gamma12]
+		[Value] 0.142570
+		[ID] Phase
+	[End]
+	[gamma13]
+		[Value] 0.667270
+		[ID] Phase
+	[End]
+	[gamma21]
+		[Value] 0.005221
+		[ID] Phase
+	[End]
+	[gamma22]
+		[Value] 0.010000
+		[ID] Phase
+	[End]
+	[gamma23]
+		[Value] 1.200100
+		[ID] Phase
+	[End]
+	[R1]
+		[Value] 0.022618
+		[ID] Phase
+	[End]
+	[R2]
+		[Value] 0.655720
+		[ID] Phase
+	[End]
+	[R3]
+		[Value] 1.620600
+		[ID] Phase
+	[End]
+	[R4]
+		[Value] -8.754200
+		[ID] Phase
+	[End]
+[End]
+
+[Profile function initial value]
+	[Identifier] Type2
+	[Sigma01]
+		[Value] 0.814060
+		[ID] Phase
+	[End]
+	[Sigma02]
+		[Value] 0.000000
+		[ID] Phase
+	[End]
+	[Sigma03]
+		[Value] 2.015100
+		[ID] Phase
+	[End]
+	[Sigma11]
+		[Value] 5.938200
+		[ID] Phase
+	[End]
+	[Sigma12]
+		[Value] -4.358900
+		[ID] Phase
+	[End]
+	[Sigma13]
+		[Value] -3.652500
+		[ID] Phase
+	[End]
+	[eta1]
+		[Value] 0.079339
+		[ID] Phase
+	[End]
+	[eta2]
+		[Value] 0.003984
+		[ID] Phase
+	[End]
+	[sigma21]  
+		[Value] 0.291930
+		[ID] Phase
+	[End]
+	[sigma22]
+		[Value] 2.312000
+		[ID] Phase
+	[End]
+	[gamma11]
+		[Value] 0.005727
+		[ID] Phase
+	[End]
+	[gamma12]
+		[Value] 0.142570
+		[ID] Phase
+	[End]
+	[gamma13]
+		[Value] 0.667270
+		[ID] Phase
+	[End]
+	[gamma21]
+		[Value] 0.005221
+		[ID] Phase
+	[End]
+	[gamma22]
+		[Value] 0.010000
+		[ID] Phase
+	[End]
+	[gamma23]
+		[Value] 1.200100
+		[ID] Phase
+	[End]
+	[R1]
+		[Value] 0.022618
+		[ID] Phase
+	[End]
+	[R2]
+		[Value] 0.655720
+		[ID] Phase
+	[End]
+	[R3]
+		[Value] 1.620600
+		[ID] Phase
+	[End]
+	[R4]
+		[Value] -8.754200
+		[ID] Phase
+	[End]
+[Profile function initial value]
+	[Identifier] Type1
+	[sigma square 0]
+		[Value] 0.1
+		[ID] Phase
+	[End]
+	[sigma square 1]
+		[Value] 0.2
+		[ID] Fix
+	[End]
+	[sigma square 2]
+		[Value] 0.3
+		[ID] Phase
+	[End]
+	[gamma 0]
+		[Value] 0.4
+		[ID] Fix
+	[End]
+	[gamma 1]
+		[Value] 0.5
+		[ID] Phase
+	[End]
+	[gamma 2]
+		[Value] 0.6
+		[ID] Fix
+	[End]
+	[alpha]
+		[Value] 0.7
+		[ID] Phase
+	[End]
+	[beta 1_0]
+		[Value] 0.8
+		[ID] Fix
+	[End]
+	[beta 0_0]
+		[Value] 0.9
+		[ID] Phase
+	[End]
+	[r0 0_0]
+		[Value] 1.0
+		[ID] Fix
+	[End]
+[Profile function initial value]
+	[Identifier] Type0
+	[sigma square 0]
+		[Value] 1.0
+		[ID] Fix
+	[End]
+	[sigma square 1]
+		[Value] 1.1
+		[ID] Fix
+	[End]
+	[sigma square 2]
+		[Value] 1.2
+		[ID] Fix
+	[End]
+	[gamma 0]
+		[Value] 1.3
+		[ID] Fix
+	[End]
+	[gamma 1]
+		[Value] 1.4
+		[ID] Fix
+	[End]
+	[gamma 2]
+		[Value] 1.5
+		[ID] Fix
+	[End]
+	[alpha]
+		[Value] 1.6
+		[ID] Fix
+	[End]
+	[beta 1_0]
+		[Value] 1.7
+		[ID] Fix
+	[End]
+	[beta 0_0]
+		[Value] 1.8
+		[ID] Fix
+	[End]
+	[beta 0_1]
+		[Value] 1.9
+		[ID] Fix
+	[End]
+	[r0]
+		[Value] 2.0
+		[ID] Fix
+	[End]
+[Profile function initial value]
+	[Identifier] TypeA1
+	[U]
+		[Value] 0.000362
+		[ID] Phase
+	[End]
+	[V]
+		[Value] -0.001312
+		[ID] Phase
+	[End]
+	[W]
+		[Value] 0.001297
+		[ID] Fix
+	[End]
+	[P]
+		[Value] 0.000000
+		[ID] Fix
+	[End]
+	[X]
+		[Value] 0.007895
+		[ID] Phase
+	[End]
+	[Xe]
+		[Value] 0.000000
+		[ID] Fix
+	[End]
+	[Y]
+		[Value] 0.088818
+		[ID] Phase
+	[End]
+	[Ye]
+		[Value] 0.000000
+		[ID] Fix
+	[End]
+	[h] 1
+	[k] 1
+	[l] 1
+[Profile function initial value]
+	[Identifier] TypeA1FCJ
+	[U]
+		[Value] 0.000362
+		[ID] Phase
+	[End]
+	[V]
+		[Value] -0.001312
+		[ID] Phase
+	[End]
+	[W]
+		[Value] 0.001297
+		[ID] Fix
+	[End]
+	[P]
+		[Value] 0.000000
+		[ID] Fix
+	[End]
+	[X]
+		[Value] 0.007895
+		[ID] Phase
+	[End]
+	[Xe]
+		[Value] 0.000000
+		[ID] Fix
+	[End]
+	[Y]
+		[Value] 0.088818
+		[ID] Phase
+	[End]
+	[Ye]
+		[Value] 0.000000
+		[ID] Fix
+	[End]
+	[h] 1
+	[k] 1
+	[l] 1
+	[H/L]
+		[Value] 0.028000
+		[ID] Phase
+	[End]
+	[S/L]
+		[Value] 0.001000
+		[ID] Phase
+	[End]
+[Profile function initial value]
+	[Identifier]	TypeA1Howard
+	[U]
+		[Value] 0.000362
+		[ID] Phase
+	[End]
+	[V]
+		[Value] -0.001312
+		[ID] Phase
+	[End]
+	[W]
+		[Value] 0.001297
+		[ID] Fix
+	[End]
+	[P]
+		[Value] 0.000000
+		[ID] Fix
+	[End]
+	[X]
+		[Value] 0.007895
+		[ID] Phase
+	[End]
+	[Xe]
+		[Value] 0.000000
+		[ID] Fix
+	[End]
+	[Y]
+		[Value] 0.088818
+		[ID] Phase
+	[End]
+	[Ye]
+		[Value] 0.000000
+		[ID] Fix
+	[End]
+	[h] 1
+	[k] 1
+	[l] 1
+	[As]
+		[Value] 0.028000
+		[ID] Phase
+	[End]
+[End]
