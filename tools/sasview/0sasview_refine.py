@@ -65,7 +65,7 @@ def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, outpu
     axs[1].legend(loc='best')
 
     fig.tight_layout()
-    plot_path = os.path.join(output_dir, f'{data_stem}_sasview_fit_{fit_idx}_{thread_id}.png')
+    plot_path = os.path.join(output_dir, f'{data_stem}_sasview_fit_{fit_idx}.png')
     fig.savefig(plot_path, format='png', dpi=400, bbox_inches='tight')
     plt.close(fig)
     result_data['plot_path'] = plot_path
@@ -212,13 +212,13 @@ def sasview_refinement(
     使用 SasView 对小角散射数据进行拟合并返回结果。
 
     Args:
-        data_path: 小角散射数据文件路径。
-        json_path: 初始参数 JSON 路径。为 None 时将根据 model 自动生成默认参数文件。
+        data_path: 小角散射数据文件的绝对路径。
+        json_path: 初始参数 JSON 路径。每次更换模型时应该设为 None或空 ，将根据 model 自动生成默认参数文件。
         model: 拟合模型名称（如 guinier_porod、sphere+cylinder）。
-        fit_params: 本轮拟合参数覆盖项，结构与参数 JSON 的 para 字段一致。
+        fit_params: 本轮拟合参数覆盖项。根据初始化后的参数结构，指定需要拟合的参数和/或修改参数初始值。例如：
         user_id: 用户 ID，用于输出目录组织。
         mission_name: 任务名；同一任务多轮调用建议保持一致。
-        task_id: 任务 ID。首次调用传 None 由框架生成；轮询时传上次返回的 task_id。
+        task_id: 任务 ID。首次调用传 0 由框架生成；轮询时传上次返回的 task_id 按间距1顺序增加。
 
     Returns:
         该函数作为 ProcessPollingMcpToolBase 的业务函数，返回：
@@ -228,8 +228,7 @@ def sasview_refinement(
                 'data_path': 原始数据路径,
                 'json_path': 参数文件路径,
                 'model': 使用的模型名,
-                'shape': 与历史接口兼容的模型名别名,
-                'params': 拟合后的参数,
+                'fit_params': 拟合后的参数,
                 'chisquare': 最终拟合 χ²,
                 'plot_path': 拟合图路径,
                 'plot_data_path': 拟合曲线导出数据路径,
@@ -251,7 +250,7 @@ def sasview_refinement(
     try:
         # 与 GSAS 工具保持一致：按 user_id/mission_name 组织输出目录
         user_key = user_id or 'default_user'
-        mission_key = mission_name or task_id or 'default_mission'
+        mission_key = mission_name or 'default_mission'
         output_dir = TMP_DIR / user_key / mission_key
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -270,18 +269,17 @@ def sasview_refinement(
         # 若未提供 json_path，则基于模型生成默认参数
         if not json_path:
             initial_para = build_default_para(model)
-            json_path = str(output_dir / 'sasview_fit_0.json')
+            json_path = str(output_dir / f'init_{model}_params.json')
             with open(json_path, 'w') as _f:
                 json.dump(initial_para, _f, indent=4)
             print(f'初始参数已生成并保存: {json_path}')
 
-        fit_idx = 0
         result = refine_data(
             data_path=data_path,
             json_path=json_path,
             shape=model,
             fit_params=fit_params,
-            fit_idx=fit_idx,
+            fit_idx=task_id,
             output_dir=str(output_dir),
         )
 
@@ -291,13 +289,12 @@ def sasview_refinement(
                 'data_path': result.get('data_path'),
                 'json_path': result.get('json_path'),
                 'model': result.get('shape'),
-                'shape': result.get('shape'),
-                'params': result.get('para'),
+                'fit_params': result.get('para'),
                 'chisquare': result.get('chisquare'),
                 'plot_path': result.get('plot_path'),
                 'plot_data_path': result.get('plot_data_path'),
                 'output_dir': str(output_dir),
-                'fit_idx': result.get('fit_idx'),
+                'task_id': result.get('fit_idx'),
             }
         }
     except Exception:
