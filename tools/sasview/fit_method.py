@@ -9,14 +9,50 @@ from sasmodels.bumps_model import Model, Experiment
 # 设计利用sasView拟合实验散射谱的函数，拟合参数按需开放，可以在拟合过程中选择关闭和开启，或者修改参数数值。
 # 输入参数：不同模型有的参数值不一样多，
 
+def build_default_para(model_name: str) -> dict:
+    """
+    动态从 sasmodels 获取模型（含混合模型）的默认参数结构。
+    返回格式与 model.json 中每个条目一致：{"para": {...}, "dispersity": {...}}
+    """
+    kernel = load_model(model_name)
+    model = Model(kernel)
+    state = model.state()
+
+    para_dict = {}
+    dispersity_dict = {}
+
+    for name, value in state.items():
+        if name.endswith('_pd_type'):
+            dispersity_dict[name] = value
+        elif name.endswith('_pd_n') or name.endswith('_pd_nsigma'):
+            dispersity_dict[name] = int(value) if isinstance(value, float) and value == int(value) else value
+        else:
+            try:
+                float_val = float(value)
+            except (TypeError, ValueError):
+                float_val = value
+            para_dict[name] = {"fit": False, "value": float_val, "error": None}
+
+    # scale 默认 fit=True
+    if 'scale' in para_dict:
+        para_dict['scale']['fit'] = True
+
+    return {"para": para_dict, "dispersity": dispersity_dict}
+
+
 class SasViewFit:
     def __init__(self, data_path, shape, para, cut_off=1e-6, fit_method='lm'):
         self.radial_data = load_data(data_path)
+        q = self.radial_data.x
+        self.rmin = 2 * np.pi / max(q)
+        self.rmax = 2 * np.pi / min(q)
         # print(radial_data)
         self.kernel = load_model(shape)
         self.para = para
         self.cut_off = cut_off
         self.fit_method = fit_method
+
+        self.size_key = ['radius', 'thickness', 'length']
         
         origin_para = self.mapping_para()
         self.model = Model(self.kernel, **origin_para)
@@ -25,10 +61,7 @@ class SasViewFit:
         self.fit_para()
         M = Experiment(data=self.radial_data, model=self.model, cutoff=self.cut_off)
         problem = FitProblem(M)
-        if len(problem.getp()) == 0:
-            print("最少需要一个参数进行拟合")
-            return None
-        fit(problem, method=self.fit_method)
+        result = fit(problem, method=self.fit_method)
 
         pars = self.model.parameters()
         Iq_model = M.theory()
@@ -36,33 +69,39 @@ class SasViewFit:
         Iq_data = self.radial_data.y
         Ierr = self.radial_data.dy
 
-        return q, Ierr, Iq_data, Iq_model, pars
+        return q, Ierr, Iq_data, Iq_model, pars, result
     
     def fit_para(self):
         for key in self.para["para"]:
             param = getattr(self.model, key)
             if self.para["para"][key]["fit"]:
-                param.range(0, np.inf)
-            else:
-                pass
+                # 尺寸因子范围与 q 范围相关，使用实验数据推算的 rmin/rmax
+                is_size = any(key == sk or key.endswith('_' + sk) for sk in self.size_key)
+                if is_size:
+                    param.range(self.rmin, self.rmax)
+                else:
+                    # 非尺寸参数使用 sasmodels 模型定义的默认范围
+                    param.range(*param.limits)
     
     def mapping_para(self):
         para = {}
         for key, value in self.para["para"].items():
             # print(key)
             para[key] = self.para["para"][key]["value"]
-        for key, value in self.para["statu"].items():
-            para[key] = self.para["statu"][key]
+        for key, value in self.para["dispersity"].items():
+            para[key] = self.para["dispersity"][key]
         return para
     
 def check_para(shape, para, config):
+    # 混合模型（含 + 或 @ 的组合模型）不做静态校验，依赖 sasmodels 运行时检查
+    if '+' in shape or '@' in shape:
+        return True
     if shape in config:
-        if set(config[shape]["para"].keys()) == set(para["para"].keys()) and set(config[shape]["statu"].keys()) == set(para["statu"].keys()):
+        if set(config[shape]["para"].keys()) == set(para["para"].keys()) and set(config[shape]["dispersity"].keys()) == set(para["dispersity"].keys()):
             return True
     else:
         return False
     return False
-
 
     
 if __name__ == '__main__':
@@ -70,18 +109,18 @@ if __name__ == '__main__':
     shape = 'hollow_cylinder'
     para = {
         "para":{
-            "scale": {"fit": True, "value": 0.08},
-            "radius": {"fit": False, "value": 105},
-            "radius_pd": {"fit": False, "value": 0.0},
-            "thickness": {"fit": False, "value": 105},
-            "thickness_pd": {"fit": False, "value": 0.0},
-            "length": {"fit": False, "value": 105},
-            "length_pd": {"fit": False, "value": 0.0},
-            "sld": {"fit": False, "value": 1},
-            "sld_solvent": {"fit": False, "value": 4},
-            "background": {"fit": False, "value": 0}
+            "scale": {"fit": True, "value": 0.08, 'error':None},
+            "radius": {"fit": False, "value": 105, 'error':None},
+            "radius_pd": {"fit": False, "value": 0.0, 'error':None},
+            "thickness": {"fit": True, "value": 105, 'error':None},
+            "thickness_pd": {"fit": False, "value": 0.0, 'error':None},
+            "length": {"fit": False, "value": 105, 'error':None},
+            "length_pd": {"fit": False, "value": 0.0, 'error':None},
+            "sld": {"fit": False, "value": 1, 'error':None},
+            "sld_solvent": {"fit": False, "value": 4, 'error':None},
+            "background": {"fit": True, "value": 0, 'error':None}
         },
-        "statu":{
+        "dispersity":{
             "radius_pd_type": "lognormal",
             "radius_pd_n": 35,
             "radius_pd_nsigma": 8,
@@ -102,12 +141,18 @@ if __name__ == '__main__':
         print("输入参数格式与形状参数配置不匹配")
         exit()
     svf = SasViewFit(data_path, shape, para)
-    q, Ierr, Iq_data, Iq_model, pars = svf.fit()
+    q, Ierr, Iq_data, Iq_model, pars, fit_result = svf.fit()
+    print(f"拟合参数: {fit_result['dx']}")
     for name, param in pars.items():
         if name in para["para"]:
             para["para"][name]["value"] = param.value
-        if name in para["statu"]:
-            para["statu"][name] = param.value
+            para["para"][name]["error"] = None
+            if para["para"][name]["fit"]:
+                for idx, value in enumerate(fit_result['x']):
+                    if value == param.value:
+                        para["para"][name]["error"] = fit_result['dx'][idx]
+        if name in para["dispersity"]:
+            para["dispersity"][name] = param.value
     print(para)
     residual = (Iq_data - Iq_model) / Ierr
     data_length = len(q)
