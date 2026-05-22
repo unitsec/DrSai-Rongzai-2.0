@@ -796,6 +796,12 @@ class RongZaiAgent(DrSaiAgent):
                     yield msg
                 else:
                     raise ValueError(f"Invalid message type in sequence: {type(msg)}")
+        
+        # 在进入 on_messages_stream 前，批量为 user_proxy 消息加前缀
+        for msg in input_messages:
+            if getattr(msg, "source", None) == "user_proxy" and hasattr(msg, "content") and isinstance(msg.content, str):
+                msg.content = f"user input: {msg.content}"
+
         async for message in self.on_messages_stream(input_messages, cancellation_token):
             if isinstance(message, Response):
                 yield message.chat_message

@@ -96,8 +96,11 @@ The following expert knowledge items take priority over any other knowledge you 
    2. **Refinement Order:** The general refinement philosophy is to gradually release parameters from fewer to more. Recommended order:
       - Stage 1: scale (overall scale factor) and background parameters — generally keep these always active.
       - Stage 2: cell (unit cell parameters) — generally keep this always active.
-      - Stage 3: peak profile parameters.
-      - Stage 4: sample-related parameters (absorption, atomic thermal disorder/positions/occupancy, etc.)
+      - Stage 3: check the figure.
+         - first, check if the calculated bragg peaks are well aligned and corresponed to the experimental peaks. If not, consider adjust the space group accdording the Expert Knowledge 8 below, and/or adjust the initial unit cell parameters according to Expert Knowledge 9 below, then re-refine.
+         - if the peak positions are well aligned but there are systematic intensity-type residuals, consider refining absorption according to Expert Knowledge 8 below, then re-refine.
+         - if the peak shapes cannot be well refined, consider refining instrument resolution parameters according to Expert Knowledge 5 below, then re-refine.
+      - Stage 4: sample-related parameters (atomic thermal disorder/positions/occupancy, etc.)
       This order is not absolute but is generally reasonable. During refinement, carefully examine all details of the refinement results and carefully compare changes between iterations. As soon as you detect an unfavorable trend, immediately roll back and change strategy.
      
    3. **Parameter Modification Conservatism:** Generally release only one parameter or parameter group at a time. Do not release too many parameters at once, as this easily leads to divergence or falling into a local minimum.
