@@ -15,24 +15,11 @@ from src.core.tools.mcp_task_runner import ProcessPollingMcpToolBase
 TMP_DIR = Path(__file__).resolve().parent.parent / 'tmp'
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-
-def setup_logging(output_dir):
-    """配置日志系统"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(Path(output_dir) / 'refinement.log'),
-            logging.StreamHandler()
-        ]
-            )
-    return logging.getLogger(__name__)
-
 def _as_1d(arr):
     a = np.asarray(arr)
     return a.reshape(-1)
 
-def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, output_dir, fit_idx, data_stem="data"):
+def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, output_dir, fit_idx, shape, data_stem="data"):
     result_data = {}
     thread_id = uuid.uuid4()
     #########保存拟合图片############
@@ -65,7 +52,7 @@ def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, outpu
     axs[1].legend(loc='best')
 
     fig.tight_layout()
-    plot_path = os.path.join(output_dir, f'{data_stem}_sasview_fit_{fit_idx}.png')
+    plot_path = os.path.join(output_dir, f'{data_stem}_{shape}_fit_{fit_idx}.png')
     fig.savefig(plot_path, format='png', dpi=400, bbox_inches='tight')
     plt.close(fig)
     result_data['plot_path'] = plot_path
@@ -78,7 +65,7 @@ def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, outpu
     # 注意都要为 1D，且长度一致
     saved_data = np.column_stack([q, I_data, Ierr, I_fit_data, residual])
     # 设置保存路径
-    dat_path = os.path.join(output_dir, f'{data_stem}_sasview_fit_{fit_idx}.dat')
+    dat_path = os.path.join(output_dir, f'{data_stem}_{shape}_fit_{fit_idx}.dat')
     # 设置标题字符串
     header = 'q\tI_data\tIerr\tI_fit_data\tresidual'
     # 保存为 .dat 文件
@@ -87,7 +74,7 @@ def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, outpu
     ####################################
     #########保存拟合结果############
     # 保存拟合结果到json文件
-    json_path = os.path.join(output_dir, f'{data_stem}_sasview_fit_{fit_idx}.json')
+    json_path = os.path.join(output_dir, f'{data_stem}_{shape}_fit_{fit_idx}.json')
     with open(json_path, 'w') as f:
         json.dump(pars, f, indent=4)
     result_data['json_path'] = json_path
@@ -111,8 +98,23 @@ def refine_data(data_path: str = None,
         para = json.load(f)
     try:
         fit_params = fit_params or {}
+        # 兼容两种入参：新格式 {'para': {...}, 'dispersity': {...}} 与旧格式 {param_name: {...}}
+        if isinstance(fit_params.get('para'), dict) or isinstance(fit_params.get('dispersity'), dict):
+            param_updates = fit_params.get('para') or {}
+            dispersity_updates = fit_params.get('dispersity') or {}
+        else:
+            param_updates = fit_params
+            dispersity_updates = {}
+
+        if not isinstance(param_updates, dict):
+            param_updates = {}
+        if not isinstance(dispersity_updates, dict):
+            dispersity_updates = {}
+
+        para.setdefault('dispersity', {})
+
         has_param_adjustment = False
-        for cfg in fit_params.values():
+        for cfg in param_updates.values():
             if not isinstance(cfg, dict):
                 continue
             if cfg.get('fit') or cfg.get('value') is not None:
@@ -121,7 +123,7 @@ def refine_data(data_path: str = None,
 
         # 如果本轮没有任何参数被修正，默认开放 scale（或混合模型的 A_scale）进行拟合
         if not has_param_adjustment:
-            fit_params = dict(fit_params)
+            param_updates = dict(param_updates)
             # 找第一个可用的 scale 参数：优先顶层 scale，其次 A_scale 等前缀 scale
             default_scale_key = None
             for candidate in ['scale'] + sorted(k for k in para.get('para', {}) if k.endswith('_scale')):
@@ -129,31 +131,47 @@ def refine_data(data_path: str = None,
                     default_scale_key = candidate
                     break
             if default_scale_key:
-                scale_cfg = fit_params.get(default_scale_key, {})
+                scale_cfg = param_updates.get(default_scale_key, {})
                 if not isinstance(scale_cfg, dict):
                     scale_cfg = {}
                 scale_cfg['fit'] = True
                 if 'value' not in scale_cfg:
                     scale_cfg['value'] = None
-                fit_params[default_scale_key] = scale_cfg
+                param_updates[default_scale_key] = scale_cfg
 
         # 根据fit_params设置para中需要修改的参数
         for key in para['para']:
-            if key in fit_params:
-                cfg = fit_params[key]
+            if key in param_updates:
+                cfg = param_updates[key]
                 para['para'][key]['fit'] = cfg.get('fit', False)
                 if cfg.get('value') is not None:
                     para['para'][key]['value'] = cfg['value']
                 # _pd 参数支持额外的 dispersity 子项：type / n / nsigma
                 if key.endswith('_pd'):
+                    disp_cfg = dispersity_updates.get(key, {})
+                    if not isinstance(disp_cfg, dict):
+                        disp_cfg = {}
                     if 'type' in cfg:
                         para['dispersity'][f'{key}_type'] = cfg['type']
                     if 'n' in cfg:
                         para['dispersity'][f'{key}_n'] = cfg['n']
                     if 'nsigma' in cfg:
                         para['dispersity'][f'{key}_nsigma'] = cfg['nsigma']
+                    if 'type' in disp_cfg:
+                        para['dispersity'][f'{key}_type'] = disp_cfg['type']
+                    if 'n' in disp_cfg:
+                        para['dispersity'][f'{key}_n'] = disp_cfg['n']
+                    if 'nsigma' in disp_cfg:
+                        para['dispersity'][f'{key}_nsigma'] = disp_cfg['nsigma']
             else:
                 para['para'][key]['fit'] = False
+
+        # 允许直接通过 dispersity 扁平键更新，如 {'radius_pd_type': 'gaussian'}
+        for d_key, d_val in dispersity_updates.items():
+            if isinstance(d_val, dict):
+                continue
+            if d_key in para['dispersity']:
+                para['dispersity'][d_key] = d_val
                 
         print(f"拟合参数：{para}")
         # 检查输入参数格式与形状参数配置是否匹配
@@ -186,7 +204,7 @@ def refine_data(data_path: str = None,
 
         #########保存拟合结果#
         data_stem = Path(data_path).stem
-        result_data = export_fit_results(q, Ierr, Iq_data, Iq_model, para, residual, f"model：{shape}_chi2:{chisquare:.2f}_fit_idx:{fit_idx}", output_dir, fit_idx, data_stem=data_stem)
+        result_data = export_fit_results(q, Ierr, Iq_data, Iq_model, para, residual, f"model：{shape}_chi2:{chisquare:.2f}_fit_idx:{fit_idx}", output_dir, fit_idx, shape=shape, data_stem=data_stem)
 
         # 输出要重新组织
         result_data['data_path'] = data_path
@@ -199,7 +217,7 @@ def refine_data(data_path: str = None,
     except Exception as e:
         raise
 
-def sasview_refinement(
+def sasview_fit(
     data_path: str = None,
     json_path: str = None,
     model: str = None,
@@ -209,16 +227,18 @@ def sasview_refinement(
     task_id: str = None,
 ) -> dict:
     """
-    使用 SasView 对小角散射数据进行拟合并返回结果。
+    使用 SasView 的fit功能，对小角散射数据进行拟合并返回结果。
 
     Args:
         data_path: 小角散射数据文件的绝对路径。
-        json_path: 初始参数 JSON 路径。每次更换模型时应该设为 None或空 ，将根据 model 自动生成默认参数文件。
-        model: 拟合模型名称（如 guinier_porod、sphere+cylinder）。
-        fit_params: 本轮拟合参数覆盖项。根据初始化后的参数结构，指定需要拟合的参数和/或修改参数初始值。例如：
+        json_path: 包含拟合参数结果的文件绝对路径。初始化时和每次model参数改变时应该为 None 。
+        model: 拟合模型名称（如 单一模型: guinier_porod、sphere等；复合模型: sphere+cylinder等）。
+        fit_params: 本轮拟合的参数开放情况。指定参数是否开放拟合和/或修改参数初始值。未出现在 fit_params 中的参数将取消拟合。
         user_id: 用户 ID，用于输出目录组织。
         mission_name: 任务名；同一任务多轮调用建议保持一致。
-        task_id: 任务 ID。首次调用传 0 由框架生成；轮询时传上次返回的 task_id 按间距1顺序增加。
+        task_id: 任务轮次索引。初始化和每次model参数改变时，设置为0；使用相同model的拟合，按上次返回的 task_id+1。
+
+    fit_params 的介绍：fit_params中的键和value，与model是一一对应的，同一个model，fit_params的内容是不变的，通过初始化后得到。
 
     Returns:
         该函数作为 ProcessPollingMcpToolBase 的业务函数，返回：
@@ -233,7 +253,7 @@ def sasview_refinement(
                 'plot_path': 拟合图路径,
                 'plot_data_path': 拟合曲线导出数据路径,
                 'output_dir': 输出目录,
-                'fit_idx': 拟合轮次索引
+                'task_id': 拟合轮次索引
             } 或字符串（失败时）
         }
 
@@ -306,17 +326,17 @@ def sasview_refinement(
 refine_tools_runner = ProcessPollingMcpToolBase(
     timeout_sec=1200.0,
     poll_interval=1.0,
-    target_func=sasview_refinement,
-    # param_mapping auto-derived from sasview_refinement's signature
+    target_func=sasview_fit,
+    # param_mapping auto-derived from sasview_fit's signature
 )
 
 mcp=FastMCP(
-    name="SasAnalysisToolsSasview",
-    instructions="A tool for refining small-angle neutron scattering (SANS) data using SasView. It accepts raw SANS data files, optional parameter JSON files, and model specifications to perform fitting and return refined parameters, fit quality metrics, and diagnostic plots.",
+    name="SasViewFitTools",
+    instructions="A tool for refining small-angle neutron scattering (SANS) data using fit function from SasView. It accepts raw SANS data files, optional parameter JSON files, and model specifications to perform fitting and return refined parameters, fit quality metrics, and diagnostic plots.",
     port = 42503, # for transport = "sse" to start a server-sent events (SSE) server
     )
 
-refine_tools_runner.register_mcp_tool(mcp, name="SasAnalysisToolsSasview")
+refine_tools_runner.register_mcp_tool(mcp, name="SasViewFitTools")
 
 if __name__ == '__main__':
     import sys
@@ -333,16 +353,17 @@ if __name__ == '__main__':
 
         # ---------- 测试1：单模型（sphere），与现有逻辑保持一致 ----------
         print("\n========== 测试1: 单模型 sphere ==========")
-        res1 = sasview_refinement(
+        res1 = sasview_fit(
             data_path=_DATA_PATH,
             json_path=None,
             model='guinier_porod',
             fit_params={
-                'scale':      {'fit': True,  'value': 0.05}
+                'scale':      {'fit': True,  'value': 0.05},
+                'rg':      {'fit': True,  'value': 0.05}
             },
             user_id='test_user',
             mission_name='sasview_test',
-            task_id='local_test_1',
+            task_id='1',
         )
         if res1.get('status') != 'success':
             print(f"[FAIL] {res1.get('content')}")
@@ -354,7 +375,7 @@ if __name__ == '__main__':
 
         # ---------- 测试2：混合模型（sphere+cylinder），不提供 json_path ----------
         print("\n========== 测试2: 混合模型 sphere+cylinder ==========")
-        res2 = sasview_refinement(
+        res2 = sasview_fit(
             data_path=_DATA_PATH,
             json_path=None,           # 无预设 json，动态构建混合模型默认参数
             model='sphere+cylinder',
