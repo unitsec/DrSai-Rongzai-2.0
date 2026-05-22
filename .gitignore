@@ -35,7 +35,6 @@ userRecord/
 test_datesets/*
 # datasets/*
 *.gpx
-*.cif
 *.png
 *.lst
 *.txt
