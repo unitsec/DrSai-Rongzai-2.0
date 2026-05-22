@@ -233,12 +233,12 @@ def sasview_fit(
         data_path: 小角散射数据文件的绝对路径。
         json_path: 包含拟合参数结果的文件绝对路径。初始化时和每次model参数改变时应该为 None 。
         model: 拟合模型名称（如 单一模型: guinier_porod、sphere等；复合模型: sphere+cylinder等）。
-        fit_params: 本轮拟合的参数开放情况。指定参数是否开放拟合和/或修改参数初始值。未出现在 fit_params 中的参数将取消拟合。
+        fit_params: 绝定本轮拟合的参数开放情况。通过fit参数/bool型，决定是否开放拟合，或修改value参数，变化初始值。未出现在 fit_params 中的参数将取消拟合。
         user_id: 用户 ID，用于输出目录组织。
         mission_name: 任务名；同一任务多轮调用建议保持一致。
         task_id: 任务轮次索引。初始化和每次model参数改变时，设置为0；使用相同model的拟合，按上次返回的 task_id+1。
 
-    fit_params 的介绍：fit_params中的键和value，与model是一一对应的，同一个model，fit_params的内容是不变的，通过初始化后得到。
+    fit_params 的介绍：fit_params中的键和value，与model是一一对应的，同一个model，fit_params中可开放的参数是不变的，通过初始化后得到。
 
     Returns:
         该函数作为 ProcessPollingMcpToolBase 的业务函数，返回：
