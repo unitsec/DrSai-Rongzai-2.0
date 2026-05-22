@@ -51,8 +51,6 @@ class SasViewFit:
         self.para = para
         self.cut_off = cut_off
         self.fit_method = fit_method
-
-        self.size_key = ['radius', 'thickness', 'length']
         
         origin_para = self.mapping_para()
         self.model = Model(self.kernel, **origin_para)
@@ -75,13 +73,7 @@ class SasViewFit:
         for key in self.para["para"]:
             param = getattr(self.model, key)
             if self.para["para"][key]["fit"]:
-                # 尺寸因子范围与 q 范围相关，使用实验数据推算的 rmin/rmax
-                is_size = any(key == sk or key.endswith('_' + sk) for sk in self.size_key)
-                if is_size:
-                    param.range(self.rmin, self.rmax)
-                else:
-                    # 非尺寸参数使用 sasmodels 模型定义的默认范围
-                    param.range(*param.limits)
+                param.range(*param.limits)
     
     def mapping_para(self):
         para = {}

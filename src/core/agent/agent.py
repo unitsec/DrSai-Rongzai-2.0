@@ -191,6 +191,7 @@ class RongZaiAgent(DrSaiAgent):
             work_dir, 
             only_in_workspace=self._only_in_workspace,
             extra_dirs = self._extra_work_dirs,
+            thread_id=self._thread_id,
             )
         # self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
         for func in self._basic_funcs:

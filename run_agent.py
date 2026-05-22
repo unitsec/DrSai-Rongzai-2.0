@@ -51,7 +51,7 @@ def _normalize_users(users: list[str]) -> list[str]:
 
 PERMISSION_USERS = list(dict.fromkeys(_normalize_users(VIP_USER_LIST)))
 PERMISSION = (
-    f"groups: rongzai; users: {','.join(PERMISSION_USERS)}; "
+    f"groups: rongzai,payg,hairongzai@ihep.ac.cn; users: {','.join(PERMISSION_USERS)}; "
     "owner: wanghao96@ihep.ac.cn"
 )
 print(f"PERMISSION: {PERMISSION}")
@@ -71,13 +71,7 @@ _openai_client_patch_target._add_usage = _safe_add_usage
 llm_mode_config = {
     "quick refinement": "openai/gpt-4.1",
     "deep refinement": "openai/gpt-5",
-    "qwen3 Max": "aliyun/qwen3-max",
-    "qwen3 Coder+": "aliyun/qwen3-coder-plus",
-    "minimax": "minimax/minimax-m2.7",
-    "磐石": "scienceone/s1-base-ultra",
-    "intern-s1": "intern-ai/intern-s1", 
-    "intern-s1-pro": "intern-ai/intern-s1-pro",
-    "default": "openai/gpt-4.1",
+    "default": "openai/gpt-5",
 }
 
 async def create_agent(
@@ -105,14 +99,24 @@ async def create_agent(
             omit_max_tokens = True
             llm_max_retries = 1
 
-        client_kwargs = {
-            "model": llm_model,
-            "api_key": api_key,
-            "timeout": 180,
-            "max_retries": llm_max_retries,
-        }
+        is_vip_user = bool(user_id and user_id in PERMISSION_USERS)
+        if is_vip_user:
+            client_kwargs = {
+                "model": llm_model,
+                "api_key": "sk-qywwUDyCxrUQYyyxhUCNKZbasiRwAzszJSdIQXdsWdsjHOV",
+                "timeout": 180,
+                "max_retries": llm_max_retries,
+            }
+        else:
+            client_kwargs = {
+                "model": llm_model,
+                "api_key": api_key,
+                "timeout": 180,
+                "max_retries": llm_max_retries,
+            }
         if not omit_max_tokens:
             client_kwargs["max_tokens"] = llm_max_tokens
+
 
         if ("claude" in llm_model) or ("minimax" in llm_model):
             model_client = HepAIAnthropicChatCompletionClient(
@@ -120,7 +124,6 @@ async def create_agent(
                 # model="claude-sonnet-4-6",
                 base_url="https://aiapi.ihep.ac.cn/apiv2/anthropic",
                 # base_url = "https://api.zhizengzeng.com/anthropic",
-                # api_key=api_key or os.environ.get("HEPAI_API_KEY"),
                 # api_key=os.environ.get("ZZZ_API_KEY"),
                 model_info=_MODEL_INFO["claude-sonnet-4-5"],
                 # temperature=0.5,
@@ -132,7 +135,6 @@ async def create_agent(
                 is_vision = False
             model_client = HepAIChatCompletionClient(
                 # model="openai/gpt-4o",
-                # api_key=api_key or os.environ.get("HEPAI_API_KEY"),
                 base_url="https://aiapi.ihep.ac.cn/apiv2",
                 **client_kwargs,
                 model_info={
@@ -186,13 +188,13 @@ if __name__ == "__main__":
     asyncio.run(
         run_worker(
             # 智能体注册信息
-            agent_name="RongZai_Agent",
+            agent_name="RongzaiAgent",
             author="wanghao96@ihep.ac.cn",
-            # permission=PERMISSION,
+            permission=PERMISSION,
             description = "蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组",
             version = "0.1.0",
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
-            examples=[],
+            examples=["用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif","用Z-Rietveld帮我把BL09的RUN0000410的groupMA的衍射谱精修好，cif文件是zeolite.cif"],
             agent_config = llm_mode_config,
             defult_config_name = "default",
             # 智能体实体
@@ -201,7 +203,7 @@ if __name__ == "__main__":
             port = 42812, 
             # 是否注册到HepAI智能体平台
             no_register=False,
-            drsai_dir = "/home/wangh/rongzai-agent/tmp",
+            drsai_dir = "/home/dur/rongzai-agent/tmp",
             # 是否注册为OpenWebUI的pipeline
             enable_openwebui_pipeline=False, 
             history_mode = "backend",
