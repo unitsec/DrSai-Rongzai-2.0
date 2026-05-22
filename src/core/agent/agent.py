@@ -192,6 +192,7 @@ class RongZaiAgent(DrSaiAgent):
             only_in_workspace=self._only_in_workspace,
             extra_dirs = self._extra_work_dirs,
             thread_id=self._thread_id,
+            allolow_dangrous_cmd = True, # 融载智能体默认允许执行潜在危险命令，前提是用户明确提出需求。风险由用户承担。
             )
         # self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
         for func in self._basic_funcs:
