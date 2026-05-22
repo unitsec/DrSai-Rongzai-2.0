@@ -1,0 +1,253 @@
+[File format version] 1
+[Diffracto meter format version] 2
+
+# [Beam type]
+# X-Ray
+# Neutron
+[Beam type] Neutron
+
+# [Measurement method]
+# Time Of Flight
+# Dispersive Automatic Slit
+# Dispersive Conventional Slit
+# Reactor
+# Synchrotron Radiation
+[Measurement method] Time Of Flight
+
+[Global fitting range]
+	# [Type]
+	# Detail For Fitting
+	# Simple For Fitting
+	[Type] Detail For Fitting
+	[Peak position]
+		[Min] 8417.69
+		[Max] 105194.47
+	[End]
+	[Exclude range]
+		[Min] 0
+		[Max] 8420
+	[Exclude range]
+		[Min] 105000
+		[Max] 180000
+	[End]
+[End]
+
+[Intensity correction parameters]
+	[Diffraction angle] 10
+	[Powder density]
+		[Value] 0.00553284964029818
+		[ID] Fix
+	[End]
+	[AbsorptionType] 1
+	[Absorption] 0.5
+[End]
+
+
+[Scale factor]
+	[Mode] For Whole
+	[Value] 2.312918E-007
+	[ID] Vary
+[End]
+
+[Background parameters]
+	[Value] 6.190892E-001
+	[ID] Vary
+[Background parameters]
+	[Value] 1.524181E-001
+	[ID] Vary
+[Background parameters]
+	[Value] 3.572273E-002
+	[ID] Vary
+[Background parameters]
+	[Value] 9.878522E-003
+	[ID] Vary
+[Background parameters]
+	[Value] -6.790643E-002
+	[ID] Vary
+[Background parameters]
+	[Value] 2.367642E-002
+	[ID] Vary
+[Background parameters]
+	[Value] 6.173821E-002
+	[ID] Vary
+[Background parameters]
+	[Value] -3.620827E-002
+	[ID] Vary
+[Background parameters]
+	[Value] -6.982868E-002
+	[ID] Vary
+[Background parameters]
+	[Value] -5.550169E-002
+	[ID] Vary
+[End]
+
+[Conversion parameters]
+	[Value] 6.28563
+	[ID] Fix
+[Conversion parameters]
+	[Value] 3509.419661
+	[ID] Fix
+[Conversion parameters]
+	[Value] 0.248032
+	[ID] Fix
+[End]
+
+[Default profile model function identifier] Type0m
+
+[Profile function]
+	[Identifier] Type0m
+	[SigmaSquare0]
+		[Value] 0
+		[ID] Fix
+	[End]
+	[SigmaSquare1]
+		[Value] 3862.71386252751
+		[ID] Fix
+	[End]
+	[SigmaSquare2]
+		[Value] 3.72469395018254
+		[ID] Fix
+	[End]
+	[SigmaSquare1e]
+		[Value] 0
+		[ID] Fix
+	[End]
+	[SigmaSquare2e]
+		[Value] 0
+		[ID] Fix
+	[End]
+	[h] 1
+	[k] 1
+	[l] 1
+	[Gamma0]
+		[Value] 86.5045258054053
+		[ID] Fix
+	[End]
+	[Gamma1]
+		[Value] 0.964024499983162
+		[ID] Fix
+	[End]
+	[Gamma2]
+		[Value] 2.94528863659589
+		[ID] Fix
+	[End]
+	[Gamma1e]
+		[Value] 0
+		[ID] Fix
+	[End]
+	[Gamma2e]
+		[Value] 0
+		[ID] Fix
+	[End]
+	[Alpha1]
+		[Value] 3.38379677981444
+		[ID] Fix
+	[End]
+	[Alpha2]
+		[Value] 0.0219521026260047
+		[ID] Fix
+	[End]
+	[Beta1_0]
+		[Value] 0.467063279476616
+		[ID] Fix
+	[End]
+	[Beta0_0]
+		[Value] -0.39770369143934
+		[ID] Fix
+	[End]
+	[Beta0_1]
+		[Value] 2.59115876999946
+		[ID] Fix
+	[End]
+	[r01]
+		[Value] 0.353923
+		[ID] Fix
+	[End]
+	[r02]
+		[Value] 372.262
+		[ID] Fix
+	[End]
+	[r03]
+		[Value] 58.2866
+		[ID] Fix
+	[End]
+[End]
+
+[Profile function initial value]
+	[Identifier] Type0m
+	[SigmaSquare0]
+		[Value] 0
+		[ID] Fix
+	[End]
+	[SigmaSquare1]
+		[Value] 3862.71386252751
+		[ID] Fix
+	[End]
+	[SigmaSquare2]
+		[Value] 3.72469395018254
+		[ID] Fix
+	[End]
+	[SigmaSquare1e]
+		[Value] 0
+		[ID] Fix
+	[End]
+	[SigmaSquare2e]
+		[Value] 0
+		[ID] Fix
+	[End]
+	[h] 1
+	[k] 1
+	[l] 1
+	[Gamma0]
+		[Value] 86.5045258054053
+		[ID] Fix
+	[End]
+	[Gamma1]
+		[Value] 0.964024499983162
+		[ID] Fix
+	[End]
+	[Gamma2]
+		[Value] 2.94528863659589
+		[ID] Fix
+	[End]
+	[Gamma1e]
+		[Value] 0
+		[ID] Fix
+	[End]
+	[Gamma2e]
+		[Value] 0
+		[ID] Fix
+	[End]
+	[Alpha1]
+		[Value] 3.38379677981444
+		[ID] Fix
+	[End]
+	[Alpha2]
+		[Value] 0.0219521026260047
+		[ID] Fix
+	[End]
+	[Beta1_0]
+		[Value] 0.467063279476616
+		[ID] Fix
+	[End]
+	[Beta0_0]
+		[Value] -0.39770369143934
+		[ID] Fix
+	[End]
+	[Beta0_1]
+		[Value] 2.59115876999946
+		[ID] Fix
+	[End]
+	[r01]
+		[Value] 0.353923
+		[ID] Fix
+	[End]
+	[r02]
+		[Value] 372.262
+		[ID] Fix
+	[End]
+	[r03]
+		[Value] 58.2866
+		[ID] Fix
+	[End]
+[End]
