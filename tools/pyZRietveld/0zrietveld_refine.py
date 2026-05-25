@@ -549,7 +549,7 @@ def zrt_generate_project(
     """
     run_dir = TMP_DIR / user_id / mission_name
     logger = _setup_logging(run_dir)
-    _ensure_env("/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data", "/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib")
+    _ensure_env("/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data", "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib")
 
     logger.info("Generate project start")
     logger.info("data=%s", neutron_data)
@@ -702,7 +702,7 @@ def zrt_manual_refine(
     """
     run_dir = TMP_DIR / user_id / mission_name
     logger = _setup_logging(run_dir)
-    _ensure_env("/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data", "/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib")
+    _ensure_env("/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data", "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib")
     cfg_str = _normalize_cfg(cfg)
 
     try:
@@ -772,8 +772,8 @@ def zrt_export_cif(
     run_dir = TMP_DIR / user_id / mission_name
     logger = _setup_logging(run_dir)
     _ensure_env(
-        "/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data",
-        "/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib",
+        "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data",
+        "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib",
     )
 
     effective_task_id = str(task_id).strip() if task_id is not None and str(task_id).strip() else str(uuid.uuid4())
@@ -831,36 +831,36 @@ zrt_export_cif_runner.register_mcp_tool(mcp, name="zrt_export_cif")
 
 
 if __name__ == "__main__":
-    # mcp.run(transport="sse")
+    mcp.run(transport="sse")
 
-    difPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/RUN0001094_groupBM.histogramIgor"
-    cifPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/LNO.cif"
-    instruPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/BM.zDiffractometer"
+    # difPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/RUN0001094_groupBM.histogramIgor"
+    # cifPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/LNO.cif"
+    # instruPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/BM.zDiffractometer"
 
-    result = zrt_generate_project(difPath, instruPath, [cifPath], user_id="test_user", mission_name="test_mission")
-    print(result)
+    # result = zrt_generate_project(difPath, instruPath, [cifPath], user_id="test_user", mission_name="test_mission")
+    # print(result)
 
-    zrietveldnPath = "/home/wangh/rongzai-agent/userRecord/wanghao96/LNO_RUN0001094_BM/6862ac44-3adb-4427-a8af-730310406243.zrietveldn"
+    # zrietveldnPath = "/home/dur/rongzai-agent/userRecord/wanghao96/LNO_RUN0001094_BM/6862ac44-3adb-4427-a8af-730310406243.zrietveldn"
     
-    cfg0 = {
-    "refine_scale": "true",
-    "refine_background": "true",
-    "background_coeffs": "6",
-    "refine_cell": "true",
-    # "refine_atoms": '{"O1":"Z","all":"U"}',
-    # "absorption": '{"A":{"refine":"true","function":"cylindrical"}}'
-    }
+    # cfg0 = {
+    # "refine_scale": "true",
+    # "refine_background": "true",
+    # "background_coeffs": "6",
+    # "refine_cell": "true",
+    # # "refine_atoms": '{"O1":"Z","all":"U"}',
+    # # "absorption": '{"A":{"refine":"true","function":"cylindrical"}}'
+    # }
     
-    cfg1 = {
-    "refine_scale": "true",
-    "refine_background": "true",
-    "background_coeffs": "6",
-    "refine_cell": "true",
-    "absorption": '{"A":{"refine":"true","function":"Lobanov2"}}',
-    "refine_cycle": "10"
-        }
-    result1 = zrt_manual_refine(result['zrietveldn'], cfg0, user_id="test_user", mission_name="test_mission")
+    # cfg1 = {
+    # "refine_scale": "true",
+    # "refine_background": "true",
+    # "background_coeffs": "6",
+    # "refine_cell": "true",
+    # "absorption": '{"A":{"refine":"true","function":"Lobanov2"}}',
+    # "refine_cycle": "10"
+    #     }
+    # result1 = zrt_manual_refine(result['zrietveldn'], cfg0, user_id="test_user", mission_name="test_mission")
     
-    result2 = zrt_manual_refine(result1['zrietveldn'], cfg1, user_id="test_user", mission_name="test_mission")
-    print(result1)
-    print(result2)
+    # result2 = zrt_manual_refine(result1['zrietveldn'], cfg1, user_id="test_user", mission_name="test_mission")
+    # print(result1)
+    # print(result2)

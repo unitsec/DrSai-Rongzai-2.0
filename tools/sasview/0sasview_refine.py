@@ -224,15 +224,15 @@ def sasview_fit(
     fit_params: dict = None,
     user_id: str = None,
     mission_name: str = None,
-    task_id: str = None,
+    task_id: int = 0,
 ) -> dict:
     """
     使用 SasView 的fit功能，对小角散射数据进行拟合并返回结果。
 
-    Args:
+    Args:输入时需要提供的参数
         data_path: 小角散射数据文件的绝对路径。
-        json_path: 包含拟合参数结果的文件绝对路径。初始化时和每次model改变时应该为 None 。
-        model: 拟合模型名称（如 单一模型: guinier_porod、sphere等；复合模型: sphere+cylinder等）。
+        json_path: 包含拟合参数结果的文件绝对路径。初始化时和每次model改变时应该没有拟合结果 ，在进行多轮调用时，由前一次工具输出决定。
+        model: 几何模型名称（如 单一模型: guinier_porod、sphere等；复合模型: sphere+cylinder等）。
         fit_params: 绝定本轮拟合的参数开放情况。通过fit参数/bool型，决定是否开放拟合，或修改value参数，变化初始值。未出现在 fit_params 中的参数将取消拟合。
         user_id: 用户 ID，用于输出目录组织。
         mission_name: 任务名；同一任务多轮调用建议保持一致。
@@ -243,7 +243,7 @@ def sasview_fit(
     Returns:
         该函数作为 ProcessPollingMcpToolBase 的业务函数，返回：
         {
-            'description': '由工具SasViewFitTools执行SasView拟合后返回的结果。',
+            'description': '由工具sasview_fit执行拟合后返回的结果。',
             'status': 'success' | 'failed',
             'content': {
                 'data_path': 原始数据路径,
@@ -260,6 +260,7 @@ def sasview_fit(
     }
     """
     try:
+        print(f"sasview_fit called with data_path={data_path}, json_path={json_path}, model={model}, fit_params={fit_params}, user_id={user_id}, mission_name={mission_name}, task_id={task_id}")
         # 与 GSAS 工具保持一致：按 user_id/mission_name 组织输出目录
         user_key = user_id or 'default_user'
         mission_key = mission_name or 'default_mission'
@@ -268,20 +269,20 @@ def sasview_fit(
 
         if not data_path or not os.path.exists(data_path):
             return {
-                'description': '由工具SasViewFitTools执行SasView拟合后返回的结果。',
+                'description': '由工具sasview_fit执行拟合后返回的结果。',
                 'status': 'failed',
                 'content': f'数据文件不存在: {data_path}'
             }
 
         if not model:
             return {
-                'description': '由工具SasViewFitTools执行SasView拟合后返回的结果。',
+                'description': '由工具sasview_fit执行拟合后返回的结果。',
                 'status': 'failed',
                 'content': '缺少必填参数 model。'
             }
 
         # 若未提供 json_path，则基于模型生成默认参数
-        if not json_path:
+        if not os.path.exists(json_path):
             initial_para = build_default_para(model)
             json_path = str(output_dir / f'init_{model}_params.json')
             with open(json_path, 'w') as _f:
@@ -296,9 +297,9 @@ def sasview_fit(
             fit_idx=task_id,
             output_dir=str(output_dir),
         )
-
+        print(f"sasview_fit result: {result}")
         return {
-            'description': '由工具SasViewFitTools执行SasView拟合后返回的结果。',
+            'description': '由工具sasview_fit执行拟合后返回的结果。',
             'status': 'success',
             'content': {
                 'data_path': result.get('data_path'),
@@ -314,7 +315,7 @@ def sasview_fit(
         }
     except Exception:
         return {
-            'description': '由工具SasViewFitTools执行SasView拟合后返回的结果。',
+            'description': '由工具sasview_fit执行拟合后返回的结果。',
             'status': 'failed',
             'content': traceback.format_exc(),
         }
@@ -327,12 +328,12 @@ refine_tools_runner = ProcessPollingMcpToolBase(
 )
 
 mcp=FastMCP(
-    name="SasViewFitTools",
+    name="SasViewTools",
     instructions="A tool for refining small-angle neutron scattering (SANS) data using fit function from SasView. It accepts raw SANS data files, optional parameter JSON files, and model specifications to perform fitting and return refined parameters, fit quality metrics, and diagnostic plots.",
     port = 42503, # for transport = "sse" to start a server-sent events (SSE) server
     )
 
-refine_tools_runner.register_mcp_tool(mcp, name="SasViewFitTools")
+refine_tools_runner.register_mcp_tool(mcp, name="sasview_fit")
 
 if __name__ == '__main__':
     import sys

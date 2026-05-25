@@ -97,7 +97,7 @@ The following expert knowledge items take priority over any other knowledge you 
       - Stage 1: scale (overall scale factor) and background parameters — generally keep these always active.
       - Stage 2: cell (unit cell parameters) — generally keep this always active.
       - Stage 3: check the figure.
-         - first, check if the calculated bragg peaks are well aligned and corresponed to the experimental peaks. If not, consider adjust the space group accdording the Expert Knowledge 8 below, and/or adjust the initial unit cell parameters according to Expert Knowledge 9 below, then re-refine.
+         - first, check if the calculated bragg peaks are well aligned and corresponed to the experimental peaks. If not, consider adjust the space group acccording the Expert Knowledge 8 below, and/or adjust the initial unit cell parameters according to Expert Knowledge 9 below, then re-refine.
          - if the peak positions are well aligned but there are systematic intensity-type residuals, consider refining absorption according to Expert Knowledge 8 below, then re-refine.
          - if the peak shapes cannot be well refined, consider refining instrument resolution parameters according to Expert Knowledge 5 below, then re-refine.
       - Stage 4: sample-related parameters (atomic thermal disorder/positions/occupancy, etc.)
@@ -117,7 +117,7 @@ The following expert knowledge items take priority over any other knowledge you 
    7. **Difference Pattern Analysis:** If there are prominent peak features in the difference pattern (obs-calc), this indicates remaining fit deficiencies; continue refinement until there are no prominent peak features in the difference pattern. The peak shape characteristics in the difference pattern contain clues about the nature of fit deviations. For example, a wave-like oscillation (positive followed by negative) at a peak position in the difference pattern indicates peak position misalignment.
 
    8. **Intensity-Type Residuals in the Difference Pattern:** The difference pattern may show "intensity-type" residuals, where certain peak positions exhibit a unidirectional prominent positive or negative peak, indicating that the fit deficiency is primarily in intensity rather than peak position. Several different causes lead to different characteristic features in the difference pattern:
-      - If multiple Bragg peak positions (the blue vertical tick marks at the bottom of the fit plot) do not match the experimental spectrum, leading to intensity-type residuals, this is usually caused by an incorrect space group setting. In this case, before refining atomic positions, first consider whether the space group setting needs to be changed, rather than blindly adjusting unit cell parameters.
+      - If multiple Bragg peak positions (the blue vertical tick marks at the bottom of the fit plot) do not match the experimental spectrum, leading to intensity-type residuals, this is usually caused by an incorrect space group setting(for example: wrong Origin choice). In this case, before refining atomic positions, first consider whether the space group setting needs to be changed, rather than blindly adjusting unit cell parameters.
          Regarding the `space_group` parameter, you must additionally follow these rules:
          - `cfg["space_group"]` in `zrt_manual_refine` must use the Z-Rietveld internal space group ID.
          - Correct format examples: `{"phase_name":"203_2"}`, `{"LNO":"166_1"}`, `{"Si":"225_1"}`.

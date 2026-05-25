@@ -194,7 +194,9 @@ if __name__ == "__main__":
             description = "蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组",
             version = "0.1.0",
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
-            examples=["用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif","用Z-Rietveld帮我把BL09的RUN0000410的groupMA的衍射谱精修好，cif文件是zeolite.cif"],
+            examples=["用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif",
+                      "用Z-Rietveld帮我把BL09的RUN0000410的groupMA的衍射谱精修好，cif文件是zeolite.cif",
+                      "用我上传的附件文件精修。如果不确定用哪个精修引擎，找我确认。"],
             agent_config = llm_mode_config,
             defult_config_name = "default",
             # 智能体实体

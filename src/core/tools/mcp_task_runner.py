@@ -6,6 +6,18 @@ import uuid
 from typing import Any, Dict, Optional
 
 
+def _run_target_with_queue(target_func: Any, target_kwargs: Dict[str, Any], que: multiprocessing.Queue):
+    """Module-level subprocess entrypoint to stay picklable under spawn/forkserver."""
+    try:
+        result = target_func(**target_kwargs)
+        que.put(result)
+    except Exception:
+        que.put({
+            'status': 'failed',
+            'content': traceback.format_exc()
+        })
+
+
 class ProcessPollingMcpToolBase:
     """Reusable base for MCP tools that run jobs in subprocesses and poll results.
 
@@ -43,26 +55,6 @@ class ProcessPollingMcpToolBase:
         self.param_mapping: Dict[str, str] = dict(param_mapping)
         self.id_to_task: Dict[str, Optional[multiprocessing.Process]] = {}
         self.id_to_result: Dict[str, multiprocessing.Queue] = {}
-
-    def _create_wrapper(self):
-        """Create a wrapper that handles queue communication for the developer's function.
-        
-        Automatically injects:
-        - task_id: Business parameter for file naming/tracking (passed to target_func)
-        - que: Framework parameter for result communication (hidden from target_func)
-        """
-        def wrapper(**kwargs):
-            que = kwargs.pop('que')
-            # task_id remains in kwargs - it's a business parameter
-            try:
-                result = self.target_func(**kwargs)
-                que.put(result)
-            except Exception as e:
-                que.put({
-                    'status': 'failed',
-                    'content': traceback.format_exc()
-                })
-        return wrapper
 
     def build_process_kwargs(self, **tool_kwargs: Any) -> Dict[str, Any]:
         return {
@@ -113,9 +105,15 @@ class ProcessPollingMcpToolBase:
         self.id_to_result[task_id] = multiprocessing.Queue()
         full_kwargs = dict(process_kwargs)
         full_kwargs["task_id"] = task_id
-        full_kwargs["que"] = self.id_to_result[task_id]
 
-        proc = multiprocessing.Process(target=self._create_wrapper(), kwargs=full_kwargs)
+        proc = multiprocessing.Process(
+            target=_run_target_with_queue,
+            kwargs={
+                "target_func": self.target_func,
+                "target_kwargs": full_kwargs,
+                "que": self.id_to_result[task_id],
+            },
+        )
         self.id_to_task[task_id] = proc
         proc.start()
         return task_id
