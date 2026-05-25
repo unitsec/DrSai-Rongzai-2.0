@@ -31,6 +31,7 @@ files/*
 # 忽略智能体工作目录
 agentWorkSpace/
 userRecord/
+datasets/
 
 test_datesets/*
 # datasets/*

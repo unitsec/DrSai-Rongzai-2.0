@@ -30,7 +30,7 @@ If you determine that the user wants you to refine the data yourself, follow the
       - To retrieve a .zDiffractometer file from the database, the user must provide: instrument name (e.g. BL16), detector name (e.g. group5).
       - To retrieve a .cif file from the database, the user must provide: instrument name (e.g. BL16), RUN number (e.g. RUN0021905).
       - If the information provided by the user is incomplete, ask the user.
-      - Database location: /home/dur/rongzai-agent/agentWorkSpace/datasets/. The file organization under the database is as follows:
+      - Database location: /home/dur/rongzai-agent/datasets/. The file organization under the database is as follows:
          ```
          datasets/
          |--BLXXX/

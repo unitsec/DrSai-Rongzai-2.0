@@ -1566,6 +1566,14 @@ def neutron_refinement(
 ) -> Dict:
     """
     使用GSAS-II的API接口进行中子衍射数据精修任务并返回结果信息
+
+    Mission / Task 语义约定（给大模型）：
+        - mission_name 表示一个完整的大任务（用户的总体目标）。
+        - task_id 表示该 mission 下的一次具体子任务/步骤。
+        - 一个 mission 通常需要多次调用工具（多个 task）才能完成。
+        - 同一个 mission 的多轮调用，mission_name 应保持一致。
+        - 继续轮询同一个未完成 task 时，必须同时传入相同 mission_name 与 task_id。
+
     Args:
         neutron_data: GSAS的gsa文件绝对路径 (当gpx_file为None时必需)
         neutron_inst: GSAS的instprm文件绝对路径 (当gpx_file为None时必需)
@@ -1573,8 +1581,10 @@ def neutron_refinement(
         gpx_file: 可选,已有的GSAS-II项目文件(.gpx)路径,如果提供则加载现有项目继续精修
         refine_config: 高级配置字典,支持所有GSAS-II精修参数，
         user_id: 用户ID，字符串，标识当前用户身份，用于日志记录和权限控制
-        mission_name: 精修任务名称，字符串。同一个精修任务下会涉及多次该工具的调用，保持使用相同的mission_name,该工具会使用它和user_id一起用于指向保存该精修任务产生的文件的文件夹。
-        task_id: 任务ID，在开启一个新的工具调用时，这里写None或不传，工具会自动生成一个唯一ID；如果是对已有任务的结果查询，则必须传入之前的task_id
+        mission_name: 大任务名称。同一个精修任务下会涉及多次该工具调用，需保持相同 mission_name；
+                  工具会使用它和 user_id 共同定位该大任务的文件目录。
+        task_id: mission 内的子任务ID。开启新子任务时可传 None 或不传，由工具自动生成；
+             继续轮询已有未完成任务时，必须传入之前的 task_id，并保持 mission_name 一致。
          
     returns:
         字典{
@@ -1600,7 +1610,7 @@ def neutron_refinement(
             - 由于每次精修后都会产生一个新gpx文件，之前的gpx文件也会保留，这意味着你可以拒绝不好的精修效果，随时回退到之前的状态，对之前的gpx文件进行不同参数的精修尝试。
     默认执行语义：
         - 工具内部会自动轮询任务直到完成后再返回结果（默认约20分钟超时保护）。
-        - 若超时，返回 state="running" 和 result.status="pending"；此时可携带同一个task_id再次调用以继续等待。
+        - 若超时，返回 state="running" 和 result.status="pending"；此时可携带同一个 mission_name + task_id 再次调用以继续等待。
     
     
     refine_config的内容和结构：
@@ -1778,7 +1788,12 @@ refine_tools_runner = ProcessPollingMcpToolBase(
 
 mcp=FastMCP(
     name="RefineToolsGSASII",
-    instructions="A tool for refining neutron diffraction data and generating refined structure files.",
+    instructions=(
+        "A tool for refining neutron diffraction data and generating refined structure files. "
+        "Mission/task rule: mission_name identifies one high-level mission and should stay the same "
+        "across multiple calls for one overall goal; task_id identifies a sub-task/step in that mission. "
+        "To continue polling the same unfinished task, pass the same mission_name and task_id."
+    ),
     port = 42501, # for transport = "sse" to start a server-sent events (SSE) server
     )
 

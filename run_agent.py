@@ -196,7 +196,8 @@ if __name__ == "__main__":
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
             examples=["用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif",
                       "用Z-Rietveld帮我把BL09的RUN0000410的groupMA的衍射谱精修好，cif文件是zeolite.cif",
-                      "用我上传的附件文件精修。如果不确定用哪个精修引擎，找我确认。"],
+                      "用我上传的附件文件精修。如果不确定用哪个精修引擎，找我确认。",
+                      "帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"],
             agent_config = llm_mode_config,
             defult_config_name = "default",
             # 智能体实体

@@ -753,6 +753,12 @@ class RongZaiAgent(DrSaiAgent):
         if cancellation_token is None:
             cancellation_token = CancellationToken()
         self._cancellation_token = cancellation_token
+        
+        for msg in task:
+            if getattr(msg, "source", None) == "user_proxy":
+                msg.content = f"user input: {msg.content}"
+                msg.metadata["content"] = msg.content
+
         input_messages: List[BaseChatMessage] = []
         output_messages: List[BaseAgentEvent | BaseChatMessage] = []
         if task is None:
@@ -798,9 +804,11 @@ class RongZaiAgent(DrSaiAgent):
                     raise ValueError(f"Invalid message type in sequence: {type(msg)}")
         
         # 在进入 on_messages_stream 前，批量为 user_proxy 消息加前缀
-        for msg in input_messages:
-            if getattr(msg, "source", None) == "user_proxy" and hasattr(msg, "content") and isinstance(msg.content, str):
-                msg.content = f"user input: {msg.content}"
+        # for msg in input_messages:
+        #     if getattr(msg, "source", None) == "user_proxy" and hasattr(msg, "content") and isinstance(msg.content, str):
+        #         msg.content = f"user input: {msg.content}"
+        #         msg.metadata["content"] = msg.content
+        #         msg.metadata["user_request"]
 
         async for message in self.on_messages_stream(input_messages, cancellation_token):
             if isinstance(message, Response):

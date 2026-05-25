@@ -44,7 +44,9 @@ mcp = FastMCP(
     name="RefineToolsZRietveld",
     instructions=(
         "A tool for Z-Rietveld project generation and refinement. "
-        "Supports generating .zrietveldn and manual refinement with cfg."
+        "Mission/task rule: mission_name is the high-level mission identifier and should stay the same "
+        "across multiple calls for one overall goal; task_id identifies a sub-task/step inside that mission. "
+        "To continue polling the same unfinished task, pass the same mission_name and task_id."
     ),
     port=42511,
 )
@@ -594,6 +596,13 @@ def zrt_manual_refine(
     Execute manual refinement on an existing Z-Rietveld project file according to
     user-specified parameter configuration.
 
+    Mission / Task semantics:
+        - mission_name identifies one high-level mission (a complete user goal).
+        - task_id identifies one sub-task/step inside that mission.
+        - One mission usually needs multiple tool calls (multiple task_id values) to complete.
+        - Keep mission_name stable across all calls for the same mission.
+        - To continue polling the same unfinished task, pass the same mission_name and task_id.
+
     This tool loads an already-generated .zrietveldn project file and refines neutron powder
     diffraction data according to the cfg-configured parameters. Supports flexible combinations
     of refinement parameters including scale factor, background, unit cell, instrument
@@ -627,13 +636,14 @@ def zrt_manual_refine(
         user_id: User identifier string, used for file management and logging.
                  Default value is "default".
 
-        mission_name: Task name string identifying the current task. For refinement of one
-                      dataset, the same mission_name should be used. Used to organize
-                      generated project files and logs.
+        mission_name: High-level mission name. Keep it the same across multiple calls
+                  for the same overall refinement goal. Used to organize generated
+                  files/logs and namespace task polling records.
 
-        task_id: Unique task identifier (optional).
-                 This parameter is automatically injected by the MCP wrapper layer for task
-                 tracking. Usually does not need to be manually passed in business logic.
+        task_id: Sub-task identifier inside the mission (optional).
+             This parameter is automatically injected by the MCP wrapper layer for task
+             tracking. To continue polling an unfinished task, pass the same task_id
+             together with the same mission_name.
 
     Returns:
         A dictionary containing the following keys:
@@ -757,8 +767,11 @@ def zrt_export_cif(
                          near the input .zrietveldn file.
         phase_label: Optional phase label. If empty, export the first phase.
         user_id: User identifier used for log/run directory organization.
-        mission_name: Mission name used for log/run directory organization.
-        task_id: Optional task ID injected by MCP wrapper.
+        mission_name: High-level mission name used for log/run directory organization.
+                  Keep it stable for the same overall workflow.
+        task_id: Optional sub-task ID injected by MCP wrapper.
+             To continue polling the same unfinished task, reuse the same
+             mission_name and task_id pair.
 
     Returns:
         A dictionary with:
