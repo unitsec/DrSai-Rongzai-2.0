@@ -78,6 +78,17 @@ from .utils import (
     get_operator_funcs_rongzai,
 )
 
+
+def _get_env_float(name: str, default: float) -> float:
+    """读取浮点型环境变量，非法值时回退默认值。"""
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
 class DrSaiAssistantConfig(DrSaiAgentConfig):
     skills_dir: Optional[str | List[str]]
     work_dir: str | None
@@ -426,7 +437,15 @@ class RongZaiAgent(DrSaiAgent):
                 server_id = (url or "").strip()
                 if not server_id:
                     return "Error: 'url' is required when type='sse'."
-                server_params = SseServerParams(url=server_id, headers=headers or {})
+                # 默认 300s 的 sse_read_timeout 对长耗时工具调用不够，容易触发 httpx.ReadTimeout。
+                sse_connect_timeout = _get_env_float("RONGZAI_MCP_SSE_CONNECT_TIMEOUT", 30.0)
+                sse_read_timeout = _get_env_float("RONGZAI_MCP_SSE_READ_TIMEOUT", 1800.0)
+                server_params = SseServerParams(
+                    url=server_id,
+                    headers=headers or {},
+                    timeout=sse_connect_timeout,
+                    sse_read_timeout=sse_read_timeout,
+                )
             elif conn_type == "stdio":
                 server_id = (command or "").strip()
                 if not server_id:

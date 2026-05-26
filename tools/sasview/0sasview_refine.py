@@ -4,6 +4,7 @@ import logging
 import os
 import traceback
 import uuid
+import numbers
 from matplotlib import pyplot as plt
 from mcp.server.fastmcp import FastMCP
 import numpy as np
@@ -43,6 +44,31 @@ def _build_changed_para_view(para: dict, default_para: dict) -> dict:
         'para': changed_para,
         'dispersity': changed_dispersity,
     }
+
+
+def _format_para_values_for_output(para_view: dict) -> dict:
+    """将输出中的 value 字段格式化为科学计数法（两位小数）。"""
+    if not isinstance(para_view, dict):
+        return para_view
+
+    formatted = {'para': {}, 'dispersity': para_view.get('dispersity', {})}
+    para_block = para_view.get('para', {})
+
+    for key, cfg in para_block.items():
+        if not isinstance(cfg, dict):
+            formatted['para'][key] = cfg
+            continue
+
+        cfg_copy = dict(cfg)
+        value = cfg_copy.get('value')
+        error = cfg_copy.get('error')
+        if isinstance(value, numbers.Real) and not isinstance(value, bool):
+            cfg_copy['value'] = f"{float(value):.2e}"
+        if isinstance(error, numbers.Real) and not isinstance(error, bool):
+            cfg_copy['error'] = f"{float(error):.2e}"
+        formatted['para'][key] = cfg_copy
+
+    return formatted
 
 def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, output_dir, fit_idx, shape, data_stem="data"):
     result_data = {}
@@ -209,8 +235,10 @@ def refine_data(data_path: str = None,
             print("输入参数格式与形状参数配置不匹配")
         
         # 开始拟合
+        print(f"开始拟合，参数配置：{para}")
         svf = SasViewFit(data_path, shape, para)
         q, Ierr, Iq_data, Iq_model, pars, fit_result = svf.fit()
+        print(f"拟合完成，拟合参数: {fit_result}")
 
         # 组织拟合结果
         for name, param in pars.items():
@@ -223,8 +251,7 @@ def refine_data(data_path: str = None,
                             para["para"][name]["error"] = fit_result['dx'][idx]
             if name in para["dispersity"]:
                 para["dispersity"][name] = param.value
-        print(f"拟合参数：{para}")
-        print(f"default_para: {default_para}")
+        print(f"拟合参数：{_format_para_values_for_output(para)}")
         # print(f"拟合结果：{_build_changed_para_view(para, default_para or {})}")
         residual = (Iq_data - Iq_model) / Ierr
         data_length = len(q)
@@ -238,7 +265,8 @@ def refine_data(data_path: str = None,
         # 输出要重新组织
         result_data['data_path'] = data_path
         result_data['shape'] = shape
-        result_data['para'] = para if return_full_para else _build_changed_para_view(para, default_para or {})
+        para_view = para if return_full_para else _build_changed_para_view(para, default_para or {})
+        result_data['para'] = _format_para_values_for_output(para_view)
         result_data['chisquare'] = chisquare
         result_data['fit_idx'] = fit_idx
         return result_data
@@ -426,13 +454,13 @@ if __name__ == '__main__':
                                   'IQ_39191_SubEB_PC_0.dat')
         _OUTPUT_DIR = os.path.join(tempfile.gettempdir(), 'sasview_test_output')
 
-        # ---------- 测试1：单模型（sphere），与现有逻辑保持一致 ----------
+        # ---------- 测试1：单模型（hollow_cylinder），与现有逻辑保持一致 ----------
         print("\n========== 测试1: 单模型 'hollow_cylinder' ==========")
         res1 = sasview_fit(
             data_path='/home/dur/rongzai-agent/agentWorkSpace/zhongjiajun@ihep.ac.cn/downloads/my data 20251123.dat',
             json_path='/home/dur/rongzai-agent/tools/tmp/zhongjiajun@ihep.ac.cn/sans_fit_hollowcyl_20251123/my data 20251123_hollow_cylinder_fit_3.json',
             model='hollow_cylinder',
-            fit_params={'scale': {'fit': True}, 'background': {'fit': True}, 'radius': {'fit': True, 'value': 120.0}, 'thickness': {'fit': True, 'value': 10.0}, 'length': {'fit': True, 'value': 2000.0}, 'radius_pd': {'fit': True, 'value': 0.1}, 'thickness_pd': {'fit': True, 'value': 0.1}, 'length_pd': {'fit': True, 'value': 0.05}},
+            fit_params={'scale': {'fit': True}, 'background': {'fit': True}, 'radius': {'fit': True, 'value': 120.0}, 'thickness': {'fit': True, 'value': 10.0}, 'length': {'fit': True, 'value': 2000.0}},
             user_id='zhongjiajun@ihep.ac.cn',
             mission_name='sans_fit_hollowcyl_20251123',
             task_id=4
