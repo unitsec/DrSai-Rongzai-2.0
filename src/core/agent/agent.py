@@ -75,8 +75,10 @@ from drsai.modules.agents.skills_agent.managers.get_managers_tools import (
 from .utils import (
     _extract_existing_image_paths_from_content,
     show_file_to_user,
-    get_operator_funcs_rongzai,
+    get_operator_funcs_rongzai
 )
+
+from src.utils.check_language import generate_prompt
 
 
 def _get_env_float(name: str, default: float) -> float:
@@ -358,7 +360,7 @@ class RongZaiAgent(DrSaiAgent):
 
     def update_system_prompt(self) -> None:
         """构建系统提示词：开发者提示词 + 会话 ID + Core Skill 规则区。"""
-        enhanced_system_message = self._developer_system_message or ""
+        enhanced_system_message = f"{self._developer_system_message}"
         if self._thread_id:
             enhanced_system_message = f"{enhanced_system_message}\n\nCurrent Session_ID is {self._thread_id}"
         if self._user_id:
@@ -371,6 +373,8 @@ class RongZaiAgent(DrSaiAgent):
         core_skill_prompt = self._build_core_skill_prompt()
         if core_skill_prompt:
             enhanced_system_message += f"\n\n{core_skill_prompt}"
+        
+        
         self._system_messages = [SystemMessage(content=enhanced_system_message)]
 
     def _debug_log_system_prompt(self, system_messages: List[SystemMessage]) -> None:
@@ -648,7 +652,6 @@ class RongZaiAgent(DrSaiAgent):
         lines = [
             "[Core Skill Rules]",
             "The following promoted skill rules are high-priority execution constraints for the current task.",
-            "If there is a conflict with normal skill text, follow this core section first.",
         ]
         for idx, slot in enumerate(self._core_skill_slots, start=1):
             lines.append(f"\n## CoreSkill {idx}: {slot['skill']}")
@@ -855,6 +858,14 @@ class RongZaiAgent(DrSaiAgent):
 
         inner_messages: List[BaseAgentEvent | BaseChatMessage] = []
         try:
+            self._lang_prompt = ""
+            
+            for msg in messages:
+                if getattr(msg, "source", None) == "user" or getattr(msg, "source", None) == "user_proxy":
+                    self._lang_prompt = generate_prompt(msg.content)
+                    msg.content = f"{msg.content}, {self._lang_prompt}"
+                    msg.metadata["content"] = msg.content
+            
             # 将用户消息写入模型上下文
             await self._add_messages_to_context(
                 model_context=self._model_context,
@@ -1086,6 +1097,7 @@ class RongZaiAgent(DrSaiAgent):
                         except Exception:
                             pass
                         
+                        result.content = f"{self._lang_prompt}\n\n{result.content}\n\n{self._lang_prompt}"
                         await model_context.add_message(FunctionExecutionResultMessage(content=[result]))
                         img_paths = []
                         img_paths.extend(_extract_existing_image_paths_from_content(result.content))
