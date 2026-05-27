@@ -16,7 +16,6 @@ from autogen_core.models import RequestUsage
 import autogen_ext.models.openai._openai_client as _openai_client_patch_target
 from drsai.modules.agents.skills_agent import SkillAgent, DrSaiAssistant
 from drsai.modules.baseagent import (
-    DockerCommandLineCodeExecutor,
     LocalCommandLineCodeExecutor,
     CodeBlock
 )
@@ -200,10 +199,10 @@ if __name__ == "__main__":
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
-            port = 42820, 
+            port = 42830, 
             # 是否注册到HepAI智能体平台
             no_register=False,
-            drsai_dir = "/home/dur/zhongjiajun/tmp",
+            drsai_dir = "/home/dell/ZJJ/rongzai-agent/tmp",
             # 是否注册为OpenWebUI的pipeline
             enable_openwebui_pipeline=False, 
             history_mode = "backend",

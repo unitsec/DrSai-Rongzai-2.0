@@ -238,7 +238,6 @@ def refine_data(data_path: str = None,
         print(f"开始拟合，参数配置：{para}")
         svf = SasViewFit(data_path, shape, para)
         q, Ierr, Iq_data, Iq_model, pars, fit_result = svf.fit()
-        print(f"拟合完成，拟合参数: {fit_result}")
 
         # 组织拟合结果
         for name, param in pars.items():
@@ -299,13 +298,17 @@ def sasview_fit(
         data_path: 小角散射数据文件的绝对路径。
         json_path: 包含拟合参数结果的文件绝对路径。初始化时和每次model改变时应该没有拟合结果 ，在进行多轮调用时，由前一次工具输出决定。
         model: 几何模型名称（如 单一模型: guinier_porod、sphere等；复合模型: sphere+cylinder等）。
-        fit_params: 绝定本轮拟合的参数开放情况。通过fit参数/bool型，决定是否开放拟合，或修改value参数，变化初始值。未出现在 fit_params 中的参数将取消拟合，你认为不需要拟合的参数可以不出现在fit_params中。
+        fit_params: 决定本轮拟合的参数开放情况。通过fit参数/bool型，决定是否开放拟合，或修改value参数，变化初始值。未出现在 fit_params 中的参数将取消拟合，你认为不需要拟合的参数可以不出现在fit_params中。
         user_id: 用户 ID，用于输出目录组织。
         mission_name: mission 名称（必填，建议全程保持不变）；用于标识同一个大任务。
         task_id: 任务轮次索引/标识。初始化和每次model改变时，建议设置为0；
                  使用相同model继续拟合时，按上次返回的 task_id+1。
 
-    fit_params 的介绍：fit_params中的键和value，与model是一一对应的，同一个model，fit_params中可开放的参数是不变的，通过初始化后得到。
+    Args中 fit_params 的介绍：fit_params中的键和value，与model是对应的，同一个model，fit_params中可开放的参数是不变的，通过初始化后得到。
+        格式如下：
+        fit_params={"para":{key: {"fit": bool, "value": number},...}, "dispersity":{key: value,...}}，
+        其中para块中的key范围由初始化参数确定，value是一个字典，可以包含fit/bool型和value/数值型两个字段；dispersity块中的key是多分散函数的控制参数（如*_pd_n, *_pd_type），value是对应的参数内容。
+        *_pd_type参数含义：Distribution function type for polydispersity。内容范围：uniform、rectangular、gaussian、boltzmann、lognormal、schulz、array。
 
     Returns:
         该函数作为 ProcessPollingMcpToolBase 的业务函数，返回：
@@ -422,7 +425,7 @@ def sasview_fit(
         }
 
 refine_tools_runner = ProcessPollingMcpToolBase(
-    timeout_sec=60.0,
+    timeout_sec=1800.0,
     poll_interval=1.0,
     target_func=sasview_fit,
     # param_mapping auto-derived from sasview_fit's signature
