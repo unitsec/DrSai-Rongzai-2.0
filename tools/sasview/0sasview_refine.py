@@ -4,6 +4,7 @@ import logging
 import os
 import traceback
 import uuid
+import numbers
 from matplotlib import pyplot as plt
 from mcp.server.fastmcp import FastMCP
 import numpy as np
@@ -18,6 +19,56 @@ TMP_DIR.mkdir(parents=True, exist_ok=True)
 def _as_1d(arr):
     a = np.asarray(arr)
     return a.reshape(-1)
+
+
+def _build_changed_para_view(para: dict, default_para: dict) -> dict:
+    """仅保留相对默认初始化参数发生变化的内容。"""
+    current_para = para.get('para', {}) if isinstance(para, dict) else {}
+    current_dispersity = para.get('dispersity', {}) if isinstance(para, dict) else {}
+
+    default_para_block = default_para.get('para', {}) if isinstance(default_para, dict) else {}
+    default_dispersity_block = default_para.get('dispersity', {}) if isinstance(default_para, dict) else {}
+
+    changed_para = {
+        key: value
+        for key, value in current_para.items()
+        if key not in default_para_block or value != default_para_block.get(key)
+    }
+    changed_dispersity = {
+        key: value
+        for key, value in current_dispersity.items()
+        if key not in default_dispersity_block or value != default_dispersity_block.get(key)
+    }
+
+    return {
+        'para': changed_para,
+        'dispersity': changed_dispersity,
+    }
+
+
+def _format_para_values_for_output(para_view: dict) -> dict:
+    """将输出中的 value 字段格式化为科学计数法（两位小数）。"""
+    if not isinstance(para_view, dict):
+        return para_view
+
+    formatted = {'para': {}, 'dispersity': para_view.get('dispersity', {})}
+    para_block = para_view.get('para', {})
+
+    for key, cfg in para_block.items():
+        if not isinstance(cfg, dict):
+            formatted['para'][key] = cfg
+            continue
+
+        cfg_copy = dict(cfg)
+        value = cfg_copy.get('value')
+        error = cfg_copy.get('error')
+        if isinstance(value, numbers.Real) and not isinstance(value, bool):
+            cfg_copy['value'] = f"{float(value):.2e}"
+        if isinstance(error, numbers.Real) and not isinstance(error, bool):
+            cfg_copy['error'] = f"{float(error):.2e}"
+        formatted['para'][key] = cfg_copy
+
+    return formatted
 
 def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, output_dir, fit_idx, shape, data_stem="data"):
     result_data = {}
@@ -85,7 +136,9 @@ def refine_data(data_path: str = None,
                 shape: str = None,
                 fit_params: dict = None,
                 fit_idx: int = None,
-                output_dir: str = None):
+                output_dir: str = None,
+                return_full_para: bool = False,
+                default_para: dict | None = None):
     '''
     
     '''    
@@ -173,7 +226,7 @@ def refine_data(data_path: str = None,
             if d_key in para['dispersity']:
                 para['dispersity'][d_key] = d_val
                 
-        print(f"拟合参数：{para}")
+        # print(f"拟合参数：{para}")
         # 检查输入参数格式与形状参数配置是否匹配
         config_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.json')
         with open(config_path, 'r') as f:
@@ -182,8 +235,10 @@ def refine_data(data_path: str = None,
             print("输入参数格式与形状参数配置不匹配")
         
         # 开始拟合
+        print(f"开始拟合，参数配置：{para}")
         svf = SasViewFit(data_path, shape, para)
         q, Ierr, Iq_data, Iq_model, pars, fit_result = svf.fit()
+        print(f"拟合完成，拟合参数: {fit_result}")
 
         # 组织拟合结果
         for name, param in pars.items():
@@ -196,7 +251,8 @@ def refine_data(data_path: str = None,
                             para["para"][name]["error"] = fit_result['dx'][idx]
             if name in para["dispersity"]:
                 para["dispersity"][name] = param.value
-        print(f"拟合结果：{para}")
+        print(f"拟合参数：{_format_para_values_for_output(para)}")
+        # print(f"拟合结果：{_build_changed_para_view(para, default_para or {})}")
         residual = (Iq_data - Iq_model) / Ierr
         data_length = len(q)
         chisquare = sum(residual ** 2)/(data_length-3)
@@ -204,12 +260,13 @@ def refine_data(data_path: str = None,
 
         #########保存拟合结果#
         data_stem = Path(data_path).stem
-        result_data = export_fit_results(q, Ierr, Iq_data, Iq_model, para, residual, f"model：{shape}_chi2:{chisquare:.2f}_fit_idx:{fit_idx}", output_dir, fit_idx, shape=shape, data_stem=data_stem)
+        result_data = export_fit_results(q, Ierr, Iq_data, Iq_model, para, residual, f"model:'{shape}'-chi2:{chisquare:.2f}-fitID:{fit_idx}", output_dir, fit_idx, shape=shape, data_stem=data_stem)
 
         # 输出要重新组织
         result_data['data_path'] = data_path
         result_data['shape'] = shape
-        result_data['para'] = para
+        para_view = para if return_full_para else _build_changed_para_view(para, default_para or {})
+        result_data['para'] = _format_para_values_for_output(para_view)
         result_data['chisquare'] = chisquare
         result_data['fit_idx'] = fit_idx
         return result_data
@@ -223,27 +280,37 @@ def sasview_fit(
     model: str = None,
     fit_params: dict = None,
     user_id: str = None,
-    mission_name: str = None,
-    task_id: str = None,
+    mission_name: str = "",
+    task_id: int | str = 0,
 ) -> dict:
     """
     使用 SasView 的fit功能，对小角散射数据进行拟合并返回结果。
 
-    Args:
-        data_path: 小角散射数据文件的绝对路径。
-        json_path: 包含拟合参数结果的文件绝对路径。初始化时和每次model改变时应该为 None 。
-        model: 拟合模型名称（如 单一模型: guinier_porod、sphere等；复合模型: sphere+cylinder等）。
-        fit_params: 本轮拟合的参数开放情况。指定参数是否开放拟合和/或修改参数初始值。未出现在 fit_params 中的参数将取消拟合。
-        user_id: 用户 ID，用于输出目录组织。
-        mission_name: 任务名；同一任务多轮调用建议保持一致。
-        task_id: 任务轮次索引。初始化和每次model改变时，设置为0；使用相同model的拟合，按上次返回的 task_id+1。
+    Mission / Task 概念约定（给大模型）：
+        - mission_name 表示一个完整的大任务。
+        - task_id 表示该 mission 中某一次具体拟合步骤/子任务。
+        - 一个 mission 往往需要多次调用本工具（多个 task）才能完成。
+        - 因此，同一个 mission 的多轮调用，应持续使用同一个 mission_name。
+        - 在同一个 mission 内，每一轮可使用不同 task_id（例如 0,1,2...）表示阶段推进。
+        - 继续轮询同一个未完成 task 时，必须同时传入相同 mission_name 和 task_id。
+        - 开始新的子任务时，可在同一 mission_name 下使用新的 task_id。
 
-    fit_params 的介绍：fit_params中的键和value，与model是一一对应的，同一个model，fit_params的内容是不变的，通过初始化后得到。
+    Args:输入时需要提供的参数
+        data_path: 小角散射数据文件的绝对路径。
+        json_path: 包含拟合参数结果的文件绝对路径。初始化时和每次model改变时应该没有拟合结果 ，在进行多轮调用时，由前一次工具输出决定。
+        model: 几何模型名称（如 单一模型: guinier_porod、sphere等；复合模型: sphere+cylinder等）。
+        fit_params: 绝定本轮拟合的参数开放情况。通过fit参数/bool型，决定是否开放拟合，或修改value参数，变化初始值。未出现在 fit_params 中的参数将取消拟合，你认为不需要拟合的参数可以不出现在fit_params中。
+        user_id: 用户 ID，用于输出目录组织。
+        mission_name: mission 名称（必填，建议全程保持不变）；用于标识同一个大任务。
+        task_id: 任务轮次索引/标识。初始化和每次model改变时，建议设置为0；
+                 使用相同model继续拟合时，按上次返回的 task_id+1。
+
+    fit_params 的介绍：fit_params中的键和value，与model是一一对应的，同一个model，fit_params中可开放的参数是不变的，通过初始化后得到。
 
     Returns:
         该函数作为 ProcessPollingMcpToolBase 的业务函数，返回：
         {
-            'description': '由工具SasViewFitTools执行SasView拟合后返回的结果。',
+            'description': '由工具sasview_fit执行拟合后返回的结果。',
             'status': 'success' | 'failed',
             'content': {
                 'data_path': 原始数据路径,
@@ -254,12 +321,15 @@ def sasview_fit(
                 'plot_path': 拟合图路径,
                 'plot_data_path': 拟合曲线导出数据路径,
                 'output_dir': 输出目录,
+                'mission_name': 任务名,
                 'task_id': 拟合轮次索引
             } 或字符串（失败时）
         }
     }
     """
     try:
+        print(f"sasview_fit called with data_path={data_path}, json_path={json_path}, model={model}, fit_params={fit_params}, user_id={user_id}, mission_name={mission_name}, task_id={task_id}")
+
         # 与 GSAS 工具保持一致：按 user_id/mission_name 组织输出目录
         user_key = user_id or 'default_user'
         mission_key = mission_name or 'default_mission'
@@ -268,21 +338,32 @@ def sasview_fit(
 
         if not data_path or not os.path.exists(data_path):
             return {
-                'description': '由工具SasViewFitTools执行SasView拟合后返回的结果。',
+                'description': '由工具sasview_fit执行拟合后返回的结果。',
                 'status': 'failed',
                 'content': f'数据文件不存在: {data_path}'
             }
 
         if not model:
             return {
-                'description': '由工具SasViewFitTools执行SasView拟合后返回的结果。',
+                'description': '由工具sasview_fit执行拟合后返回的结果。',
                 'status': 'failed',
                 'content': '缺少必填参数 model。'
             }
 
+        if not mission_name:
+            return {
+                'description': '由工具sasview_fit执行拟合后返回的结果。',
+                'status': 'failed',
+                'content': '缺少必填参数 mission_name。请保持 mission_name 在同一任务轮询中一致。'
+            }
+
+        # 始终构造一次默认参数，用于非初始化场景下输出差异
+        default_para = build_default_para(model)
+
         # 若未提供 json_path，则基于模型生成默认参数
-        if not json_path:
-            initial_para = build_default_para(model)
+        is_init_run = not json_path or not os.path.exists(json_path)
+        if is_init_run:
+            initial_para = default_para
             json_path = str(output_dir / f'init_{model}_params.json')
             with open(json_path, 'w') as _f:
                 json.dump(initial_para, _f, indent=4)
@@ -295,44 +376,70 @@ def sasview_fit(
             fit_params=fit_params,
             fit_idx=task_id,
             output_dir=str(output_dir),
+            return_full_para=is_init_run,
+            default_para=default_para,
         )
-
-        return {
-            'description': '由工具SasViewFitTools执行SasView拟合后返回的结果。',
-            'status': 'success',
-            'content': {
-                'data_path': result.get('data_path'),
-                'json_path': result.get('json_path'),
-                'model': result.get('shape'),
-                'fit_params': result.get('para'),
-                'chisquare': result.get('chisquare'),
-                'plot_path': result.get('plot_path'),
-                'plot_data_path': result.get('plot_data_path'),
-                'output_dir': str(output_dir),
-                'task_id': result.get('fit_idx'),
+        print(f"sasview_fit result: {result}")
+        if is_init_run:
+            return {
+                'description': f'sasview_fit工具已成功生成初始化参数文件: {json_path}。',
+                'status': 'success',
+                'content': {
+                    'data_path': result.get('data_path'),
+                    'json_path': result.get('json_path'),
+                    'model': result.get('shape'),
+                    'fit_params': result.get('para'),
+                    'chisquare': result.get('chisquare'),
+                    'plot_path': result.get('plot_path'),
+                    'plot_data_path': result.get('plot_data_path'),
+                    'output_dir': str(output_dir),
+                    'mission_name': mission_name,
+                    'task_id': result.get('fit_idx'),
+                }
             }
-        }
+        else:
+            return {
+                'description': '由工具sasview_fit执行拟合后返回的结果。',
+                'status': 'success',
+                'content': {
+                    'data_path': result.get('data_path'),
+                    'json_path': result.get('json_path'),
+                    'model': result.get('shape'),
+                    'fit_params': result.get('para'),
+                    'chisquare': result.get('chisquare'),
+                    'plot_path': result.get('plot_path'),
+                    'plot_data_path': result.get('plot_data_path'),
+                    'output_dir': str(output_dir),
+                    'mission_name': mission_name,
+                    'task_id': result.get('fit_idx'),
+                }
+            }
     except Exception:
         return {
-            'description': '由工具SasViewFitTools执行SasView拟合后返回的结果。',
+            'description': '由工具sasview_fit执行拟合后返回的结果。',
             'status': 'failed',
             'content': traceback.format_exc(),
         }
 
 refine_tools_runner = ProcessPollingMcpToolBase(
-    timeout_sec=1200.0,
+    timeout_sec=60.0,
     poll_interval=1.0,
     target_func=sasview_fit,
     # param_mapping auto-derived from sasview_fit's signature
 )
 
 mcp=FastMCP(
-    name="SasViewFitTools",
-    instructions="A tool for refining small-angle neutron scattering (SANS) data using fit function from SasView. It accepts raw SANS data files, optional parameter JSON files, and model specifications to perform fitting and return refined parameters, fit quality metrics, and diagnostic plots.",
+    name="SasViewTools",
+    instructions=(
+        "A tool for refining small-angle neutron scattering (SANS) data using SasView fit. "
+        "Important calling rule: mission_name is a high-level mission identifier and can stay the same "
+        "across multiple tool calls; task_id identifies a sub-task/step inside that mission. "
+        "Use the same mission_name for the same overall user goal, and advance task_id per step."
+    ),
     port = 42503, # for transport = "sse" to start a server-sent events (SSE) server
     )
 
-refine_tools_runner.register_mcp_tool(mcp, name="SasViewFitTools")
+refine_tools_runner.register_mcp_tool(mcp, name="sasview_fit")
 
 if __name__ == '__main__':
     import sys
@@ -347,19 +454,17 @@ if __name__ == '__main__':
                                   'IQ_39191_SubEB_PC_0.dat')
         _OUTPUT_DIR = os.path.join(tempfile.gettempdir(), 'sasview_test_output')
 
-        # ---------- 测试1：单模型（sphere），与现有逻辑保持一致 ----------
-        print("\n========== 测试1: 单模型 sphere ==========")
+        # ---------- 测试1：单模型（hollow_cylinder），与现有逻辑保持一致 ----------
+        print("\n========== 测试1: 单模型 'hollow_cylinder' ==========")
         res1 = sasview_fit(
-            data_path=_DATA_PATH,
-            json_path=None,
-            model='guinier_porod',
-            fit_params={
-                'scale':      {'fit': True,  'value': 0.05},
-                'rg':      {'fit': True,  'value': 0.05}
-            },
-            user_id='test_user',
-            mission_name='sasview_test',
-            task_id='1',
+            data_path='/home/dur/rongzai-agent/agentWorkSpace/zhongjiajun@ihep.ac.cn/downloads/my data 20251123.dat',
+            json_path='/home/dur/rongzai-agent/tools/tmp/zhongjiajun@ihep.ac.cn/sans_fit_hollowcyl_20251123/my data 20251123_hollow_cylinder_fit_3.json',
+            model='hollow_cylinder',
+            fit_params={'scale': {'fit': True}, 'background': {'fit': True}, 'radius': {'fit': True, 'value': 120.0}, 'thickness': {'fit': True, 'value': 10.0}, 'length': {'fit': True, 'value': 2000.0}},
+            user_id='zhongjiajun@ihep.ac.cn',
+            mission_name='sans_fit_hollowcyl_20251123',
+            task_id=4
+            
         )
         if res1.get('status') != 'success':
             print(f"[FAIL] {res1.get('content')}")

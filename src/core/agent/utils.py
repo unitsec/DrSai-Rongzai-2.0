@@ -16,12 +16,25 @@ def _extract_existing_image_paths_from_content(content: str) -> List[str]:
 
     The content can be plain text or nested JSON serialized as text.
     """
-    image_pattern = re.compile(
-        r"(/[^\s\"'<>\]\[\(\){}]+\.(?:png|jpg|jpeg|gif|webp|bmp|tif|tiff))",
+    image_suffixes = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+    quoted_path_pattern = re.compile(
+        r"[\"']([^\"']+\.(?:png|jpg|jpeg|gif|webp|bmp|tif|tiff))[\"']",
+        re.IGNORECASE,
+    )
+    unquoted_path_pattern = re.compile(
+        r"((?:/|\.?\.?/|[A-Za-z0-9_.@-]+/)[^\n\"'<>]+?\.(?:png|jpg|jpeg|gif|webp|bmp|tif|tiff))",
         re.IGNORECASE,
     )
     # Common trailing punctuation when paths appear in natural text.
     trailing_chars = ".,;:!?)]}>'\""
+
+    def _append_if_valid_path(raw_path: str, output: List[str]):
+        candidate = raw_path.strip().strip('"\'').rstrip(trailing_chars)
+        if not candidate:
+            return
+        p = Path(candidate)
+        if p.exists() and p.is_file() and p.suffix.lower() in image_suffixes:
+            output.append(str(p))
 
     def _collect_strings(value: Any) -> List[str]:
         if isinstance(value, str):
@@ -40,11 +53,13 @@ def _extract_existing_image_paths_from_content(content: str) -> List[str]:
 
     def _extract_from_text(text: str) -> List[str]:
         found: List[str] = []
-        for match in image_pattern.findall(text):
-            candidate = match.rstrip(trailing_chars)
-            p = Path(candidate)
-            if p.exists() and p.is_file():
-                found.append(str(p))
+
+        for match in quoted_path_pattern.findall(text):
+            _append_if_valid_path(match, found)
+
+        for match in unquoted_path_pattern.findall(text):
+            _append_if_valid_path(match, found)
+
         return found
 
     pending_texts = [content]

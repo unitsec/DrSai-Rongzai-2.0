@@ -3,7 +3,19 @@ import multiprocessing
 import time
 import traceback
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+
+def _run_target_with_queue(target_func: Any, target_kwargs: Dict[str, Any], que: multiprocessing.Queue):
+    """Module-level subprocess entrypoint to stay picklable under spawn/forkserver."""
+    try:
+        result = target_func(**target_kwargs)
+        que.put(result)
+    except Exception:
+        que.put({
+            'status': 'failed',
+            'content': traceback.format_exc()
+        })
 
 
 class ProcessPollingMcpToolBase:
@@ -25,10 +37,11 @@ class ProcessPollingMcpToolBase:
 
     def __init__(
         self,
-        timeout_sec: float = 1200.0,
+        timeout_sec: float = 60.0,
         poll_interval: float = 1.0,
         target_func: Any = None,
         param_mapping: Dict[str, str] = None,
+        task_namespace_param: str = "mission_name",
     ):
         if target_func is None:
             raise ValueError("target_func is required")
@@ -41,28 +54,9 @@ class ProcessPollingMcpToolBase:
             sig = inspect.signature(target_func)
             param_mapping = {p: p for p in sig.parameters}
         self.param_mapping: Dict[str, str] = dict(param_mapping)
-        self.id_to_task: Dict[str, Optional[multiprocessing.Process]] = {}
-        self.id_to_result: Dict[str, multiprocessing.Queue] = {}
-
-    def _create_wrapper(self):
-        """Create a wrapper that handles queue communication for the developer's function.
-        
-        Automatically injects:
-        - task_id: Business parameter for file naming/tracking (passed to target_func)
-        - que: Framework parameter for result communication (hidden from target_func)
-        """
-        def wrapper(**kwargs):
-            que = kwargs.pop('que')
-            # task_id remains in kwargs - it's a business parameter
-            try:
-                result = self.target_func(**kwargs)
-                que.put(result)
-            except Exception as e:
-                que.put({
-                    'status': 'failed',
-                    'content': traceback.format_exc()
-                })
-        return wrapper
+        self.task_namespace_param = task_namespace_param
+        self.id_to_task: Dict[Tuple[str, str], multiprocessing.Process] = {}
+        self.id_to_result: Dict[Tuple[str, str], multiprocessing.Queue] = {}
 
     def build_process_kwargs(self, **tool_kwargs: Any) -> Dict[str, Any]:
         return {
@@ -70,17 +64,32 @@ class ProcessPollingMcpToolBase:
             for proc_key, tool_key in self.param_mapping.items()
         }
 
-    def _task_snapshot(self, task_id: str) -> Dict[str, Any]:
-        snapshot: Dict[str, Any] = {"task_id": task_id, "state": None, "result": None}
+    def _task_namespace(self, process_kwargs: Dict[str, Any]) -> str:
+        raw = process_kwargs.get(self.task_namespace_param)
+        return str(raw) if raw not in (None, "") else "__default__"
 
-        proc = self.id_to_task.get(task_id)
-        resq = self.id_to_result.get(task_id)
+    def _task_key(self, task_namespace: str, task_id: Any) -> Tuple[str, str]:
+        return (task_namespace, str(task_id))
+
+    def _task_snapshot(self, task_key: Tuple[str, str], task_id: Any, task_namespace: str) -> Dict[str, Any]:
+        snapshot: Dict[str, Any] = {
+            "task_id": task_id,
+            "mission_name": None if task_namespace == "__default__" else task_namespace,
+            "state": None,
+            "result": None,
+        }
+
+        proc = self.id_to_task.get(task_key)
+        resq = self.id_to_result.get(task_key)
 
         if proc is None:
             snapshot["state"] = "completed"
             snapshot["result"] = {
                 "status": "failed",
-                "content": f"task_id={task_id} does not exist or has been cleaned up.",
+                "content": (
+                    f"task_id={task_id} (mission_name={snapshot['mission_name']}) "
+                    "does not exist or has been cleaned up."
+                ),
             }
             return snapshot
 
@@ -100,7 +109,14 @@ class ProcessPollingMcpToolBase:
         except Exception:
             pass
 
-        self.id_to_task[task_id] = None
+        # Cleanup completed task so the same task_id can start a new task later.
+        self.id_to_task.pop(task_key, None)
+        q = self.id_to_result.pop(task_key, None)
+        if q is not None:
+            try:
+                q.close()
+            except Exception:
+                pass
         snapshot["state"] = "completed"
         snapshot["result"] = info or {
             "status": "failed",
@@ -108,15 +124,28 @@ class ProcessPollingMcpToolBase:
         }
         return snapshot
 
-    def _start_task(self, process_kwargs: Dict[str, Any], task_id: Optional[str] = None) -> str:
-        task_id = task_id or str(uuid.uuid4())
-        self.id_to_result[task_id] = multiprocessing.Queue()
+    def _start_task(
+        self,
+        process_kwargs: Dict[str, Any],
+        task_namespace: str,
+        task_id: Optional[str] = None,
+    ) -> Any:
+        if task_id is None:
+            task_id = str(uuid.uuid4())
+        task_key = self._task_key(task_namespace, task_id)
+        self.id_to_result[task_key] = multiprocessing.Queue()
         full_kwargs = dict(process_kwargs)
         full_kwargs["task_id"] = task_id
-        full_kwargs["que"] = self.id_to_result[task_id]
 
-        proc = multiprocessing.Process(target=self._create_wrapper(), kwargs=full_kwargs)
-        self.id_to_task[task_id] = proc
+        proc = multiprocessing.Process(
+            target=_run_target_with_queue,
+            kwargs={
+                "target_func": self.target_func,
+                "target_kwargs": full_kwargs,
+                "que": self.id_to_result[task_key],
+            },
+        )
+        self.id_to_task[task_key] = proc
         proc.start()
         return task_id
 
@@ -152,17 +181,32 @@ class ProcessPollingMcpToolBase:
 
     def run(self, task_id: Optional[str] = None, **tool_kwargs: Any) -> Dict[str, Any]:
         # Keep a single task_id for both polling and business file naming.
-        if task_id and task_id not in self.id_to_task:
-            process_kwargs = self.build_process_kwargs(**tool_kwargs)
-            task_id = self._start_task(process_kwargs=process_kwargs, task_id=task_id)
-        elif not task_id:
-            process_kwargs = self.build_process_kwargs(**tool_kwargs)
+        # Task records are isolated by task namespace (mission_name by default).
+        process_kwargs = self.build_process_kwargs(**tool_kwargs)
+        task_namespace = self._task_namespace(process_kwargs)
+
+        if task_id is None:
             task_id = process_kwargs.get("task_id")
-            task_id = self._start_task(process_kwargs=process_kwargs, task_id=task_id)
+
+        if task_id is None:
+            task_id = self._start_task(
+                process_kwargs=process_kwargs,
+                task_namespace=task_namespace,
+                task_id=task_id,
+            )
+
+        task_key = self._task_key(task_namespace, task_id)
+        if task_key not in self.id_to_task:
+            task_id = self._start_task(
+                process_kwargs=process_kwargs,
+                task_namespace=task_namespace,
+                task_id=task_id,
+            )
+            task_key = self._task_key(task_namespace, task_id)
 
         deadline = time.time() + self.timeout_sec
         while True:
-            snapshot = self._task_snapshot(task_id)
+            snapshot = self._task_snapshot(task_key=task_key, task_id=task_id, task_namespace=task_namespace)
             if snapshot["state"] == "completed":
                 return snapshot
 
@@ -171,7 +215,7 @@ class ProcessPollingMcpToolBase:
                     "status": "pending",
                     "content": (
                         f"Task is still running after timeout ({self.timeout_sec:.1f}s). "
-                        "Call again with the same task_id to continue waiting."
+                        "If you want to continue waiting, you should call again with the same task_id and mission_name."
                     ),
                 }
                 return snapshot

@@ -18,9 +18,9 @@
         "default_config_name": "quick refinement",
         "version": "0.1.0",
         "examples":["帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择X模型，返回拟合结果和拟合图。"],
-        "author": "wanghao96@ihep.ac.cn",
+        "author": "zhongjiajun@ihep.ac.cn",
         "logo": "https://aiapi.ihep.ac.cn/apiv2/files/file-61518e9f7e8f45049739d7ae58abe35a/preview",
-        "owner": "wanghao96@ihep.ac.cn",
+        "owner": "zhongjiajun@ihep.ac.cn",
         "id": "edf80f28"
     }
 ]

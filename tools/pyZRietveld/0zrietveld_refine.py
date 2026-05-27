@@ -44,7 +44,9 @@ mcp = FastMCP(
     name="RefineToolsZRietveld",
     instructions=(
         "A tool for Z-Rietveld project generation and refinement. "
-        "Supports generating .zrietveldn and manual refinement with cfg."
+        "Mission/task rule: mission_name is the high-level mission identifier and should stay the same "
+        "across multiple calls for one overall goal; task_id identifies a sub-task/step inside that mission. "
+        "To continue polling the same unfinished task, pass the same mission_name and task_id."
     ),
     port=42511,
 )
@@ -549,7 +551,7 @@ def zrt_generate_project(
     """
     run_dir = TMP_DIR / user_id / mission_name
     logger = _setup_logging(run_dir)
-    _ensure_env("/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data", "/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib")
+    _ensure_env("/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data", "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib")
 
     logger.info("Generate project start")
     logger.info("data=%s", neutron_data)
@@ -594,6 +596,13 @@ def zrt_manual_refine(
     Execute manual refinement on an existing Z-Rietveld project file according to
     user-specified parameter configuration.
 
+    Mission / Task semantics:
+        - mission_name identifies one high-level mission (a complete user goal).
+        - task_id identifies one sub-task/step inside that mission.
+        - One mission usually needs multiple tool calls (multiple task_id values) to complete.
+        - Keep mission_name stable across all calls for the same mission.
+        - To continue polling the same unfinished task, pass the same mission_name and task_id.
+
     This tool loads an already-generated .zrietveldn project file and refines neutron powder
     diffraction data according to the cfg-configured parameters. Supports flexible combinations
     of refinement parameters including scale factor, background, unit cell, instrument
@@ -627,13 +636,14 @@ def zrt_manual_refine(
         user_id: User identifier string, used for file management and logging.
                  Default value is "default".
 
-        mission_name: Task name string identifying the current task. For refinement of one
-                      dataset, the same mission_name should be used. Used to organize
-                      generated project files and logs.
+        mission_name: High-level mission name. Keep it the same across multiple calls
+                  for the same overall refinement goal. Used to organize generated
+                  files/logs and namespace task polling records.
 
-        task_id: Unique task identifier (optional).
-                 This parameter is automatically injected by the MCP wrapper layer for task
-                 tracking. Usually does not need to be manually passed in business logic.
+        task_id: Sub-task identifier inside the mission (optional).
+             This parameter is automatically injected by the MCP wrapper layer for task
+             tracking. To continue polling an unfinished task, pass the same task_id
+             together with the same mission_name.
 
     Returns:
         A dictionary containing the following keys:
@@ -644,6 +654,22 @@ def zrt_manual_refine(
         - 'report_text': str, condensed text extracted from the log at report_path (lines 36-109 removed, on success).
         - 'report_path': str, the path where the RunLog text was saved (on success).
         - 'plot_files': list, list of generated fit plot image paths (on success).
+            Fit plot element descriptions (images corresponding to plot_files):
+                - Black solid line `Difference (Obs-Calc)`: Residual curve, equal to observed intensity minus
+                calculated intensity; closer to 0 generally means better fit.
+                - Blue crosses `Observed`: Experimental observed intensity points (vertically shifted upward
+                for display alongside the residual).
+                - Red solid line `Calculated`: Model calculated intensity curve (also shifted upward
+                consistently with the observed curve).
+                - Green solid line `Background`: Background intensity curve (also shifted upward).
+                - Magenta dashed vertical line `Refine TOF Min`: Lower TOF limit used in this refinement
+                (if present in input or data metadata).
+                - Cyan dashed vertical line `Refine TOF Max`: Upper TOF limit used in this refinement
+                (if present in input or data metadata).
+                - Short vertical ticks at bottom `Bragg peaks (phase)`: Bragg peak positions for each phase,
+                different colors for different phases.
+                - `Rwp: xx.xx%` in title: Weighted profile R-factor (percentage), measuring goodness of fit;
+                generally lower is better.
         - 'task_id': str, the task ID used in this refinement.
         - 'run_dir': str, task run directory storing logs and intermediate files.
         - 'error': str, error message (on failure).
@@ -682,26 +708,11 @@ def zrt_manual_refine(
         - The flag X in refine_atoms refers to the X coordinate of that atom (for historical reasons,
           actually equivalent to XYZ); F refers to occupancy.
 
-    Fit plot element descriptions (images corresponding to plot_files):
-        - Black solid line `Difference (Obs-Calc)`: Residual curve, equal to observed intensity minus
-          calculated intensity; closer to 0 generally means better fit.
-        - Blue crosses `Observed`: Experimental observed intensity points (vertically shifted upward
-          for display alongside the residual).
-        - Red solid line `Calculated`: Model calculated intensity curve (also shifted upward
-          consistently with the observed curve).
-        - Green solid line `Background`: Background intensity curve (also shifted upward).
-        - Magenta dashed vertical line `Refine TOF Min`: Lower TOF limit used in this refinement
-          (if present in input or data metadata).
-        - Cyan dashed vertical line `Refine TOF Max`: Upper TOF limit used in this refinement
-          (if present in input or data metadata).
-        - Short vertical ticks at bottom `Bragg peaks (phase)`: Bragg peak positions for each phase,
-          different colors for different phases.
-        - `Rwp: xx.xx%` in title: Weighted profile R-factor (percentage), measuring goodness of fit;
-          generally lower is better.
+    
     """
     run_dir = TMP_DIR / user_id / mission_name
     logger = _setup_logging(run_dir)
-    _ensure_env("/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data", "/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib")
+    _ensure_env("/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data", "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib")
     cfg_str = _normalize_cfg(cfg)
 
     try:
@@ -756,8 +767,11 @@ def zrt_export_cif(
                          near the input .zrietveldn file.
         phase_label: Optional phase label. If empty, export the first phase.
         user_id: User identifier used for log/run directory organization.
-        mission_name: Mission name used for log/run directory organization.
-        task_id: Optional task ID injected by MCP wrapper.
+        mission_name: High-level mission name used for log/run directory organization.
+                  Keep it stable for the same overall workflow.
+        task_id: Optional sub-task ID injected by MCP wrapper.
+             To continue polling the same unfinished task, reuse the same
+             mission_name and task_id pair.
 
     Returns:
         A dictionary with:
@@ -771,8 +785,8 @@ def zrt_export_cif(
     run_dir = TMP_DIR / user_id / mission_name
     logger = _setup_logging(run_dir)
     _ensure_env(
-        "/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data",
-        "/home/wangh/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib",
+        "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data",
+        "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib",
     )
 
     effective_task_id = str(task_id).strip() if task_id is not None and str(task_id).strip() else str(uuid.uuid4())
@@ -832,14 +846,14 @@ zrt_export_cif_runner.register_mcp_tool(mcp, name="zrt_export_cif")
 if __name__ == "__main__":
     mcp.run(transport="sse")
 
-    # difPath = "/home/wangh/rongzai-agent/tools/pyZRietveld/testData/RUN0001094_groupBM.histogramIgor"
-    # cifPath = "/home/wangh/rongzai-agent/tools/pyZRietveld/testData/LNO.cif"
-    # instruPath = "/home/wangh/rongzai-agent/tools/pyZRietveld/testData/BM.zDiffractometer"
+    # difPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/RUN0001094_groupBM.histogramIgor"
+    # cifPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/LNO.cif"
+    # instruPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/BM.zDiffractometer"
 
     # result = zrt_generate_project(difPath, instruPath, [cifPath], user_id="test_user", mission_name="test_mission")
     # print(result)
 
-    # zrietveldnPath = "/home/wangh/rongzai-agent/userRecord/wanghao96/LNO_RUN0001094_BM/6862ac44-3adb-4427-a8af-730310406243.zrietveldn"
+    # zrietveldnPath = "/home/dur/rongzai-agent/userRecord/wanghao96/LNO_RUN0001094_BM/6862ac44-3adb-4427-a8af-730310406243.zrietveldn"
     
     # cfg0 = {
     # "refine_scale": "true",
