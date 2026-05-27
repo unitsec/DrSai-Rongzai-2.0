@@ -309,6 +309,8 @@ def sasview_fit(
         fit_params={"para":{key: {"fit": bool, "value": number},...}, "dispersity":{key: value,...}}，
         其中para块中的key范围由初始化参数确定，value是一个字典，可以包含fit/bool型和value/数值型两个字段；dispersity块中的key是多分散函数的控制参数（如*_pd_n, *_pd_type），value是对应的参数内容。
         *_pd_type参数含义：Distribution function type for polydispersity。内容范围：uniform、rectangular、gaussian、boltzmann、lognormal、schulz、array。
+        *_pd_n参数含义：Number of points for polydispersity distribution。
+        *_pd_nsigma参数含义：Number of standard deviations to include for each type of polydispersity。
 
     Returns:
         该函数作为 ProcessPollingMcpToolBase 的业务函数，返回：
