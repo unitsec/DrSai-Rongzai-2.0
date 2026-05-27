@@ -31,13 +31,13 @@ description: Rietveld refinement skill for neutron powder diffraction using the 
          datasets/
          |--BLXXX/
          |   |--instrumentFiles/
-         |   |  |--XXX.instprm
+         |   |  |--XXX.instprm （文件名一般包含探测器名称相关信息）
          |   |--RUNdataFiles/
          |      |--RUNXXX/
          |         |--cifFiles/
          |         |   |--XXX.cif
          |         |   |--XXX.cif
-         |         |--XXX.gsa  
+         |         |--XXX.gsa (文件名一般包含探测器名称和run号相关信息)  
          |--BLYYY/
         其中XXX、YYY代表不同的谱仪号、探测器名称和RUN号，你需要根据用户提供的信息自己去寻找。
         注意仪器参数文件的名称不固定，但都会在名称中包含探测器名称相关信息（如group5），你需要根据用户提供的探测器名称去寻找对应的.instprm文件。

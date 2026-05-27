@@ -16,7 +16,6 @@ from autogen_core.models import RequestUsage
 import autogen_ext.models.openai._openai_client as _openai_client_patch_target
 from drsai.modules.agents.skills_agent import SkillAgent, DrSaiAssistant
 from drsai.modules.baseagent import (
-    DockerCommandLineCodeExecutor,
     LocalCommandLineCodeExecutor,
     CodeBlock
 )
@@ -37,7 +36,6 @@ import os
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
 os.environ.setdefault("RONGZAI_DEBUG_SYSTEM_PROMPT", "0")
-data_dir = os.getenv("WORKER_SPACE", "")
 parent_path = os.path.dirname(os.path.abspath(__file__))
 appdir = os.path.join(parent_path, "tmp/drsai")
 os.makedirs(appdir, exist_ok=True)
@@ -69,9 +67,9 @@ def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
 _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
-    "quick refinement": "openai/gpt-4.1",
-    "deep refinement": "openai/gpt-5",
-    "default": "openai/gpt-5",
+    "gpt 4.1": "openai/gpt-4.1",
+    "gpt 5": "openai/gpt-5",
+    "miniMax": "minimax/minimax-m2.7"
 }
 
 async def create_agent(
@@ -159,7 +157,7 @@ async def create_agent(
 
 
     return RongZaiAgent(
-        name = "RongZai_Agent",
+        name = "RongZaiAgent",
         model_client=set_model_client(defult_config_name),
         system_message=SYSTEM,
         reflect_on_tool_use=False,
@@ -188,7 +186,7 @@ if __name__ == "__main__":
     asyncio.run(
         run_worker(
             # 智能体注册信息
-            agent_name="RongzaiAgent",
+            agent_name="Rongzai Agent",
             author="wanghao96@ihep.ac.cn",
             permission=PERMISSION,
             description = "蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组",
@@ -199,7 +197,7 @@ if __name__ == "__main__":
                       "用我上传的附件文件精修。如果不确定用哪个精修引擎，找我确认。",
                       "帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"],
             agent_config = llm_mode_config,
-            defult_config_name = "default",
+            defult_config_name = "gpt 4.1",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
@@ -214,8 +212,6 @@ if __name__ == "__main__":
             join_topics = ["test"],
             metadata={"others": "test"},
             link_wechat = False,
-            
-            
         )
     )
 

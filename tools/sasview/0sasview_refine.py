@@ -382,7 +382,7 @@ def sasview_fit(
         print(f"sasview_fit result: {result}")
         if is_init_run:
             return {
-                'description': f'sasview_fit工具已成功生成初始参数文件: {json_path}。',
+                'description': f'sasview_fit工具已成功生成初始化参数文件: {json_path}。',
                 'status': 'success',
                 'content': {
                     'data_path': result.get('data_path'),
@@ -422,7 +422,7 @@ def sasview_fit(
         }
 
 refine_tools_runner = ProcessPollingMcpToolBase(
-    timeout_sec=1200.0,
+    timeout_sec=60.0,
     poll_interval=1.0,
     target_func=sasview_fit,
     # param_mapping auto-derived from sasview_fit's signature
