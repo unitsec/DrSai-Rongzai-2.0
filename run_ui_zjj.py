@@ -11,7 +11,7 @@ load_dotenv(dotenv_path=os.path.join(parent_path, ".env"), override=True)
 if __name__ == "__main__":
     ui(
         # reload=True,
-        port=8091,
+        port=8081,
         appdir=appdir,
         database_uri= f"sqlite:////{appdir}/drsai_ui.db",
     )

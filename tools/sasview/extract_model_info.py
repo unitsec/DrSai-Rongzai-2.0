@@ -54,6 +54,31 @@ def extract_model_parameters(model_name: str):
         traceback.print_exc()
         return None
 
+def generate_model_list_json(output_path: str):
+    """
+    遍历 sasmodels 全部可用模型，生成 model_list.json。
+    """
+    all_models = list_models()
+    print(f"共发现 {len(all_models)} 个模型\n")
+
+    model_config = {}
+    model_names = []
+    failed = []
+
+    for model_name in all_models:
+        model_names.append(model_name)
+        model_config['model_name'] = model_names
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(model_config, f, indent=4, ensure_ascii=False)
+
+    print(f"\n✓ 已保存到: {output_path}")
+    print(f"成功: {len(model_config)} 个，失败: {len(failed)} 个")
+    if failed:
+        print(f"失败列表: {failed}")
+
+    return model_config
+
 
 def generate_model_json(output_path: str):
     """
@@ -87,13 +112,13 @@ def generate_model_json(output_path: str):
 
 if __name__ == '__main__':
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_path = os.path.join(script_dir, 'model.json')
+    output_path = os.path.join(script_dir, 'model_list.json')
 
     print("=" * 60)
     print("sasmodels 全模型参数提取工具")
     print("=" * 60 + "\n")
 
-    model_config = generate_model_json(output_path)
+    model_config = generate_model_list_json(output_path)
 
     print("\n" + "=" * 60)
     print("示例：sphere 模型的配置")

@@ -70,6 +70,14 @@ def _format_para_values_for_output(para_view: dict) -> dict:
 
     return formatted
 
+
+def _get_default_para_if_supported(model: str) -> tuple[dict | None, str | None]:
+    """校验模型是否受 sasmodels 支持，并返回默认参数或错误信息。"""
+    try:
+        return build_default_para(model), None
+    except Exception as exc:
+        return None, f'不支持的 model: {model}。请传入 SasView/sasmodels 支持的模型名称。原始错误: {exc}'
+
 def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, output_dir, fit_idx, shape, data_stem="data"):
     result_data = {}
     thread_id = uuid.uuid4()
@@ -227,12 +235,12 @@ def refine_data(data_path: str = None,
                 para['dispersity'][d_key] = d_val
                 
         # print(f"拟合参数：{para}")
-        # 检查输入参数格式与形状参数配置是否匹配
-        config_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.json')
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        if not check_para(shape, para, config):
-            print("输入参数格式与形状参数配置不匹配")
+        # 检查输入参数格式与形状参数配置是否匹配，现在para由json记录，不会出错，所以注释掉检测
+        # config_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.json')
+        # with open(config_path, 'r') as f:
+        #     config = json.load(f)
+        # if not check_para(shape, para, config):
+        #     print("输入参数格式与形状参数配置不匹配")
         
         # 开始拟合
         print(f"开始拟合，参数配置：{para}")
@@ -363,7 +371,13 @@ def sasview_fit(
             }
 
         # 始终构造一次默认参数，用于非初始化场景下输出差异
-        default_para = build_default_para(model)
+        default_para, model_error = _get_default_para_if_supported(model)
+        if model_error:
+            return {
+                'description': '由工具sasview_fit执行拟合后返回的结果。',
+                'status': 'failed',
+                'content': model_error,
+            }
 
         # 若未提供 json_path，则基于模型生成默认参数
         is_init_run = not json_path or not os.path.exists(json_path)
@@ -436,7 +450,7 @@ refine_tools_runner = ProcessPollingMcpToolBase(
 mcp=FastMCP(
     name="SasViewTools",
     instructions=(
-        "A tool for refining small-angle neutron scattering (SANS) data using SasView fit. "
+        "Tools for analysis small-angle neutron scattering (SANS) data using SasView core function. "
         "Important calling rule: mission_name is a high-level mission identifier and can stay the same "
         "across multiple tool calls; task_id identifies a sub-task/step inside that mission. "
         "Use the same mission_name for the same overall user goal, and advance task_id per step."
