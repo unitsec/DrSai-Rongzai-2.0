@@ -24,8 +24,23 @@ import matplotlib.pyplot as plt
 from scipy.linalg import solve
 from scipy.optimize import nnls
 import argparse
+import json
 import os
 import sys
+import traceback
+from pathlib import Path
+
+CURRENT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = CURRENT_DIR.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.core.tools.mcp_task_runner import ProcessPollingMcpToolBase
+from mcp.server.fastmcp import FastMCP
+
+
+TMP_DIR = Path(__file__).resolve().parent.parent / "tmp"
+TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
@@ -447,11 +462,17 @@ def plot_results(
     q_vec: np.ndarray,
     intensity: np.ndarray,
     errors: np.ndarray,
+    q_fit: np.ndarray,
     fit_int: np.ndarray,
     d_dist: np.ndarray,
     vol_dist: np.ndarray,
+    vol_dist_err: np.ndarray | None,
     chi2: float,
     method: str,
+    background_curve: np.ndarray | None = None,
+    fit_bp_range: tuple[float, float] | None = None,
+    fit_bg_range: tuple[float, float] | None = None,
+    fit_range: tuple[float, float] | None = None,
     output_dir: str = None,
 ):
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -459,8 +480,36 @@ def plot_results(
     # 左图：散射曲线
     ax = axes[0]
     ax.errorbar(q_vec, intensity, yerr=errors, fmt="o", ms=3,
-                color="steelblue", label="Data", alpha=0.7)
-    ax.plot(q_vec, fit_int, "r-", lw=1.5, label=f"Fit ({method})")
+                color="steelblue", label="Data (original)", alpha=0.7)
+    ax.plot(q_fit, fit_int, "r-", lw=1.5, label=f"Fit ({method})")
+    if background_curve is not None:
+        ax.plot(q_vec, background_curve, "--", color="orange", lw=1.2, label="Background (B*q^-P + flat)")
+
+    def _y_at(q0: float) -> float | None:
+        if q_vec.size == 0:
+            return None
+        idx = int(np.argmin(np.abs(q_vec - q0)))
+        y0 = float(intensity[idx])
+        return y0 if np.isfinite(y0) and y0 > 0 else None
+
+    def _mark_pair(range_pair: tuple[float, float] | None, marker: str, color: str, label: str):
+        if not range_pair:
+            return
+        q1, q2 = float(range_pair[0]), float(range_pair[1])
+        y1, y2 = _y_at(q1), _y_at(q2)
+        if y1 is not None:
+            ax.plot(q1, y1, marker=marker, color=color, markersize=8, linestyle="None", label=label)
+            label = "_nolegend_"
+        if y2 is not None:
+            ax.plot(q2, y2, marker=marker, color=color, markersize=8, linestyle="None", label=label)
+
+    # 紫色倒三角：q_power/低Q幂律拟合区域端点
+    _mark_pair(fit_bp_range, marker="v", color="purple", label="q_power region")
+    # 黑色方块：flat background 拟合区域端点
+    _mark_pair(fit_bg_range, marker="s", color="black", label="flat background region")
+    # 红色方块：最终曲线拟合区间端点
+    _mark_pair(fit_range, marker="s", color="red", label="fit interval")
+
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel(r"$Q\ (\AA^{-1})$")
@@ -470,7 +519,19 @@ def plot_results(
 
     # 右图：尺寸分布
     ax = axes[1]
-    ax.plot(d_dist, vol_dist, "g-o", ms=4, lw=1.5)
+    if vol_dist_err is not None:
+        ax.errorbar(
+            d_dist,
+            vol_dist,
+            yerr=vol_dist_err,
+            fmt="g-o",
+            ms=4,
+            lw=1.2,
+            capsize=2,
+            alpha=0.9,
+        )
+    else:
+        ax.plot(d_dist, vol_dist, "g-o", ms=4, lw=1.5)
     ax.set_xlabel(r"Diameter $D\ (\AA)$")
     ax.set_ylabel(r"$dV/dD$")
     ax.set_title("Volume Size Distribution")
@@ -482,7 +543,7 @@ def plot_results(
         save_path = os.path.join(output_dir, f"size_distribution_{method}.png")
         plt.savefig(save_path, dpi=150)
         print(f"[INFO] Plot saved to: {save_path}")
-    plt.show()
+    # plt.show()
 
 
 # ============================================================
@@ -496,6 +557,7 @@ def save_results(
     fit_int: np.ndarray,
     d_dist: np.ndarray,
     vol_dist: np.ndarray,
+    vol_dist_err: np.ndarray | None,
     method: str,
     chi2: float,
     rg: float,
@@ -512,74 +574,168 @@ def save_results(
 
     # 尺寸分布
     dist_path = os.path.join(output_dir, f"size_distribution_{method}.dat")
-    np.savetxt(dist_path,
-               np.column_stack([d_dist, vol_dist]),
-               header=f"# Method: {method}  chi2={chi2:.4f}  Rg={rg:.2f}A  TotalVol={total_vol:.4e}\n"
-                      "D(A)  dV/dD",
-               fmt="%.6e")
+    if vol_dist_err is not None:
+        np.savetxt(
+            dist_path,
+            np.column_stack([d_dist, vol_dist, vol_dist_err]),
+            header=(
+                f"# Method: {method}  chi2={chi2:.4f}  Rg={rg:.2f}A  TotalVol={total_vol:.4e}\n"
+                "D(A)  dV/dD  dV/dD_err"
+            ),
+            fmt="%.6e",
+        )
+    else:
+        np.savetxt(
+            dist_path,
+            np.column_stack([d_dist, vol_dist]),
+            header=(
+                f"# Method: {method}  chi2={chi2:.4f}  Rg={rg:.2f}A  TotalVol={total_vol:.4e}\n"
+                "D(A)  dV/dD"
+            ),
+            fmt="%.6e",
+        )
 
     print(f"[INFO] Fit saved  : {fit_path}")
     print(f"[INFO] Dist saved : {dist_path}")
 
 
-# ============================================================
-# 13. 主入口
-# ============================================================
+def _slice_range(
+    q: np.ndarray,
+    y: np.ndarray,
+    qmin: float | None,
+    qmax: float | None,
+    positive_only: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    lo = float(np.nanmin(q)) if qmin is None else float(qmin)
+    hi = float(np.nanmax(q)) if qmax is None else float(qmax)
+    if lo > hi:
+        lo, hi = hi, lo
 
-def run_size_distribution(
-    data_file: str,
-    d_min: float = 10.0,
-    d_max: float = 1000.0,
-    n_points: int = 100,
-    log_scale: bool = True,
-    scattering_contrast: float = 1.0,
-    background: float = 0.0,
-    method: str = "regularization",
-    e_value: float = 0.1,
-    sky_background: float = 0.01,
-    max_iter: int = 100,
-    q_power: float = 0.0,
-    shape: str = "sphere",
-    output_dir: str = None,
-    plot: bool = True,
-):
-    """
-    使用Irena的 IR1_Sizes.ipf 算法计算小角散射 (SAS) 数据的尺寸分布。
+    mask = np.isfinite(q) & np.isfinite(y) & (q >= lo) & (q <= hi)
+    if positive_only:
+        mask &= y > 0
+    return q[mask], y[mask]
 
-    参数说明
-    --------
-    data_file           : SAS 数据文件路径（Q, I, dI 列格式）
-    d_min, d_max        : 粒子直径搜索范围（Angstrom）
-    n_points            : 半径分布点数
-    log_scale           : 对数间距（True）或线性间距
-    scattering_contrast : 散射对比度 Δρ²（cm⁻⁴），默认 1.0（内部用 ×1e20 缩放）
-    background          : 平坦背景，从 I(Q) 中减去
-    method              : 'regularization' | 'nnls' | 'maxent'
-    e_value             : Regularization 精度参数（约 0.1）
-    sky_background      : MaxEnt 初始天空背景
-    max_iter            : 最大迭代次数
-    q_power             : Q^N 加权指数（UseNoErrors 时用，一般为 0~4）
-    shape               : 粒子形状，目前支持 'sphere'
-    output_dir          : 输出目录，None 则不保存
-    plot                : 是否显示结果图
-    """
-    print(f"[INFO] Loading data: {data_file}")
-    q, intensity, errors = load_sas_data(data_file)
-    print(f"[INFO] Data points: {len(q)}, Q range: {q[0]:.4f} ~ {q[-1]:.4f} A⁻¹")
 
-    # 扣除背景
-    intensity = intensity - background
-    mask = intensity > 0
-    q, intensity, errors = q[mask], intensity[mask], errors[mask]
+def _fit_low_q_powerlaw(
+    q: np.ndarray,
+    intensity: np.ndarray,
+    qmin: float | None,
+    qmax: float | None,
+    fixed_power: float | None = None,
+) -> tuple[float, float]:
+    q_fit, i_fit = _slice_range(q, intensity, qmin, qmax, positive_only=True)
+    if q_fit.size < 2:
+        raise ValueError("低Q幂律拟合点数不足（至少需要2个点）。")
 
+    # IR1R_FitPowerLawBackground 在 log-log 空间直线拟合
+    log_q = np.log10(q_fit)
+    log_i = np.log10(i_fit)
+
+    if fixed_power is None:
+        slope, intercept = np.polyfit(log_q, log_i, deg=1)
+        power = abs(float(slope))
+        scaling = float(10.0 ** intercept)
+    else:
+        power = abs(float(fixed_power))
+        intercept = float(np.mean(log_i + power * log_q))
+        scaling = float(10.0 ** intercept)
+
+    return scaling, power
+
+
+def _fit_flat_background(
+    q: np.ndarray,
+    intensity: np.ndarray,
+    qmin: float | None,
+    qmax: float | None,
+) -> float:
+    _, i_fit = _slice_range(q, intensity, qmin, qmax, positive_only=False)
+    if i_fit.size < 1:
+        raise ValueError("平坦背景拟合点数不足（至少需要1个点）。")
+    return float(np.mean(i_fit))
+
+
+def _build_background_wave(
+    q: np.ndarray,
+    low_q_scaling_factor: float,
+    low_q_power_law_slope: float,
+    background: float,
+) -> np.ndarray:
+    return low_q_scaling_factor * np.power(q, -abs(low_q_power_law_slope)) + background
+
+
+def _prepare_intensity_for_size_fit(
+    q: np.ndarray,
+    intensity: np.ndarray,
+    background: float,
+    low_q_scaling_factor: float,
+    low_q_power_law_slope: float,
+    fit_low_q_b: bool,
+    fit_low_q_bp: bool,
+    fit_flat_background: bool,
+    fit_bp_qmin: float | None,
+    fit_bp_qmax: float | None,
+    fit_bg_qmin: float | None,
+    fit_bg_qmax: float | None,
+) -> tuple[np.ndarray, dict]:
+    b = float(low_q_scaling_factor)
+    p = abs(float(low_q_power_law_slope))
+    bg = float(background)
+
+    # 对齐 IR1R_FitBPBackOnGraph: 先低Q(B/B+P)，再平坦背景
+    if fit_low_q_b or fit_low_q_bp:
+        if fit_low_q_bp:
+            b, p = _fit_low_q_powerlaw(q, intensity, fit_bp_qmin, fit_bp_qmax, fixed_power=None)
+        else:
+            b, p = _fit_low_q_powerlaw(q, intensity, fit_bp_qmin, fit_bp_qmax, fixed_power=p)
+
+    if fit_flat_background:
+        bg = _fit_flat_background(q, intensity, fit_bg_qmin, fit_bg_qmax)
+
+    background_wave = _build_background_wave(q, b, p, bg)
+    corrected_intensity = intensity - background_wave
+    meta = {
+        "low_q_scaling_factor": float(b),
+        "low_q_power_law_slope": float(p),
+        "background": float(bg),
+        "fit_low_q_b": bool(fit_low_q_b),
+        "fit_low_q_bp": bool(fit_low_q_bp),
+        "fit_flat_background": bool(fit_flat_background),
+        "fit_bp_qmin": fit_bp_qmin,
+        "fit_bp_qmax": fit_bp_qmax,
+        "fit_bg_qmin": fit_bg_qmin,
+        "fit_bg_qmax": fit_bg_qmax,
+    }
+    return corrected_intensity, meta
+
+
+def _solve_size_distribution_core(
+    q: np.ndarray,
+    intensity: np.ndarray,
+    errors: np.ndarray,
+    d_min: float,
+    d_max: float,
+    n_points: int,
+    log_scale: bool,
+    scattering_contrast: float,
+    method: str,
+    e_value: float,
+    sky_background: float,
+    max_iter: int,
+    q_power: float,
+    shape: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     # 构建半径分布网格
     r_min = d_min / 2.0
     r_max = d_max / 2.0
     r_dist = make_r_distribution(r_min, r_max, n_points, log_scale)
     d_dist = r_dist * 2.0  # 直径
 
-    print(f"[INFO] R distribution: {r_min:.1f} ~ {r_max:.1f} A, {n_points} points, "
-          f"{'log' if log_scale else 'linear'} scale")
+    print(
+        f"[INFO] R distribution: {r_min:.1f} ~ {r_max:.1f} A, {n_points} points, "
+        f"{'log' if log_scale else 'linear'} scale"
+    )
 
     # 构建 G 矩阵
     print("[INFO] Building G matrix ...")
@@ -619,21 +775,359 @@ def run_size_distribution(
     else:
         raise ValueError(f"Unknown method '{method}'. Choose: regularization, nnls, maxent")
 
+    return d_dist, x_dist, fit_int, chi2
+
+
+def run_size_distribution_with_uncertainty(
+    data_file: str,
+    d_min: float = 10.0,
+    d_max: float = 1000.0,
+    n_points: int = 100,
+    log_scale: bool = True,
+    scattering_contrast: float = 1.0,
+    background: float = 0.0,
+    method: str = "regularization",
+    e_value: float = 0.1,
+    sky_background: float = 0.01,
+    max_iter: int = 100,
+    q_power: float = 0.0,
+    shape: str = "sphere",
+    low_q_scaling_factor: float = 0.0,
+    low_q_power_law_slope: float = 4.0,
+    fit_low_q_b: bool = False,
+    fit_low_q_bp: bool = False,
+    fit_flat_background: bool = False,
+    fit_bp_qmin: float | None = None,
+    fit_bp_qmax: float | None = None,
+    fit_bg_qmin: float | None = None,
+    fit_bg_qmax: float | None = None,
+    uncertainty_runs: int = 10,
+    output_dir: str = None,
+    plot: bool = True,
+) -> tuple:
+    """
+    基于 IR1R_SizesEstimateErrors 的思路：对强度做多次噪声扰动并重复拟合，
+    以每个粒径点分布的标准差作为 dV/dD 的不确定度。
+    """
+    print(f"[INFO] Loading data: {data_file}")
+    q, intensity, errors = load_sas_data(data_file)
+    print(f"[INFO] Data points: {len(q)}, Q range: {q[0]:.4f} ~ {q[-1]:.4f} A⁻¹")
+
+    q_raw = q.copy()
+    intensity_raw = intensity.copy()
+    errors_raw = errors.copy()
+
+    intensity, background_fit_meta = _prepare_intensity_for_size_fit(
+        q=q,
+        intensity=intensity,
+        background=background,
+        low_q_scaling_factor=low_q_scaling_factor,
+        low_q_power_law_slope=low_q_power_law_slope,
+        fit_low_q_b=fit_low_q_b,
+        fit_low_q_bp=fit_low_q_bp,
+        fit_flat_background=fit_flat_background,
+        fit_bp_qmin=fit_bp_qmin,
+        fit_bp_qmax=fit_bp_qmax,
+        fit_bg_qmin=fit_bg_qmin,
+        fit_bg_qmax=fit_bg_qmax,
+    )
+    if fit_low_q_b or fit_low_q_bp or fit_flat_background:
+        print(
+            "[INFO] Background prefit -> "
+            f"B={background_fit_meta['low_q_scaling_factor']:.6g}, "
+            f"P={background_fit_meta['low_q_power_law_slope']:.6g}, "
+            f"flat={background_fit_meta['background']:.6g}"
+        )
+    mask = intensity > 0
+    q, intensity, errors = q[mask], intensity[mask], errors[mask]
+
+    # 基准拟合（用于回退与比较）
+    d_dist, base_x_dist, base_fit_int, base_chi2 = _solve_size_distribution_core(
+        q=q,
+        intensity=intensity,
+        errors=errors,
+        d_min=d_min,
+        d_max=d_max,
+        n_points=n_points,
+        log_scale=log_scale,
+        scattering_contrast=scattering_contrast,
+        method=method,
+        e_value=e_value,
+        sky_background=sky_background,
+        max_iter=max_iter,
+        q_power=q_power,
+        shape=shape,
+    )
+
+    runs = max(1, int(uncertainty_runs))
+    x_samples = []
+    fit_samples = []
+
+    for i in range(runs):
+        noisy_intensity = intensity + np.random.normal(loc=0.0, scale=errors)
+        # 与 Irena 图形流程一致，扰动后强度保持可计算状态
+        noisy_intensity = np.where(np.isfinite(noisy_intensity), noisy_intensity, intensity)
+        noisy_intensity = np.where(noisy_intensity > 0, noisy_intensity, np.finfo(float).eps)
+
+        try:
+            _, x_dist_i, fit_int_i, _ = _solve_size_distribution_core(
+                q=q,
+                intensity=noisy_intensity,
+                errors=errors,
+                d_min=d_min,
+                d_max=d_max,
+                n_points=n_points,
+                log_scale=log_scale,
+                scattering_contrast=scattering_contrast,
+                method=method,
+                e_value=e_value,
+                sky_background=sky_background,
+                max_iter=max_iter,
+                q_power=q_power,
+                shape=shape,
+            )
+            if (
+                x_dist_i.shape == base_x_dist.shape
+                and np.all(np.isfinite(x_dist_i))
+                and fit_int_i.shape == base_fit_int.shape
+            ):
+                x_samples.append(x_dist_i)
+                fit_samples.append(fit_int_i)
+        except Exception:
+            continue
+
+    if x_samples:
+        x_stack = np.vstack(x_samples)
+        fit_stack = np.vstack(fit_samples)
+        x_dist = np.mean(x_stack, axis=0)
+        ddof = 1 if x_stack.shape[0] > 1 else 0
+        x_dist_err = np.std(x_stack, axis=0, ddof=ddof)
+        fit_int = np.mean(fit_stack, axis=0)
+        residuals = (intensity - fit_int) / errors
+        chi2 = float(np.sum(residuals ** 2))
+        success_runs = int(x_stack.shape[0])
+    else:
+        x_dist = base_x_dist
+        x_dist_err = np.full_like(base_x_dist, np.nan)
+        fit_int = base_fit_int
+        chi2 = float(base_chi2)
+        success_runs = 0
+
+    rg, total_vol = compute_rg_volume_fraction(d_dist, x_dist)
+    print(f"[INFO] Rg ≈ {rg:.2f} A,  Total volume fraction ∝ {total_vol:.4e}")
+    print(f"[INFO] Uncertainty runs: success {success_runs}/{runs}")
+
+    if output_dir:
+        save_results(
+            output_dir,
+            q,
+            intensity,
+            fit_int,
+            d_dist,
+            x_dist,
+            x_dist_err,
+            method,
+            chi2,
+            rg,
+            total_vol,
+        )
+
+    if plot:
+        background_curve = _build_background_wave(
+            q_raw,
+            background_fit_meta["low_q_scaling_factor"],
+            background_fit_meta["low_q_power_law_slope"],
+            background_fit_meta["background"],
+        )
+        fit_bp_range = None
+        if (fit_low_q_b or fit_low_q_bp) and fit_bp_qmin is not None and fit_bp_qmax is not None:
+            fit_bp_range = (float(fit_bp_qmin), float(fit_bp_qmax))
+        fit_bg_range = None
+        if fit_flat_background and fit_bg_qmin is not None and fit_bg_qmax is not None:
+            fit_bg_range = (float(fit_bg_qmin), float(fit_bg_qmax))
+        fit_range = (float(np.min(q)), float(np.max(q))) if q.size > 0 else None
+
+        plot_results(
+            q_raw,
+            intensity_raw,
+            errors_raw,
+            q,
+            fit_int,
+            d_dist,
+            x_dist,
+            x_dist_err,
+            chi2,
+            method,
+            background_curve=background_curve,
+            fit_bp_range=fit_bp_range,
+            fit_bg_range=fit_bg_range,
+            fit_range=fit_range,
+            output_dir=output_dir,
+        )
+
+    return q, intensity, fit_int, d_dist, x_dist, x_dist_err, chi2, success_runs, background_fit_meta
+
+
+# ============================================================
+# 13. 主入口
+# ============================================================
+
+def run_size_distribution(
+    data_file: str,
+    d_min: float = 10.0,
+    d_max: float = 1000.0,
+    n_points: int = 100,
+    log_scale: bool = True,
+    scattering_contrast: float = 1.0,
+    background: float = 0.0,
+    method: str = "regularization",
+    e_value: float = 0.1,
+    sky_background: float = 0.01,
+    max_iter: int = 100,
+    q_power: float = 0.0,
+    shape: str = "sphere",
+    low_q_scaling_factor: float = 0.0,
+    low_q_power_law_slope: float = 4.0,
+    fit_low_q_b: bool = False,
+    fit_low_q_bp: bool = False,
+    fit_flat_background: bool = False,
+    fit_bp_qmin: float | None = None,
+    fit_bp_qmax: float | None = None,
+    fit_bg_qmin: float | None = None,
+    fit_bg_qmax: float | None = None,
+    output_dir: str = None,
+    plot: bool = True,
+):
+    """
+    使用Irena的 IR1_Sizes.ipf 算法计算小角散射 (SAS) 数据的尺寸分布。
+
+    参数说明
+    --------
+    data_file           : SAS 数据文件路径（Q, I, dI 列格式）
+    d_min, d_max        : 粒子直径搜索范围（Angstrom）
+    n_points            : 半径分布点数
+    log_scale           : 对数间距（True）或线性间距
+    scattering_contrast : 散射对比度 Δρ²（cm⁻⁴），默认 1.0（内部用 ×1e20 缩放）
+    background          : 平坦背景，从 I(Q) 中减去
+    low_q_scaling_factor: 低Q幂律背景比例系数 B
+    low_q_power_law_slope: 低Q幂律指数 P（背景项 B*q^-P）
+    fit_low_q_b         : 在区间 [fit_bp_qmin, fit_bp_qmax] 拟合 B（固定 P）
+    fit_low_q_bp        : 在区间 [fit_bp_qmin, fit_bp_qmax] 同时拟合 B 和 P
+    fit_flat_background : 在区间 [fit_bg_qmin, fit_bg_qmax] 拟合平坦背景
+    method              : 'regularization' | 'nnls' | 'maxent'
+    e_value             : Regularization 精度参数（约 0.1）
+    sky_background      : MaxEnt 初始天空背景
+    max_iter            : 最大迭代次数
+    q_power             : Q^N 加权指数（UseNoErrors 时用，一般为 0~4）
+    shape               : 粒子形状，目前支持 'sphere'
+    output_dir          : 输出目录，None 则不保存
+    plot                : 是否显示结果图
+    """
+    print(f"[INFO] Loading data: {data_file}")
+    q, intensity, errors = load_sas_data(data_file)
+    print(f"[INFO] Data points: {len(q)}, Q range: {q[0]:.4f} ~ {q[-1]:.4f} A⁻¹")
+
+    q_raw = q.copy()
+    intensity_raw = intensity.copy()
+    errors_raw = errors.copy()
+
+    # 扣除背景：对齐 IR1_Sizes 中的 Low-Q 幂律+平坦背景流程
+    intensity, background_fit_meta = _prepare_intensity_for_size_fit(
+        q=q,
+        intensity=intensity,
+        background=background,
+        low_q_scaling_factor=low_q_scaling_factor,
+        low_q_power_law_slope=low_q_power_law_slope,
+        fit_low_q_b=fit_low_q_b,
+        fit_low_q_bp=fit_low_q_bp,
+        fit_flat_background=fit_flat_background,
+        fit_bp_qmin=fit_bp_qmin,
+        fit_bp_qmax=fit_bp_qmax,
+        fit_bg_qmin=fit_bg_qmin,
+        fit_bg_qmax=fit_bg_qmax,
+    )
+    if fit_low_q_b or fit_low_q_bp or fit_flat_background:
+        print(
+            "[INFO] Background prefit -> "
+            f"B={background_fit_meta['low_q_scaling_factor']:.6g}, "
+            f"P={background_fit_meta['low_q_power_law_slope']:.6g}, "
+            f"flat={background_fit_meta['background']:.6g}"
+        )
+    mask = intensity > 0
+    q, intensity, errors = q[mask], intensity[mask], errors[mask]
+
+    d_dist, x_dist, fit_int, chi2 = _solve_size_distribution_core(
+        q=q,
+        intensity=intensity,
+        errors=errors,
+        d_min=d_min,
+        d_max=d_max,
+        n_points=n_points,
+        log_scale=log_scale,
+        scattering_contrast=scattering_contrast,
+        method=method,
+        e_value=e_value,
+        sky_background=sky_background,
+        max_iter=max_iter,
+        q_power=q_power,
+        shape=shape,
+    )
+
     # 后处理
     rg, total_vol = compute_rg_volume_fraction(d_dist, x_dist)
     print(f"[INFO] Rg ≈ {rg:.2f} A,  Total volume fraction ∝ {total_vol:.4e}")
 
     # 保存
     if output_dir:
-        save_results(output_dir, q, intensity, fit_int, d_dist, x_dist,
-                     method, chi2, rg, total_vol)
+        save_results(
+            output_dir,
+            q,
+            intensity,
+            fit_int,
+            d_dist,
+            x_dist,
+            None,
+            method,
+            chi2,
+            rg,
+            total_vol,
+        )
 
     # 绘图
     if plot:
-        plot_results(q, intensity, errors, fit_int, d_dist, x_dist,
-                     chi2, method, output_dir)
+        background_curve = _build_background_wave(
+            q_raw,
+            background_fit_meta["low_q_scaling_factor"],
+            background_fit_meta["low_q_power_law_slope"],
+            background_fit_meta["background"],
+        )
+        fit_bp_range = None
+        if (fit_low_q_b or fit_low_q_bp) and fit_bp_qmin is not None and fit_bp_qmax is not None:
+            fit_bp_range = (float(fit_bp_qmin), float(fit_bp_qmax))
+        fit_bg_range = None
+        if fit_flat_background and fit_bg_qmin is not None and fit_bg_qmax is not None:
+            fit_bg_range = (float(fit_bg_qmin), float(fit_bg_qmax))
+        fit_range = (float(np.min(q)), float(np.max(q))) if q.size > 0 else None
 
-    return q, intensity, fit_int, d_dist, x_dist, chi2
+        plot_results(
+            q_raw,
+            intensity_raw,
+            errors_raw,
+            q,
+            fit_int,
+            d_dist,
+            x_dist,
+            None,
+            chi2,
+            method,
+            background_curve=background_curve,
+            fit_bp_range=fit_bp_range,
+            fit_bg_range=fit_bg_range,
+            fit_range=fit_range,
+            output_dir=output_dir,
+        )
+
+    return q, intensity, fit_int, d_dist, x_dist, chi2, background_fit_meta
 
 
 # ============================================================
@@ -682,33 +1176,402 @@ def parse_args():
 # 14. mcp 工具接口
 # ============================================================
 
-def Irena_size_distribution(
+def _default_irena_fit_params() -> dict:
+    return {
+        "d_min": 10.0,
+        "d_max": 1000.0,
+        "n_points": 100,
+        "log_scale": True,
+        "scattering_contrast": 1.0,
+        "background": 0.0,
+        "method": "regularization",
+        "e_value": 0.1,
+        "sky_background": 0.01,
+        "max_iter": 100,
+        "q_power": 0.0,
+        "shape": "sphere",
+        "low_q_scaling_factor": 0.0,
+        "low_q_power_law_slope": 4.0,
+        "fit_low_q_b": False,
+        "fit_low_q_bp": False,
+        "fit_flat_background": False,
+        "fit_bp_qmin": None,
+        "fit_bp_qmax": None,
+        "fit_bg_qmin": None,
+        "fit_bg_qmax": None,
+        "estimate_uncertainties": False,
+        "uncertainty_runs": 10,
+    }
+
+
+def _merge_fit_params(base: dict, updates: dict | None) -> dict:
+    merged = dict(base)
+    if isinstance(updates, dict):
+        merged.update(updates)
+    return merged
+
+def irena_size_distribution(
     data_path: str = None,
     json_path: str = None,
-    model: str = None,
     fit_params: dict = None,
     user_id: str = None,
     mission_name: str = "",
     task_id: int | str = 0,
 ) -> dict:
+    """
+    使用Irena的 IR1_Sizes.ipf 算法拟合小角散射 (SAS) 一维散射曲线，得到粒子的尺寸分布。
 
+    Mission / Task 概念约定（给大模型）：
+    - mission_name 表示一个完整的大任务。
+    - task_id 表示该 mission 中某一次具体拟合步骤/子任务。
+    - 一个 mission 往往需要多次调用本工具（多个 task）才能完成。
+    - 因此，同一个 mission 的多轮调用，应持续使用同一个 mission_name。
+    - 在同一个 mission 内，每一轮可使用不同 task_id（例如 0,1,2...）表示阶段推进。
+    - 继续轮询同一个未完成 task 时，必须同时传入相同 mission_name 和 task_id。
+    - 开始新的子任务时，可在同一 mission_name 下使用新的 task_id。
+
+    Args:输入时需要提供的参数
+        data_path: 小角散射数据文件的绝对路径。
+        json_path: 包含拟合参数结果的文件绝对路径。初始化时和每次model改变时应该没有拟合结果 ，在进行多轮调用时，由前一次工具输出决定。
+        fit_params: 决定本轮拟合的参数。修改value参数，变化初始值。未出现在 fit_params 中的参数将使用默认值。具体参数说明如下：
+            {
+            d_min: float = 10.0,                 # 粒子直径搜索范围的最小值，单位为 Angstrom。
+            d_max: float = 1000.0,               # 粒子直径搜索范围的最大值，单位为 Angstrom。
+            n_points: int = 100,                 # 半径分布点数，即拟合结果中尺寸分布的离散点数量。
+            scattering_contrast: float = 1.0,    # 散射对比度 Δρ²，单位为 cm⁻⁴。默认值 1.0，内部计算时会乘以 1e20 进行缩放。
+            background: float = 0.0,             # 平坦背景值，从 I(Q) 中扣除，单位与 I(Q) 相同（通常为 1/cm）。
+            method: str = "regularization",      # 拟合方法，支持 "regularization"（正则化）和 "nnls"（非负最小二乘）和 "maxent"（最大熵）。默认 "regularization"。
+            e_value: float = 0.1,                # 正则化精度参数 e，默认 0.1
+            sky_background: float = 0.01,        # MaxEnt 天空背景，默认 0.01
+            max_iter: int = 100,                 # 最大迭代次数，默认 100
+            q_power: float = 0.0,                # Q^N 加权指数（0=无权重），默认 0
+            shape: str = "sphere",               # 粒子形状，默认 sphere
+            "low_q_scaling_factor": 0.0,         # 低Q幂律背景比例系数 B，背景项形式为 B*q^-P
+            "low_q_power_law_slope": 4.0,        # 低Q幂律指数 P，背景项形式为 B*q^-P
+            "fit_low_q_b": False,                # 是否在区间 [fit_bp_qmin, fit_bp_qmax] 拟合 B（固定 P），默认 False
+            "fit_low_q_bp": False,               # 是否在区间 [fit_bp_qmin, fit_bp_qmax] 拟合 B 和 P，默认 False
+            "fit_flat_background": False,        # 是否拟合平坦背景，默认 False
+            "fit_bp_qmin": None,                 # 幂律背景拟合区间的最小 q 值
+            "fit_bp_qmax": None,                 # 幂律背景拟合区间的最大 q 值
+            "fit_bg_qmin": None,                 # 平坦背景拟合区间的最小 q 值
+            "fit_bg_qmax": None,                 # 平坦背景拟合区间的最大 q 值
+            estimate_uncertainties: bool = False, # 是否进行不确定度估计，默认 False
+            uncertainty_runs: int = 10,          # 进行不确定度估计时的扰动拟合次数，默认 10
+            }
+        user_id: 用户 ID，用于输出目录组织。
+        mission_name: mission 名称（必填，建议全程保持不变）；用于标识同一个大任务。
+        task_id: 任务轮次索引/标识。初始化和每次model改变时，建议设置为0；
+                 使用相同model继续拟合时，按上次返回的 task_id+1。
+
+    Returns:
+    该函数作为 ProcessPollingMcpToolBase 的业务函数，返回：
+    {
+        'description': '由工具irena_size_distribution执行拟合后返回的结果。',
+        'status': 'success' | 'failed',
+        'content': {
+            'data_path': 原始数据路径,
+            'json_path': 参数文件路径,
+            'model': 使用的模型名,
+            'fit_params': 拟合后的参数,
+            'chisquare': 最终拟合 χ²,
+            'plot_path': 拟合图路径,
+            'plot_data_path': 拟合曲线导出数据路径,
+            'output_dir': 输出目录,
+            'mission_name': 任务名,
+            'task_id': 拟合轮次索引
+        } 或字符串（失败时）
+    }
+
+    """
+    try:
+        print(
+            f"irena_size_distribution called with data_path={data_path}, json_path={json_path}, "
+            f"fit_params={fit_params}, user_id={user_id}, mission_name={mission_name}, task_id={task_id}"
+        )
+
+        user_key = user_id or "default_user"
+        mission_key = mission_name or "default_mission"
+        output_dir = TMP_DIR / user_key / mission_key
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        if not data_path or not os.path.exists(data_path):
+            return {
+                "description": "由工具irena_size_distribution执行拟合后返回的结果。",
+                "status": "failed",
+                "content": f"数据文件不存在: {data_path}",
+            }
+
+        if not mission_name:
+            return {
+                "description": "由工具irena_size_distribution执行拟合后返回的结果。",
+                "status": "failed",
+                "content": "缺少必填参数 mission_name。请保持 mission_name 在同一任务轮询中一致。",
+            }
+
+        default_params = _default_irena_fit_params()
+        is_init_run = not json_path or not os.path.exists(json_path)
+
+        if is_init_run:
+            base_params = dict(default_params)
+            json_path = str(output_dir / "init_size_distribution_params.json")
+            with open(json_path, "w") as f:
+                json.dump(base_params, f, indent=4)
+            print(f"初始参数已生成并保存: {json_path}")
+        else:
+            with open(json_path, "r") as f:
+                loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                loaded = {}
+            base_params = _merge_fit_params(default_params, loaded)
+
+        params = _merge_fit_params(base_params, fit_params)
+        method = str(params.get("method", "regularization")).lower()
+        shape = str(params.get("shape", "sphere")).lower()
+
+        if method not in {"regularization", "nnls", "maxent"}:
+            return {
+                "description": "由工具irena_size_distribution执行拟合后返回的结果。",
+                "status": "failed",
+                "content": f"不支持的 method: {method}。支持值为 regularization、nnls、maxent。",
+            }
+
+        if shape != "sphere":
+            return {
+                "description": "由工具irena_size_distribution执行拟合后返回的结果。",
+                "status": "failed",
+                "content": f"不支持的 shape: {shape}。当前仅支持 sphere。",
+            }
+        
+        estimate_uncertainties = bool(params.get("estimate_uncertainties", False))
+        uncertainty_runs = int(params.get("uncertainty_runs", 10))
+        fit_low_q_b = bool(params.get("fit_low_q_b", False))
+        fit_low_q_bp = bool(params.get("fit_low_q_bp", False))
+        fit_flat_background = bool(params.get("fit_flat_background", False))
+        if fit_low_q_b and fit_low_q_bp:
+            # 与 Irena 面板行为一致：同时启用时优先 B+P
+            fit_low_q_b = False
+            fit_low_q_bp = True
+
+        common_kwargs = dict(
+            data_file=data_path,
+            d_min=float(params.get("d_min", 10.0)),
+            d_max=float(params.get("d_max", 1000.0)),
+            n_points=int(params.get("n_points", 100)),
+            log_scale=bool(params.get("log_scale", True)),
+            scattering_contrast=float(params.get("scattering_contrast", 1.0)),
+            background=float(params.get("background", 0.0)),
+            method=method,
+            e_value=float(params.get("e_value", 0.1)),
+            sky_background=float(params.get("sky_background", 0.01)),
+            max_iter=int(params.get("max_iter", 100)),
+            q_power=float(params.get("q_power", 0.0)),
+            shape=shape,
+            low_q_scaling_factor=float(params.get("low_q_scaling_factor", 0.0)),
+            low_q_power_law_slope=float(params.get("low_q_power_law_slope", 4.0)),
+            fit_low_q_b=fit_low_q_b,
+            fit_low_q_bp=fit_low_q_bp,
+            fit_flat_background=fit_flat_background,
+            fit_bp_qmin=(None if params.get("fit_bp_qmin") is None else float(params.get("fit_bp_qmin"))),
+            fit_bp_qmax=(None if params.get("fit_bp_qmax") is None else float(params.get("fit_bp_qmax"))),
+            fit_bg_qmin=(None if params.get("fit_bg_qmin") is None else float(params.get("fit_bg_qmin"))),
+            fit_bg_qmax=(None if params.get("fit_bg_qmax") is None else float(params.get("fit_bg_qmax"))),
+            output_dir=str(output_dir),
+            plot=True,
+        )
+
+        if estimate_uncertainties:
+            q, intensity, fit_int, d_dist, x_dist, x_dist_err, chi2, success_runs, background_fit_meta = run_size_distribution_with_uncertainty(
+                uncertainty_runs=uncertainty_runs,
+                **common_kwargs,
+            )
+            params["estimate_uncertainties"] = True
+            params["uncertainty_runs"] = uncertainty_runs
+            params["uncertainty_success_runs"] = int(success_runs)
+            params["distribution_error_available"] = bool(success_runs > 0)
+        else:
+            q, intensity, fit_int, d_dist, x_dist, chi2, background_fit_meta = run_size_distribution(**common_kwargs)
+            x_dist_err = None
+            params["estimate_uncertainties"] = False
+
+        data_stem = Path(data_path).stem
+        fit_param_json_path = output_dir / f"{data_stem}_irena_fit_{task_id}.json"
+        params["method"] = method
+        params["shape"] = shape
+        params["chisquare"] = float(chi2)
+        params["n_q_points"] = int(len(q))
+        params["n_distribution_points"] = int(len(d_dist))
+        params["low_q_scaling_factor"] = float(background_fit_meta.get("low_q_scaling_factor", params.get("low_q_scaling_factor", 0.0)))
+        params["low_q_power_law_slope"] = float(background_fit_meta.get("low_q_power_law_slope", params.get("low_q_power_law_slope", 4.0)))
+        params["background"] = float(background_fit_meta.get("background", params.get("background", 0.0)))
+        if x_dist_err is not None:
+            params["distribution_error_mean"] = float(np.nanmean(x_dist_err))
+            params["distribution_error_max"] = float(np.nanmax(x_dist_err))
+        with open(fit_param_json_path, "w") as f:
+            json.dump(params, f, indent=4)
+
+        plot_path = output_dir / f"size_distribution_{method}.png"
+        plot_data_path = output_dir / f"fit_intensity_{method}.dat"
+        distribution_data_path = output_dir / f"size_distribution_{method}.dat"
+
+        if is_init_run:
+            return {
+                "description": f"irena_size_distribution工具已成功生成初始化参数文件: {json_path}。",
+                "status": "success",
+                "content": {
+                    "data_path": data_path,
+                    "json_path": str(fit_param_json_path),
+                    "model": shape,
+                    "fit_params": params,
+                    "chisquare": float(chi2),
+                    "plot_path": str(plot_path),
+                    "plot_data_path": str(plot_data_path),
+                    "size_distribution_path": str(distribution_data_path),
+                    "output_dir": str(output_dir),
+                    "mission_name": mission_name,
+                    "task_id": task_id,
+                },
+            }
+
+        return {
+            "description": "由工具irena_size_distribution执行拟合后返回的结果。",
+            "status": "success",
+            "content": {
+                "data_path": data_path,
+                "json_path": str(fit_param_json_path),
+                "model": shape,
+                "fit_params": params,
+                "chisquare": float(chi2),
+                "plot_path": str(plot_path),
+                "plot_data_path": str(plot_data_path),
+                "size_distribution_path": str(distribution_data_path),
+                "output_dir": str(output_dir),
+                "mission_name": mission_name,
+                "task_id": task_id,
+            },
+        }
+    except Exception:
+        return {
+            "description": "由工具irena_size_distribution执行拟合后返回的结果。",
+            "status": "failed",
+            "content": traceback.format_exc(),
+        }
+
+refine_tools_runner = ProcessPollingMcpToolBase(
+    timeout_sec=1800.0,
+    poll_interval=1.0,
+    target_func=irena_size_distribution,
+    # param_mapping auto-derived from irena_size_distribution's signature
+)
+
+mcp=FastMCP(
+    name="IrenaTools",
+    instructions=(
+        "A tool for refining small-angle neutron scattering (SANS) data using Irena core function. "
+        "Important calling rule: mission_name is a high-level mission identifier and can stay the same "
+        "across multiple tool calls; task_id identifies a sub-task/step inside that mission. "
+        "Use the same mission_name for the same overall user goal, and advance task_id per step."
+    ),
+    port = 42506, # for transport = "sse" to start a server-sent events (SSE) server
+    )
+
+refine_tools_runner.register_mcp_tool(mcp, name="irena_size_distribution")
 
 if __name__ == "__main__":
-    args = parse_args()
-    run_size_distribution(
-        data_file=args.data_file,
-        d_min=args.dmin,
-        d_max=args.dmax,
-        n_points=args.npoints,
-        log_scale=not args.linear,
-        scattering_contrast=args.contrast,
-        background=args.background,
-        method=args.method,
-        e_value=args.evalues,
-        sky_background=args.sky,
-        max_iter=args.maxiter,
-        q_power=args.qpower,
-        shape=args.shape,
-        output_dir=args.output,
-        plot=not args.no_plot,
-    )
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        # ----------------------------------------------------------------
+        # 本地测试入口：无需启动 agent，直接调用 irena_size_distribution 验证流程
+        # 用法：python 0Irena_fit.py test
+        # ----------------------------------------------------------------
+        import tempfile
+
+        _DATA_PATH = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "Example Data",
+            "Test data.dat",
+        )
+        _OUTPUT_DIR = os.path.join(tempfile.gettempdir(), "irena_test_output")
+        os.makedirs(_OUTPUT_DIR, exist_ok=True)
+
+        print("\n========== 测试1: 初始化参数并 regularization 拟合 ==========")
+        res1 = irena_size_distribution(
+            data_path=_DATA_PATH,
+            json_path=None,
+            fit_params={
+                "method": "regularization",
+                "d_min": 20.0,
+                "d_max": 5000.0,
+                "n_points": 120,
+                "q_power": 4.0,
+            },
+            user_id="test_user",
+            mission_name="irena_test_local",
+            task_id=0,
+        )
+        if res1.get("status") != "success":
+            print(f"[FAIL] {res1.get('content')}")
+        else:
+            c1 = res1.get("content", {})
+            print(f"[OK] chi²={c1.get('chisquare', float('nan')):.4f}")
+            print(f"     plot -> {c1.get('plot_path')}")
+            print(f"     json -> {c1.get('json_path')}")
+
+        print("\n========== 测试2: 基于上轮 json，切换为 nnls ==========")
+        prev_json = (res1.get("content") or {}).get("json_path") if isinstance(res1, dict) else None
+        res2 = irena_size_distribution(
+            data_path=_DATA_PATH,
+            json_path=prev_json,
+            fit_params={
+                "method": "nnls",
+                "background": 0.0,
+                "q_power": 0.0,
+            },
+            user_id="test_user",
+            mission_name="irena_test_local",
+            task_id=1,
+        )
+        if res2.get("status") != "success":
+            print(f"[FAIL] {res2.get('content')}")
+        else:
+            c2 = res2.get("content", {})
+            print(f"[OK] chi²={c2.get('chisquare', float('nan')):.4f}")
+            print(f"     plot -> {c2.get('plot_path')}")
+            print(f"     json -> {c2.get('json_path')}")
+
+        print("\n========== 测试3: 非法 method 参数校验 ==========")
+        res3 = irena_size_distribution(
+            data_path=_DATA_PATH,
+            json_path=prev_json,
+            fit_params={"method": "unknown_method"},
+            user_id="test_user",
+            mission_name="irena_test_local",
+            task_id=2,
+        )
+        if res3.get("status") == "failed":
+            print(f"[OK] 参数校验生效: {res3.get('content')}")
+        else:
+            print(f"[FAIL] 预期失败但返回成功: {res3}")
+
+    elif len(sys.argv) > 1 and sys.argv[1] == "cli":
+        # 兼容命令行直接拟合：python 0Irena_fit.py cli <data_file> ...
+        sys.argv.pop(1)
+        args = parse_args()
+        run_size_distribution(
+            data_file=args.data_file,
+            d_min=args.dmin,
+            d_max=args.dmax,
+            n_points=args.npoints,
+            log_scale=not args.linear,
+            scattering_contrast=args.contrast,
+            background=args.background,
+            method=args.method,
+            e_value=args.evalues,
+            sky_background=args.sky,
+            max_iter=args.maxiter,
+            q_power=args.qpower,
+            shape=args.shape,
+            output_dir=args.output,
+            plot=not args.no_plot,
+        )
+    else:
+        # 默认行为与 sasview 工具保持一致：启动 MCP SSE 服务
+        mcp.run(transport="sse")
