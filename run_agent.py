@@ -197,7 +197,7 @@ if __name__ == "__main__":
                       "用我上传的附件文件精修。如果不确定用哪个精修引擎，找我确认。",
                       "帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"],
             agent_config = llm_mode_config,
-            defult_config_name = "gpt 4.1",
+            defult_config_name = "gpt 5",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
