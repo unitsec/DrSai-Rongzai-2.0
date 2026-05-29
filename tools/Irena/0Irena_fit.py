@@ -700,13 +700,13 @@ def _compute_plot_fit_interval(
     if fit_bp_qmin is not None and fit_bp_qmax is not None:
         _, bp_hi = sorted((float(fit_bp_qmin), float(fit_bp_qmax)))
         # 拟合区间左端略高于幂律背景区域上限
-        left = max(left, bp_hi * 1.1)
+        left = max(left, bp_hi * 1.5)
 
     bg_lo = None
     if fit_bg_qmin is not None and fit_bg_qmax is not None:
         bg_lo, _ = sorted((float(fit_bg_qmin), float(fit_bg_qmax)))
         # 拟合区间右端略低于平坦背景区域下限
-        right = min(right, bg_lo * 0.9)
+        right = min(right, bg_lo * 0.5)
 
     if left < right:
         return left, right
@@ -722,6 +722,24 @@ def _compute_plot_fit_interval(
     if left_fallback < right_fallback:
         return left_fallback, right_fallback
     return q_lo, q_hi
+
+
+def _apply_q_range(
+    q: np.ndarray,
+    intensity: np.ndarray,
+    errors: np.ndarray,
+    fit_range: tuple[float, float] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if fit_range is None or q.size == 0:
+        return q, intensity, errors
+
+    q_min, q_max = fit_range
+    lo = float(min(q_min, q_max))
+    hi = float(max(q_min, q_max))
+    mask = (q >= lo) & (q <= hi)
+    if not np.any(mask):
+        raise ValueError(f"拟合区间 {lo:.6g} ~ {hi:.6g} 内没有可用数据点。")
+    return q[mask], intensity[mask], errors[mask]
 
 
 def _prepare_intensity_for_size_fit(
@@ -900,6 +918,22 @@ def run_size_distribution_with_uncertainty(
     mask = intensity > 0
     q, intensity, errors = q[mask], intensity[mask], errors[mask]
 
+    fit_bp_range = None
+    if (low_q_scaling_factor is not None or low_q_power_law_slope is not None) and fit_bp_qmin is not None and fit_bp_qmax is not None:
+        fit_bp_range = (float(fit_bp_qmin), float(fit_bp_qmax))
+    fit_bg_range = None
+    if background is not None and fit_bg_qmin is not None and fit_bg_qmax is not None:
+        fit_bg_range = (float(fit_bg_qmin), float(fit_bg_qmax))
+    fit_range = _compute_plot_fit_interval(
+        q,
+        fit_bp_qmin if (fit_low_q_b or fit_low_q_bp) else None,
+        fit_bp_qmax if (fit_low_q_b or fit_low_q_bp) else None,
+        fit_bg_qmin if fit_flat_background else None,
+        fit_bg_qmax if fit_flat_background else None,
+    )
+
+    q, intensity, errors = _apply_q_range(q, intensity, errors, fit_range)
+
     if d_min is None or d_max is None:
         d_min, d_max = _derive_d_range_from_q(q)
 
@@ -1000,19 +1034,6 @@ def run_size_distribution_with_uncertainty(
             background_fit_meta["low_q_scaling_factor"],
             background_fit_meta["low_q_power_law_slope"],
             background_fit_meta["background"],
-        )
-        fit_bp_range = None
-        if (fit_low_q_b or fit_low_q_bp) and fit_bp_qmin is not None and fit_bp_qmax is not None:
-            fit_bp_range = (float(fit_bp_qmin), float(fit_bp_qmax))
-        fit_bg_range = None
-        if fit_flat_background and fit_bg_qmin is not None and fit_bg_qmax is not None:
-            fit_bg_range = (float(fit_bg_qmin), float(fit_bg_qmax))
-        fit_range = _compute_plot_fit_interval(
-            q,
-            fit_bp_qmin if (fit_low_q_b or fit_low_q_bp) else None,
-            fit_bp_qmax if (fit_low_q_b or fit_low_q_bp) else None,
-            fit_bg_qmin if fit_flat_background else None,
-            fit_bg_qmax if fit_flat_background else None,
         )
 
         plot_results(
@@ -1124,6 +1145,21 @@ def run_size_distribution(
     mask = intensity > 0
     q, intensity, errors = q[mask], intensity[mask], errors[mask]
 
+    fit_range = _compute_plot_fit_interval(
+        q,
+        fit_bp_qmin if (fit_low_q_b or fit_low_q_bp) else None,
+        fit_bp_qmax if (fit_low_q_b or fit_low_q_bp) else None,
+        fit_bg_qmin if fit_flat_background else None,
+        fit_bg_qmax if fit_flat_background else None,
+    )
+    fit_bp_range = None
+    if (fit_low_q_b or fit_low_q_bp) and fit_bp_qmin is not None and fit_bp_qmax is not None:
+        fit_bp_range = (float(fit_bp_qmin), float(fit_bp_qmax))
+    fit_bg_range = None
+    if fit_flat_background and fit_bg_qmin is not None and fit_bg_qmax is not None:
+        fit_bg_range = (float(fit_bg_qmin), float(fit_bg_qmax))
+    q, intensity, errors = _apply_q_range(q, intensity, errors, fit_range)
+
     if d_min is None or d_max is None:
         d_min, d_max = _derive_d_range_from_q(q)
 
@@ -1171,19 +1207,6 @@ def run_size_distribution(
             background_fit_meta["low_q_scaling_factor"],
             background_fit_meta["low_q_power_law_slope"],
             background_fit_meta["background"],
-        )
-        fit_bp_range = None
-        if (fit_low_q_b or fit_low_q_bp) and fit_bp_qmin is not None and fit_bp_qmax is not None:
-            fit_bp_range = (float(fit_bp_qmin), float(fit_bp_qmax))
-        fit_bg_range = None
-        if fit_flat_background and fit_bg_qmin is not None and fit_bg_qmax is not None:
-            fit_bg_range = (float(fit_bg_qmin), float(fit_bg_qmax))
-        fit_range = _compute_plot_fit_interval(
-            q,
-            fit_bp_qmin if (fit_low_q_b or fit_low_q_bp) else None,
-            fit_bp_qmax if (fit_low_q_b or fit_low_q_bp) else None,
-            fit_bg_qmin if fit_flat_background else None,
-            fit_bg_qmax if fit_flat_background else None,
         )
 
         plot_results(
