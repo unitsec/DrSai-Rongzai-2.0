@@ -1095,7 +1095,7 @@ class RongZaiAgent(DrSaiAgent):
                         )
 
                         try:
-                            parsed = json.loads(result)
+                            parsed = json.loads(result.content)
                             if isinstance(parsed, dict) and parsed.get("type") == "files_events":
                                 events = parsed.get("events", [])
                                 sent_count = 0

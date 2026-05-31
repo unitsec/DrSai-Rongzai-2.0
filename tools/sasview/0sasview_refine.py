@@ -441,7 +441,7 @@ def sasview_fit(
         }
 
 refine_tools_runner = ProcessPollingMcpToolBase(
-    timeout_sec=1800.0,
+    timeout_sec=60.0,
     poll_interval=1.0,
     target_func=sasview_fit,
     # param_mapping auto-derived from sasview_fit's signature

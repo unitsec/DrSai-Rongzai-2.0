@@ -67,7 +67,6 @@ def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
 _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
-    "gpt 4.1": "openai/gpt-4.1",
     "gpt 5": "openai/gpt-5",
     "miniMax": "minimax/minimax-m2.7"
 }
