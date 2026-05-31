@@ -7,8 +7,8 @@ description: Rietveld refinement skill for neutron powder diffraction using the 
 
 ## 工具与专家知识
 
-1. MCP 工具 RefineToolsGSASII
-   - 来自 GSAS-II MCP 服务。该工具有两个功能：（1）执行精修初始化。（2）执行指定参数的精修。
+1. MCP 服务 RefineToolsGSASII。该服务下面的工具有CreateGpxOrRefine、AddAtomsToGpx和AddConstraintsToGpx三个工具，。
+   - CreateGpxOrRefine工具有两个功能：（1）执行精修初始化。（2）执行指定参数的精修。
       - 精修初始化：从原始数据（如 .gsa、.instprm、.cif）生成初始的 .gpx 文件。
       - 精修：根据输入的 .gpx 文件和 refine_params 进行迭代精修，输出新的 .gpx 文件和相关结果。
    - 工具执行哪个功能，完全取决于输入的参数结构。该工具的输入和输出结构已经各参数的含义在MCP工具本身的描述中有详细说明，你需要根据用户提供的信息构造正确的输入参数，并解析工具的输出结果来指导下一步操作。
