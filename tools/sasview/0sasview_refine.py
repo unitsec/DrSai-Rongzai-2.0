@@ -4,6 +4,7 @@ import logging
 import os
 import traceback
 import uuid
+import numbers
 from matplotlib import pyplot as plt
 from mcp.server.fastmcp import FastMCP
 import numpy as np
@@ -43,6 +44,39 @@ def _build_changed_para_view(para: dict, default_para: dict) -> dict:
         'para': changed_para,
         'dispersity': changed_dispersity,
     }
+
+
+def _format_para_values_for_output(para_view: dict) -> dict:
+    """将输出中的 value 字段格式化为科学计数法（两位小数）。"""
+    if not isinstance(para_view, dict):
+        return para_view
+
+    formatted = {'para': {}, 'dispersity': para_view.get('dispersity', {})}
+    para_block = para_view.get('para', {})
+
+    for key, cfg in para_block.items():
+        if not isinstance(cfg, dict):
+            formatted['para'][key] = cfg
+            continue
+
+        cfg_copy = dict(cfg)
+        value = cfg_copy.get('value')
+        error = cfg_copy.get('error')
+        if isinstance(value, numbers.Real) and not isinstance(value, bool):
+            cfg_copy['value'] = f"{float(value):.2e}"
+        if isinstance(error, numbers.Real) and not isinstance(error, bool):
+            cfg_copy['error'] = f"{float(error):.2e}"
+        formatted['para'][key] = cfg_copy
+
+    return formatted
+
+
+def _get_default_para_if_supported(model: str) -> tuple[dict | None, str | None]:
+    """校验模型是否受 sasmodels 支持，并返回默认参数或错误信息。"""
+    try:
+        return build_default_para(model), None
+    except Exception as exc:
+        return None, f'不支持的 model: {model}。请传入 SasView/sasmodels 支持的模型名称。原始错误: {exc}'
 
 def export_fit_results(q, Ierr, I_data, I_fit_data, pars, residual, title, output_dir, fit_idx, shape, data_stem="data"):
     result_data = {}
@@ -201,14 +235,15 @@ def refine_data(data_path: str = None,
                 para['dispersity'][d_key] = d_val
                 
         # print(f"拟合参数：{para}")
-        # 检查输入参数格式与形状参数配置是否匹配
-        config_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.json')
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        if not check_para(shape, para, config):
-            print("输入参数格式与形状参数配置不匹配")
+        # 检查输入参数格式与形状参数配置是否匹配，现在para由json记录，不会出错，所以注释掉检测
+        # config_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model.json')
+        # with open(config_path, 'r') as f:
+        #     config = json.load(f)
+        # if not check_para(shape, para, config):
+        #     print("输入参数格式与形状参数配置不匹配")
         
         # 开始拟合
+        print(f"开始拟合，参数配置：{para}")
         svf = SasViewFit(data_path, shape, para)
         q, Ierr, Iq_data, Iq_model, pars, fit_result = svf.fit()
 
@@ -223,8 +258,7 @@ def refine_data(data_path: str = None,
                             para["para"][name]["error"] = fit_result['dx'][idx]
             if name in para["dispersity"]:
                 para["dispersity"][name] = param.value
-        print(f"拟合参数：{para}")
-        print(f"default_para: {default_para}")
+        print(f"拟合参数：{_format_para_values_for_output(para)}")
         # print(f"拟合结果：{_build_changed_para_view(para, default_para or {})}")
         residual = (Iq_data - Iq_model) / Ierr
         data_length = len(q)
@@ -238,7 +272,8 @@ def refine_data(data_path: str = None,
         # 输出要重新组织
         result_data['data_path'] = data_path
         result_data['shape'] = shape
-        result_data['para'] = para if return_full_para else _build_changed_para_view(para, default_para or {})
+        para_view = para if return_full_para else _build_changed_para_view(para, default_para or {})
+        result_data['para'] = _format_para_values_for_output(para_view)
         result_data['chisquare'] = chisquare
         result_data['fit_idx'] = fit_idx
         return result_data
@@ -271,13 +306,19 @@ def sasview_fit(
         data_path: 小角散射数据文件的绝对路径。
         json_path: 包含拟合参数结果的文件绝对路径。初始化时和每次model改变时应该没有拟合结果 ，在进行多轮调用时，由前一次工具输出决定。
         model: 几何模型名称（如 单一模型: guinier_porod、sphere等；复合模型: sphere+cylinder等）。
-        fit_params: 绝定本轮拟合的参数开放情况。通过fit参数/bool型，决定是否开放拟合，或修改value参数，变化初始值。未出现在 fit_params 中的参数将取消拟合，你认为不需要拟合的参数可以不出现在fit_params中。
+        fit_params: 决定本轮拟合的参数开放情况。通过fit参数/bool型，决定是否开放拟合，或修改value参数，变化初始值。未出现在 fit_params 中的参数将取消拟合，你认为不需要拟合的参数可以不出现在fit_params中。
         user_id: 用户 ID，用于输出目录组织。
         mission_name: mission 名称（必填，建议全程保持不变）；用于标识同一个大任务。
         task_id: 任务轮次索引/标识。初始化和每次model改变时，建议设置为0；
                  使用相同model继续拟合时，按上次返回的 task_id+1。
 
-    fit_params 的介绍：fit_params中的键和value，与model是一一对应的，同一个model，fit_params中可开放的参数是不变的，通过初始化后得到。
+    Args中 fit_params 的介绍：fit_params中的键和value，与model是对应的，同一个model，fit_params中可开放的参数是不变的，通过初始化后得到。
+        格式如下：
+        fit_params={"para":{key: {"fit": bool, "value": number},...}, "dispersity":{key: value,...}}，
+        其中para块中的key范围由初始化参数确定，value是一个字典，可以包含fit/bool型和value/数值型两个字段；dispersity块中的key是多分散函数的控制参数（如*_pd_n, *_pd_type），value是对应的参数内容。
+        *_pd_type参数含义：Distribution function type for polydispersity。内容范围：uniform、rectangular、gaussian、boltzmann、lognormal、schulz、array。
+        *_pd_n参数含义：Number of points for polydispersity distribution。
+        *_pd_nsigma参数含义：Number of standard deviations to include for each type of polydispersity。
 
     Returns:
         该函数作为 ProcessPollingMcpToolBase 的业务函数，返回：
@@ -330,7 +371,13 @@ def sasview_fit(
             }
 
         # 始终构造一次默认参数，用于非初始化场景下输出差异
-        default_para = build_default_para(model)
+        default_para, model_error = _get_default_para_if_supported(model)
+        if model_error:
+            return {
+                'description': '由工具sasview_fit执行拟合后返回的结果。',
+                'status': 'failed',
+                'content': model_error,
+            }
 
         # 若未提供 json_path，则基于模型生成默认参数
         is_init_run = not json_path or not os.path.exists(json_path)
@@ -354,7 +401,7 @@ def sasview_fit(
         print(f"sasview_fit result: {result}")
         if is_init_run:
             return {
-                'description': f'sasview_fit工具已成功生成初始参数文件: {json_path}。',
+                'description': f'sasview_fit工具已成功生成初始化参数文件: {json_path}。',
                 'status': 'success',
                 'content': {
                     'data_path': result.get('data_path'),
@@ -394,7 +441,7 @@ def sasview_fit(
         }
 
 refine_tools_runner = ProcessPollingMcpToolBase(
-    timeout_sec=1200.0,
+    timeout_sec=1800.0,
     poll_interval=1.0,
     target_func=sasview_fit,
     # param_mapping auto-derived from sasview_fit's signature
@@ -403,7 +450,7 @@ refine_tools_runner = ProcessPollingMcpToolBase(
 mcp=FastMCP(
     name="SasViewTools",
     instructions=(
-        "A tool for refining small-angle neutron scattering (SANS) data using SasView fit. "
+        "Tools for analysis small-angle neutron scattering (SANS) data using SasView core function. "
         "Important calling rule: mission_name is a high-level mission identifier and can stay the same "
         "across multiple tool calls; task_id identifies a sub-task/step inside that mission. "
         "Use the same mission_name for the same overall user goal, and advance task_id per step."
@@ -426,13 +473,13 @@ if __name__ == '__main__':
                                   'IQ_39191_SubEB_PC_0.dat')
         _OUTPUT_DIR = os.path.join(tempfile.gettempdir(), 'sasview_test_output')
 
-        # ---------- 测试1：单模型（sphere），与现有逻辑保持一致 ----------
+        # ---------- 测试1：单模型（hollow_cylinder），与现有逻辑保持一致 ----------
         print("\n========== 测试1: 单模型 'hollow_cylinder' ==========")
         res1 = sasview_fit(
             data_path='/home/dur/rongzai-agent/agentWorkSpace/zhongjiajun@ihep.ac.cn/downloads/my data 20251123.dat',
             json_path='/home/dur/rongzai-agent/tools/tmp/zhongjiajun@ihep.ac.cn/sans_fit_hollowcyl_20251123/my data 20251123_hollow_cylinder_fit_3.json',
             model='hollow_cylinder',
-            fit_params={'scale': {'fit': True}, 'background': {'fit': True}, 'radius': {'fit': True, 'value': 120.0}, 'thickness': {'fit': True, 'value': 10.0}, 'length': {'fit': True, 'value': 2000.0}, 'radius_pd': {'fit': True, 'value': 0.1}, 'thickness_pd': {'fit': True, 'value': 0.1}, 'length_pd': {'fit': True, 'value': 0.05}},
+            fit_params={'scale': {'fit': True}, 'background': {'fit': True}, 'radius': {'fit': True, 'value': 120.0}, 'thickness': {'fit': True, 'value': 10.0}, 'length': {'fit': True, 'value': 2000.0}},
             user_id='zhongjiajun@ihep.ac.cn',
             mission_name='sans_fit_hollowcyl_20251123',
             task_id=4

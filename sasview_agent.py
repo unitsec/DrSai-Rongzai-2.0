@@ -134,7 +134,7 @@ if __name__ == "__main__":
     asyncio.run(
         run_worker(
             # 智能体注册信息
-            agent_name="RongZai_Agent",
+            agent_name="SASView_Agent",
             author="zhongjiajun@ihep.ac.cn",
             permission='groups: rongzai; users: durong@ihep.ac.cn,wanghao96@ihep.ac.cn,xiongdb@ihep.ac.cn,zhongjiajun@ihep.ac.cn,gaodx@ihep.ac.cn,xujuping@ihep.ac.cn,chenhuaican@ihep.ac.cn,xiayg@ihep.ac.cn,chengzy@ihep.ac.cn,liut@ihep.ac.cn,yinwen@ihep.ac.cn,jiwh@ihep.ac.cn,tanzh@ihep.ac.cn,baolx@ihep.ac.cn,xiewu@ihep.ac.cn,miaoping@ihep.ac.cn; owner: wanghao96@ihep.ac.cn',
             description = "你的小角散射拟合助手-by中国散裂中子源数据分析组",

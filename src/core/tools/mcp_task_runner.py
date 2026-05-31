@@ -37,7 +37,7 @@ class ProcessPollingMcpToolBase:
 
     def __init__(
         self,
-        timeout_sec: float = 1200.0,
+        timeout_sec: float = 60.0,
         poll_interval: float = 1.0,
         target_func: Any = None,
         param_mapping: Dict[str, str] = None,
