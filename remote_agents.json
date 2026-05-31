@@ -46,7 +46,7 @@
         "examples":["用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif",
                     "用Z-Rietveld帮我把BL09的RUN0000410的groupMA的衍射谱精修好，cif文件是zeolite.cif",
                     "用我上传的附件文件精修。如果不确定用哪个精修引擎，找我确认。",
-                    "这是个电池材料的数据，你先帮我精修好这个数据，然后再做一下LiNi混排然后再精修，最后给出数据分析的结论。",
+                    "这是个电池材料的数据，你先帮我精修好这个数据，然后再做一下LiNi混排（Li与Ni互相有一小部分占据对方位置）然后再精修，最后给出数据分析的结论。",
                     "帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"],
         "author": "wanghao96@ihep.ac.cn",
         "logo": "https://aiapi.ihep.ac.cn/apiv2/files/file-61518e9f7e8f45049739d7ae58abe35a/preview",

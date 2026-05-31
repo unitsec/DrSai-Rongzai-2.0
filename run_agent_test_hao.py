@@ -69,9 +69,15 @@ def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
 _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
-    "quick refinement": "openai/gpt-4.1",
-    "deep refinement": "openai/gpt-5",
-    "default": "openai/gpt-5",
+    "quick refinement":"openai/gpt-4.1",
+    "deep refinement":"openai/gpt-5",
+    "gpt5.4": "openai/gpt-5.4",
+    "qwen3 Max": "aliyun/qwen3-max",
+    "qwen3 Coder+": "aliyun/qwen3-coder-plus",
+    "minimax": "minimax/minimax-m2.7",
+    "磐石": "scienceone/s1-base-ultra",
+    "intern-s1": "intern-ai/intern-s1",
+    "intern-s1-pro": "intern-ai/intern-s1-pro"
 }
 
 async def create_agent(
@@ -200,7 +206,7 @@ if __name__ == "__main__":
                       "这是个电池材料的数据，你先帮我精修好这个数据，然后再做一下LiNi混排然后再精修，最后给出数据分析的结论。",
                       "帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"],
             agent_config = llm_mode_config,
-            defult_config_name = "default",
+            defult_config_name = "minimax",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置

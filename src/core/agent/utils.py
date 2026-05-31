@@ -145,31 +145,33 @@ def get_operator_funcs_rongzai(source_name: str) -> list[callable]:
             files_list (list[str]): The local paths of the files to serve.
             descriptions_list (list[str]): The corresponding descriptions of the files to serve.
         """
-        events = []
-        for file_path, description in zip(files_list, descriptions_list):
-            file_base64 = get_file_base64(file_path)
-            if not file_base64:
-                continue
+        try:
+            events = []
+            for file_path, description in zip(files_list, descriptions_list):
+                file_base64 = get_file_base64(file_path)
+                if not file_base64:
+                    continue
+                    
+                base64_file = FileInfo(
+                    name = os.path.basename(file_path),
+                    base64_content = file_base64,
+                    description=description,
+                    download_method="base64"
+                    )
                 
-            base64_file = FileInfo(
-                name = os.path.basename(file_path),
-                base64_content = file_base64,
-                description=description,
-                download_method="base64"
-                )
-            
-            files=FilesContent(
-                files=[base64_file],
-                title="files for download",
-                description="these files are served for user downloading.",
-                )
+                files=FilesContent(
+                    files=[base64_file],
+                    title="files for download",
+                    description="these files are served for user downloading.",
+                    )
 
-            event = FilesEvent(
-                source=source_name,
-                content=files.model_dump(),
-                )
-            events.append(event.model_dump(mode="json"))
+                event = FilesEvent(
+                    source=source_name,
+                    content=files.model_dump(),
+                    )
+                events.append(event.model_dump(mode="json"))
 
-        return json.dumps({"type": "files_events", "events": events}, ensure_ascii=False)
-
+            return json.dumps({"type": "files_events", "events": events}, ensure_ascii=False)
+        except Exception as e:
+            return f"Error in serve_files_for_user: {e}"
     return [serve_files_for_user]
