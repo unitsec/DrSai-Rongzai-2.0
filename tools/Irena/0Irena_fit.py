@@ -665,6 +665,83 @@ def _build_background_wave(
     return low_q_scaling_factor * np.power(q, -abs(low_q_power_law_slope)) + background
 
 
+def _derive_d_range_from_q(q_fit: np.ndarray) -> tuple[float, float]:
+    if q_fit.size == 0:
+        raise ValueError("无法根据空的 q 数组推导 d 范围。")
+
+    q_min = float(np.min(q_fit))
+    q_max = float(np.max(q_fit))
+    if q_min <= 0 or q_max <= 0:
+        raise ValueError("q 必须为正值才能推导 d=2pi/q。")
+
+    d_min = 2.0 * np.pi / q_max
+    d_max = 2.0 * np.pi / q_min
+    if d_min > d_max:
+        d_min, d_max = d_max, d_min
+    return d_min, d_max
+
+
+def _compute_plot_fit_interval(
+    q_fit: np.ndarray,
+    fit_bp_qmin: float | None,
+    fit_bp_qmax: float | None,
+    fit_bg_qmin: float | None,
+    fit_bg_qmax: float | None,
+) -> tuple[float, float] | None:
+    if q_fit.size == 0:
+        return None
+
+    q_lo = float(np.min(q_fit))
+    q_hi = float(np.max(q_fit))
+    left = q_lo
+    right = q_hi
+
+    bp_hi = None
+    if fit_bp_qmin is not None and fit_bp_qmax is not None:
+        _, bp_hi = sorted((float(fit_bp_qmin), float(fit_bp_qmax)))
+        # 拟合区间左端略高于幂律背景区域上限
+        left = max(left, bp_hi * 1.5)
+
+    bg_lo = None
+    if fit_bg_qmin is not None and fit_bg_qmax is not None:
+        bg_lo, _ = sorted((float(fit_bg_qmin), float(fit_bg_qmax)))
+        # 拟合区间右端略低于平坦背景区域下限
+        right = min(right, bg_lo * 0.5)
+
+    if left < right:
+        return left, right
+
+    # 若区间重叠导致无效，回退到无“略微偏移”的约束版本
+    left_fallback = q_lo
+    right_fallback = q_hi
+    if bp_hi is not None:
+        left_fallback = max(left_fallback, bp_hi)
+    if bg_lo is not None:
+        right_fallback = min(right_fallback, bg_lo)
+
+    if left_fallback < right_fallback:
+        return left_fallback, right_fallback
+    return q_lo, q_hi
+
+
+def _apply_q_range(
+    q: np.ndarray,
+    intensity: np.ndarray,
+    errors: np.ndarray,
+    fit_range: tuple[float, float] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if fit_range is None or q.size == 0:
+        return q, intensity, errors
+
+    q_min, q_max = fit_range
+    lo = float(min(q_min, q_max))
+    hi = float(max(q_min, q_max))
+    mask = (q >= lo) & (q <= hi)
+    if not np.any(mask):
+        raise ValueError(f"拟合区间 {lo:.6g} ~ {hi:.6g} 内没有可用数据点。")
+    return q[mask], intensity[mask], errors[mask]
+
+
 def _prepare_intensity_for_size_fit(
     q: np.ndarray,
     intensity: np.ndarray,
@@ -780,8 +857,8 @@ def _solve_size_distribution_core(
 
 def run_size_distribution_with_uncertainty(
     data_file: str,
-    d_min: float = 10.0,
-    d_max: float = 1000.0,
+    d_min: float | None = None,
+    d_max: float | None = None,
     n_points: int = 100,
     log_scale: bool = True,
     scattering_contrast: float = 1.0,
@@ -840,6 +917,25 @@ def run_size_distribution_with_uncertainty(
         )
     mask = intensity > 0
     q, intensity, errors = q[mask], intensity[mask], errors[mask]
+
+    fit_bp_range = None
+    if (low_q_scaling_factor is not None or low_q_power_law_slope is not None) and fit_bp_qmin is not None and fit_bp_qmax is not None:
+        fit_bp_range = (float(fit_bp_qmin), float(fit_bp_qmax))
+    fit_bg_range = None
+    if background is not None and fit_bg_qmin is not None and fit_bg_qmax is not None:
+        fit_bg_range = (float(fit_bg_qmin), float(fit_bg_qmax))
+    fit_range = _compute_plot_fit_interval(
+        q,
+        fit_bp_qmin if (fit_low_q_b or fit_low_q_bp) else None,
+        fit_bp_qmax if (fit_low_q_b or fit_low_q_bp) else None,
+        fit_bg_qmin if fit_flat_background else None,
+        fit_bg_qmax if fit_flat_background else None,
+    )
+
+    q, intensity, errors = _apply_q_range(q, intensity, errors, fit_range)
+
+    if d_min is None or d_max is None:
+        d_min, d_max = _derive_d_range_from_q(q)
 
     # 基准拟合（用于回退与比较）
     d_dist, base_x_dist, base_fit_int, base_chi2 = _solve_size_distribution_core(
@@ -939,13 +1035,6 @@ def run_size_distribution_with_uncertainty(
             background_fit_meta["low_q_power_law_slope"],
             background_fit_meta["background"],
         )
-        fit_bp_range = None
-        if (fit_low_q_b or fit_low_q_bp) and fit_bp_qmin is not None and fit_bp_qmax is not None:
-            fit_bp_range = (float(fit_bp_qmin), float(fit_bp_qmax))
-        fit_bg_range = None
-        if fit_flat_background and fit_bg_qmin is not None and fit_bg_qmax is not None:
-            fit_bg_range = (float(fit_bg_qmin), float(fit_bg_qmax))
-        fit_range = (float(np.min(q)), float(np.max(q))) if q.size > 0 else None
 
         plot_results(
             q_raw,
@@ -974,8 +1063,8 @@ def run_size_distribution_with_uncertainty(
 
 def run_size_distribution(
     data_file: str,
-    d_min: float = 10.0,
-    d_max: float = 1000.0,
+    d_min: float | None = None,
+    d_max: float | None = None,
     n_points: int = 100,
     log_scale: bool = True,
     scattering_contrast: float = 1.0,
@@ -1056,6 +1145,24 @@ def run_size_distribution(
     mask = intensity > 0
     q, intensity, errors = q[mask], intensity[mask], errors[mask]
 
+    fit_range = _compute_plot_fit_interval(
+        q,
+        fit_bp_qmin if (fit_low_q_b or fit_low_q_bp) else None,
+        fit_bp_qmax if (fit_low_q_b or fit_low_q_bp) else None,
+        fit_bg_qmin if fit_flat_background else None,
+        fit_bg_qmax if fit_flat_background else None,
+    )
+    fit_bp_range = None
+    if (fit_low_q_b or fit_low_q_bp) and fit_bp_qmin is not None and fit_bp_qmax is not None:
+        fit_bp_range = (float(fit_bp_qmin), float(fit_bp_qmax))
+    fit_bg_range = None
+    if fit_flat_background and fit_bg_qmin is not None and fit_bg_qmax is not None:
+        fit_bg_range = (float(fit_bg_qmin), float(fit_bg_qmax))
+    q, intensity, errors = _apply_q_range(q, intensity, errors, fit_range)
+
+    if d_min is None or d_max is None:
+        d_min, d_max = _derive_d_range_from_q(q)
+
     d_dist, x_dist, fit_int, chi2 = _solve_size_distribution_core(
         q=q,
         intensity=intensity,
@@ -1101,13 +1208,6 @@ def run_size_distribution(
             background_fit_meta["low_q_power_law_slope"],
             background_fit_meta["background"],
         )
-        fit_bp_range = None
-        if (fit_low_q_b or fit_low_q_bp) and fit_bp_qmin is not None and fit_bp_qmax is not None:
-            fit_bp_range = (float(fit_bp_qmin), float(fit_bp_qmax))
-        fit_bg_range = None
-        if fit_flat_background and fit_bg_qmin is not None and fit_bg_qmax is not None:
-            fit_bg_range = (float(fit_bg_qmin), float(fit_bg_qmax))
-        fit_range = (float(np.min(q)), float(np.max(q))) if q.size > 0 else None
 
         plot_results(
             q_raw,
@@ -1178,8 +1278,6 @@ def parse_args():
 
 def _default_irena_fit_params() -> dict:
     return {
-        "d_min": 10.0,
-        "d_max": 1000.0,
         "n_points": 100,
         "log_scale": True,
         "scattering_contrast": 1.0,
@@ -1235,8 +1333,6 @@ def irena_size_distribution(
         json_path: 包含拟合参数结果的文件绝对路径。初始化时和每次model改变时应该没有拟合结果 ，在进行多轮调用时，由前一次工具输出决定。
         fit_params: 决定本轮拟合的参数。修改value参数，变化初始值。未出现在 fit_params 中的参数将使用默认值。具体参数说明如下：
             {
-            d_min: float = 10.0,                 # 粒子直径搜索范围的最小值，单位为 Angstrom。
-            d_max: float = 1000.0,               # 粒子直径搜索范围的最大值，单位为 Angstrom。
             n_points: int = 100,                 # 半径分布点数，即拟合结果中尺寸分布的离散点数量。
             scattering_contrast: float = 1.0,    # 散射对比度 Δρ²，单位为 cm⁻⁴。默认值 1.0，内部计算时会乘以 1e20 进行缩放。
             background: float = 0.0,             # 平坦背景值，从 I(Q) 中扣除，单位与 I(Q) 相同（通常为 1/cm）。
@@ -1354,8 +1450,6 @@ def irena_size_distribution(
 
         common_kwargs = dict(
             data_file=data_path,
-            d_min=float(params.get("d_min", 10.0)),
-            d_max=float(params.get("d_max", 1000.0)),
             n_points=int(params.get("n_points", 100)),
             log_scale=bool(params.get("log_scale", True)),
             scattering_contrast=float(params.get("scattering_contrast", 1.0)),

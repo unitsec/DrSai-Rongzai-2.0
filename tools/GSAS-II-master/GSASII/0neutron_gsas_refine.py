@@ -2,6 +2,7 @@ import os
 import logging
 import sys
 import io
+import json
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
@@ -1779,14 +1780,536 @@ def neutron_refinement(
         raise
 
 
-refine_tools_runner = ProcessPollingMcpToolBase(
-    timeout_sec=1200.0,
-    poll_interval=1.0,
-    target_func=neutron_refinement,
-    # param_mapping auto-derived from neutron_refinement's signature
-)
+def _normalize_add_atoms_config(add_atoms_config):
+    """Normalize add-atoms config into a list of dict records.
 
-mcp=FastMCP(
+    Supported input formats:
+    1) list[dict]
+    2) dict[str|int, list[dict]] where key is phase ref
+    3) JSON string of 1) or 2)
+    """
+    cfg = add_atoms_config
+    if isinstance(cfg, str):
+        cfg = json.loads(cfg)
+
+    if isinstance(cfg, list):
+        return cfg
+
+    if isinstance(cfg, dict):
+        normalized = []
+        for phase_ref, atoms in cfg.items():
+            if not isinstance(atoms, list):
+                raise ValueError(f"phase={phase_ref} 的配置必须是原子列表")
+            for atom in atoms:
+                if not isinstance(atom, dict):
+                    raise ValueError(f"phase={phase_ref} 下的原子项必须是字典")
+                row = dict(atom)
+                row.setdefault('phase', phase_ref)
+                normalized.append(row)
+        return normalized
+
+    raise ValueError("add_atoms_config 必须是 list/dict 或其 JSON 字符串")
+
+
+def _resolve_phase_obj(phases, phase_ref):
+    """Resolve phase object by index/name/id/ranId. Defaults to first phase."""
+    if not phases:
+        raise ValueError("GPX 项目中没有可用的相")
+
+    if phase_ref is None:
+        return phases[0], 0
+
+    if isinstance(phase_ref, int):
+        if phase_ref < 0 or phase_ref >= len(phases):
+            raise ValueError(f"phase 索引越界: {phase_ref}")
+        return phases[phase_ref], phase_ref
+
+    # numeric string -> index
+    if isinstance(phase_ref, str):
+        s = phase_ref.strip()
+        if s.isdigit():
+            idx = int(s)
+            if idx < 0 or idx >= len(phases):
+                raise ValueError(f"phase 索引越界: {phase_ref}")
+            return phases[idx], idx
+
+        # name / id / ranId matching
+        for i, p in enumerate(phases):
+            if getattr(p, 'name', None) == s:
+                return p, i
+            if str(getattr(p, 'id', '')) == s:
+                return p, i
+            if str(getattr(p, 'ranId', '')) == s:
+                return p, i
+
+    raise ValueError(f"无法定位 phase: {phase_ref}")
+
+
+def _extract_atom_xyz(atom_cfg):
+    if all(k in atom_cfg for k in ('x', 'y', 'z')):
+        return atom_cfg['x'], atom_cfg['y'], atom_cfg['z']
+    if 'xyz' in atom_cfg and isinstance(atom_cfg['xyz'], (list, tuple)) and len(atom_cfg['xyz']) == 3:
+        return atom_cfg['xyz'][0], atom_cfg['xyz'][1], atom_cfg['xyz'][2]
+    raise ValueError("每个新增原子必须提供 x/y/z 或 xyz=[x,y,z]")
+
+
+def _unique_atom_label(phase_obj, requested_label):
+    base = str(requested_label)
+    if not phase_obj.atom(base):
+        return base
+    n = 1
+    while True:
+        candidate = f"{base}_{n}"
+        if not phase_obj.atom(candidate):
+            return candidate
+        n += 1
+
+
+def add_atoms_to_gpx(
+    gpx_file: str,
+    add_atoms_config: Union[List[Dict], Dict, str],
+    output_gpx_file: str = None,
+    mission_name: str = None,
+    user_id: str = None,
+    task_id: Optional[str] = None,
+) -> Dict:
+    """
+    在不修改原始 gpx 文件的前提下，创建一个新 gpx 并执行“新增原子”操作。
+
+    Args:
+        gpx_file: 原始 .gpx 文件路径（必填）
+        add_atoms_config: 新增原子配置，支持三种格式：
+            1) list[dict]
+               例：
+               [
+                 {"phase": "Phase_1", "element": "O", "label": "O_new", "x": 0.1, "y": 0.2, "z": 0.3, "occ": 1.0, "uiso": 0.01},
+                 {"phase": 0, "element": "H", "label": "H1", "xyz": [0.2, 0.3, 0.4]}
+               ]
+            2) dict[phase_ref, list[dict]]
+               例：
+               {
+                 "Phase_1": [{"element":"O","label":"O_new","x":0.1,"y":0.2,"z":0.3}],
+                 0: [{"element":"H","label":"H1","xyz":[0.2,0.3,0.4]}]
+               }
+            3) 以上结构的 JSON 字符串
+        output_gpx_file: 输出 .gpx 路径；不传则自动在原文件旁生成 *_addatoms_<task_id>.gpx
+        mission_name: 任务命名空间，用于轮询隔离
+        user_id: 用户 ID（用于日志与兼容现有参数风格）
+        task_id: 子任务 ID，由框架注入或调用方传入
+
+    Returns:
+        {
+          "status": "success"|"failed",
+          "content": {
+             "source_gpx_path": "...",
+             "new_gpx_path": "...",
+             "added_count": 2,
+             "added_atoms": [...]
+          }
+        }
+    """
+    if not gpx_file:
+        raise ValueError("gpx_file 不能为空")
+
+    src = Path(gpx_file)
+    if not src.exists():
+        raise ValueError(f"gpx 文件不存在: {gpx_file}")
+    if src.suffix.lower() != '.gpx':
+        raise ValueError(f"输入文件必须是 .gpx: {gpx_file}")
+
+    if not task_id:
+        task_id = str(uuid.uuid4())
+
+    # 生成输出路径并复制，确保原文件不被修改
+    if output_gpx_file:
+        dst = Path(output_gpx_file)
+    else:
+        dst = src.with_name(f"{src.stem}_addatoms_{task_id}.gpx")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+
+    # 在副本上执行新增原子
+    gpx = G2sc.G2Project(gpxfile=str(dst))
+    phases = gpx.phases()
+    if not phases:
+        raise ValueError("GPX 中未找到任何 phase")
+
+    items = _normalize_add_atoms_config(add_atoms_config)
+    if not items:
+        raise ValueError("add_atoms_config 为空，没有可新增的原子")
+
+    added_atoms = []
+    for i, atom_cfg in enumerate(items):
+        if not isinstance(atom_cfg, dict):
+            raise ValueError(f"第 {i} 个新增原子配置不是字典")
+
+        phase_ref = atom_cfg.get('phase', atom_cfg.get('phase_name', atom_cfg.get('phase_index', None)))
+        phase_obj, phase_index = _resolve_phase_obj(phases, phase_ref)
+
+        element = atom_cfg.get('element', atom_cfg.get('type', None))
+        if not element:
+            raise ValueError(f"第 {i} 个新增原子缺少 element/type")
+
+        label = atom_cfg.get('label', atom_cfg.get('lbl', atom_cfg.get('name', None)))
+        if not label:
+            raise ValueError(f"第 {i} 个新增原子缺少 label/lbl/name")
+
+        x, y, z = _extract_atom_xyz(atom_cfg)
+        occ = atom_cfg.get('occ', atom_cfg.get('occupancy', 1.0))
+        uiso = atom_cfg.get('uiso', atom_cfg.get('u_iso', 0.01))
+
+        final_label = _unique_atom_label(phase_obj, label)
+        phase_obj.add_atom(x=x, y=y, z=z, element=element, lbl=final_label, occ=occ, uiso=uiso)
+
+        added_atoms.append({
+            'phase_name': phase_obj.name,
+            'phase_index': phase_index,
+            'element': str(element),
+            'label': final_label,
+            'x': float(x),
+            'y': float(y),
+            'z': float(z),
+            'occ': float(occ),
+            'uiso': float(uiso),
+            'renamed': final_label != str(label),
+            'requested_label': str(label),
+        })
+
+    gpx.save(str(dst))
+
+    return {
+        'status': 'success',
+        'content': {
+            'source_gpx_path': str(src),
+            'new_gpx_path': str(dst),
+            'added_count': len(added_atoms),
+            'added_atoms': added_atoms,
+        }
+    }
+
+def _normalize_constraints_config(constraints_config):
+    """Normalize constraints config into a list of dict records.
+
+    Supported input formats:
+    1) list[dict]
+    2) dict with key "constraints": list[dict]
+    3) JSON string of 1) or 2)
+    """
+    cfg = constraints_config
+    if isinstance(cfg, str):
+        cfg = json.loads(cfg)
+
+    if isinstance(cfg, list):
+        return cfg
+
+    if isinstance(cfg, dict):
+        if 'constraints' in cfg and isinstance(cfg['constraints'], list):
+            return cfg['constraints']
+        # 允许单条约束字典
+        return [cfg]
+
+    raise ValueError("constraints_config 必须是 list/dict 或其 JSON 字符串")
+
+
+def _map_param_to_gsas_var(param_name):
+    p = str(param_name).strip().lower()
+    mapping = {
+        'occupancy': 'Afrac',
+        'occ': 'Afrac',
+        'fraction': 'Afrac',
+        'uiso': 'AUiso',
+        'u_iso': 'AUiso',
+        'u': 'AUiso',
+        # 坐标约束通常作用在 dA* 变量
+        'x': 'dAx',
+        'y': 'dAy',
+        'z': 'dAz',
+    }
+    if p in mapping:
+        return mapping[p]
+    # 允许直接传 GSAS 变量名
+    return str(param_name)
+
+
+def _build_var_from_spec(gpx, phases, var_spec):
+    """Build a GSAS variable reference accepted by add_*Constr APIs.
+
+    var_spec supports:
+    1) "p:h:name:a" 字符串（原样传递）
+    2) {"var": "p:h:name:a"}
+    3) {"phase": "Phase_1", "atom": "O1", "parameter": "occupancy"}
+    """
+    if isinstance(var_spec, str):
+        return var_spec
+
+    if not isinstance(var_spec, dict):
+        raise ValueError(f"变量定义必须是字符串或字典，收到: {type(var_spec)}")
+
+    if 'var' in var_spec:
+        return str(var_spec['var'])
+
+    phase_ref = var_spec.get('phase', var_spec.get('phase_name', var_spec.get('phase_index', None)))
+    atom = var_spec.get('atom', var_spec.get('atom_label', None))
+    param = var_spec.get('parameter', var_spec.get('param', None))
+    if atom is None or param is None:
+        raise ValueError("变量字典必须提供 var，或提供 phase + atom + parameter")
+
+    phase_obj, _ = _resolve_phase_obj(phases, phase_ref)
+    gsas_var = _map_param_to_gsas_var(param)
+    return gpx.make_var_obj(phase=phase_obj, varname=gsas_var, atomId=atom, reloadIdx=False)
+
+
+def add_constraints_to_gpx(
+    gpx_file: str,
+    constraints_config: Union[List[Dict], Dict, str],
+    output_gpx_file: str = None,
+    mission_name: str = None,
+    user_id: str = None,
+    task_id: Optional[str] = None,
+) -> Dict:
+    """
+        在不修改原始 gpx 的前提下，复制出新 gpx 并写入约束。
+
+        constraints_config 输入格式（3选1）
+        1) list[dict]（推荐）
+        2) {"constraints": list[dict]}
+        3) 上述结构的 JSON 字符串
+
+        phase 字段可选，支持
+        - phase 名称
+        - phase 索引（0 开始）
+        - phase id
+        - phase ranId
+        不传 phase 时默认第一个相。
+
+        支持的约束类型与写法
+
+        A) occupancy_sum（占有率和约束）
+        - 含义: sum(coeff_i * occ_i) = total
+        - 必填: type, atoms(>=2)
+        - 可选: phase, total(默认1.0)
+        - atoms 元素可为
+            - "O1"（coeff 默认1.0）
+            - {"atom":"O1", "coeff":0.5}
+        - 示例:
+            {"type":"occupancy_sum","phase":"Phase_1","atoms":["Li1","Na1"],"total":1.0}
+
+        B) occupancy_equiv（占有率等价约束）
+        - 含义: 多个占有率变量等价（可带倍率）
+        - 必填: type, atoms(>=2)
+        - 可选: phase, multipliers 或 mults
+        - 示例:
+            {"type":"occupancy_equiv","phase":0,"atoms":["O1","O2"],"multipliers":[1,1]}
+
+        C) eqn（通用线性方程约束）
+        - 含义: sum(mult_i * var_i) = total
+        - 必填: type, vars(>=2), total
+        - 可选: multipliers 或 mults
+        - 示例:
+            {"type":"eqn","vars":["0::Afrac:1","0::Afrac:2"],"multipliers":[1,1],"total":1.0}
+
+        D) equiv（通用等价约束）
+        - 含义: 多变量等价
+        - 必填: type, vars(>=2)
+        - 可选: multipliers 或 mults
+        - 示例:
+            {"type":"equiv","vars":["0::AUiso:1","0::AUiso:2"]}
+
+        E) hold（固定变量）
+        - 含义: 对变量加 hold
+        - 必填: type, vars(>=1)
+        - 示例:
+            {"type":"hold","vars":["0::Afrac:1"]}
+
+        F) newvar（新变量约束）
+        - 含义: 由多个变量线性组合定义新变量
+        - 必填: type, vars(>=2)
+        - 可选: multipliers 或 mults, name, vary(默认false)
+        - 示例:
+            {"type":"newvar","vars":["0::Afrac:1","0::Afrac:2"],"multipliers":[0.5,0.5],"name":"avgOcc","vary":true}
+
+        vars 支持两种写法
+        1) 直接 GSAS 变量字符串，如 "0::Afrac:1"
+        2) 结构化变量
+             {"phase":"Phase_1","atom":"O1","parameter":"occupancy"}
+
+        parameter 到 GSAS 变量名映射
+        - occupancy / occ / fraction -> Afrac
+        - uiso / u_iso / u -> AUiso
+        - x / y / z -> dAx / dAy / dAz
+
+        返回
+        - status: success 或 failed
+        - content.source_gpx_path: 原始 gpx 路径
+        - content.new_gpx_path: 新 gpx 路径
+        - content.applied_count: 成功应用的约束数量
+        - content.applied_constraints: 约束摘要
+        - content.constraint_warnings: GSAS 约束检查警告
+    """
+    if not gpx_file:
+        raise ValueError("gpx_file 不能为空")
+
+    src = Path(gpx_file)
+    if not src.exists():
+        raise ValueError(f"gpx 文件不存在: {gpx_file}")
+    if src.suffix.lower() != '.gpx':
+        raise ValueError(f"输入文件必须是 .gpx: {gpx_file}")
+
+    if not task_id:
+        task_id = str(uuid.uuid4())
+
+    if output_gpx_file:
+        dst = Path(output_gpx_file)
+    else:
+        dst = src.with_name(f"{src.stem}_constraints_{task_id}.gpx")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+
+    gpx = G2sc.G2Project(gpxfile=str(dst))
+    phases = gpx.phases()
+    if not phases:
+        raise ValueError("GPX 中未找到任何 phase")
+
+    items = _normalize_constraints_config(constraints_config)
+    if not items:
+        raise ValueError("constraints_config 为空，没有可添加的约束")
+
+    applied = []
+    for i, c in enumerate(items):
+        if not isinstance(c, dict):
+            raise ValueError(f"第 {i} 个约束配置不是字典")
+
+        ctype = str(c.get('type', 'occupancy_sum')).strip().lower()
+
+        if ctype == 'occupancy_sum':
+            phase_ref = c.get('phase', c.get('phase_name', c.get('phase_index', None)))
+            phase_obj, _ = _resolve_phase_obj(phases, phase_ref)
+            atoms = c.get('atoms', [])
+            if not isinstance(atoms, list) or len(atoms) < 2:
+                raise ValueError(f"第 {i} 个 occupancy_sum 需要至少2个原子")
+
+            varlist = []
+            multlist = []
+            for a in atoms:
+                if isinstance(a, dict):
+                    atom_label = a.get('atom', a.get('label', a.get('atom_label', None)))
+                    coeff = float(a.get('coeff', a.get('multiplier', 1.0)))
+                else:
+                    atom_label = str(a)
+                    coeff = 1.0
+                if not atom_label:
+                    raise ValueError(f"第 {i} 个 occupancy_sum 存在空 atom label")
+                varlist.append(gpx.make_var_obj(phase=phase_obj, varname='Afrac', atomId=atom_label, reloadIdx=False))
+                multlist.append(coeff)
+
+            total = float(c.get('total', 1.0))
+            gpx.add_EqnConstr(total=total, varlist=varlist, multlist=multlist, reloadIdx=True)
+            applied.append({
+                'type': ctype,
+                'phase_name': phase_obj.name,
+                'total': total,
+                'atoms': atoms,
+                'multipliers': multlist,
+            })
+
+        elif ctype == 'occupancy_equiv':
+            phase_ref = c.get('phase', c.get('phase_name', c.get('phase_index', None)))
+            phase_obj, _ = _resolve_phase_obj(phases, phase_ref)
+            atoms = c.get('atoms', [])
+            if not isinstance(atoms, list) or len(atoms) < 2:
+                raise ValueError(f"第 {i} 个 occupancy_equiv 需要至少2个原子")
+
+            multlist = c.get('multipliers', c.get('mults', []))
+            varlist = [gpx.make_var_obj(phase=phase_obj, varname='Afrac', atomId=str(a), reloadIdx=False) for a in atoms]
+            gpx.add_EquivConstr(varlist=varlist, multlist=multlist, reloadIdx=True)
+            applied.append({
+                'type': ctype,
+                'phase_name': phase_obj.name,
+                'atoms': atoms,
+                'multipliers': list(multlist) if isinstance(multlist, (list, tuple)) else [],
+            })
+
+        elif ctype == 'eqn':
+            vars_cfg = c.get('vars', c.get('variables', []))
+            if not isinstance(vars_cfg, list) or len(vars_cfg) < 2:
+                raise ValueError(f"第 {i} 个 eqn 需要至少2个变量")
+            varlist = [_build_var_from_spec(gpx, phases, v) for v in vars_cfg]
+            multlist = c.get('multipliers', c.get('mults', []))
+            total = float(c.get('total', 0.0))
+            gpx.add_EqnConstr(total=total, varlist=varlist, multlist=multlist, reloadIdx=True)
+            applied.append({
+                'type': ctype,
+                'total': total,
+                'var_count': len(varlist),
+            })
+
+        elif ctype == 'equiv':
+            vars_cfg = c.get('vars', c.get('variables', []))
+            if not isinstance(vars_cfg, list) or len(vars_cfg) < 2:
+                raise ValueError(f"第 {i} 个 equiv 需要至少2个变量")
+            varlist = [_build_var_from_spec(gpx, phases, v) for v in vars_cfg]
+            multlist = c.get('multipliers', c.get('mults', []))
+            gpx.add_EquivConstr(varlist=varlist, multlist=multlist, reloadIdx=True)
+            applied.append({
+                'type': ctype,
+                'var_count': len(varlist),
+            })
+
+        elif ctype == 'hold':
+            vars_cfg = c.get('vars', c.get('variables', []))
+            if not isinstance(vars_cfg, list) or not vars_cfg:
+                raise ValueError(f"第 {i} 个 hold 需要至少1个变量")
+            varlist = [_build_var_from_spec(gpx, phases, v) for v in vars_cfg]
+            gpx.add_HoldConstr(varlist=varlist, reloadIdx=True)
+            applied.append({
+                'type': ctype,
+                'var_count': len(varlist),
+            })
+
+        elif ctype == 'newvar':
+            vars_cfg = c.get('vars', c.get('variables', []))
+            if not isinstance(vars_cfg, list) or len(vars_cfg) < 2:
+                raise ValueError(f"第 {i} 个 newvar 需要至少2个变量")
+            varlist = [_build_var_from_spec(gpx, phases, v) for v in vars_cfg]
+            multlist = c.get('multipliers', c.get('mults', []))
+            name = c.get('name', None)
+            vary = bool(c.get('vary', False))
+            gpx.add_NewVarConstr(varlist=varlist, multlist=multlist, name=name, vary=vary, reloadIdx=True)
+            applied.append({
+                'type': ctype,
+                'name': name,
+                'vary': vary,
+                'var_count': len(varlist),
+            })
+
+        else:
+            raise ValueError(f"第 {i} 个约束 type 不支持: {ctype}")
+
+    # 尝试校验约束并保存
+    warnmsg = ''
+    try:
+        import GSASIIstrIO as G2stIO
+        gpx.save(str(dst))
+        errmsg, warnmsg = G2stIO.ReadCheckConstraints(str(dst))
+        if errmsg:
+            raise ValueError(f"约束检查失败: {errmsg}")
+    except Exception:
+        # 已经抛出的异常继续向上
+        raise
+
+    return {
+        'status': 'success',
+        'content': {
+            'source_gpx_path': str(src),
+            'new_gpx_path': str(dst),
+            'applied_count': len(applied),
+            'applied_constraints': applied,
+            'constraint_warnings': warnmsg or '',
+        }
+    }
+
+if __name__ == '__main__':
+    mcp=FastMCP(
     name="RefineToolsGSASII",
     instructions=(
         "A tool for refining neutron diffraction data and generating refined structure files. "
@@ -1797,8 +2320,28 @@ mcp=FastMCP(
     port = 42501, # for transport = "sse" to start a server-sent events (SSE) server
     )
 
-refine_tools_runner.register_mcp_tool(mcp, name="RefineToolsGSASII")
+    refine_tools_runner = ProcessPollingMcpToolBase(
+    timeout_sec=1200.0,
+    poll_interval=1.0,
+    target_func=neutron_refinement,
+    # param_mapping auto-derived from neutron_refinement's signature
+    )
 
-if __name__ == '__main__':
+    add_atoms_runner = ProcessPollingMcpToolBase(
+        timeout_sec=300.0,
+        poll_interval=0.5,
+        target_func=add_atoms_to_gpx,
+    )
+
+    add_constraints_runner = ProcessPollingMcpToolBase(
+        timeout_sec=300.0,
+        poll_interval=0.5,
+        target_func=add_constraints_to_gpx,
+    )
+
+    refine_tools_runner.register_mcp_tool(mcp, name="CreateGpxOrRefine")
+    add_atoms_runner.register_mcp_tool(mcp, name="AddAtomsToGpx")
+    add_constraints_runner.register_mcp_tool(mcp, name="AddConstraintsToGpx")
+
     # mcp.run(transport="stdio")
     mcp.run(transport="sse")
