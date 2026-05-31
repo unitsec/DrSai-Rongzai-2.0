@@ -60,6 +60,30 @@ drsai ui # 打开前端
     -  如果找不到apikey， rm -rf ~/.drsai_ui/ 重新启动 drsai ui
 
 
+pm2 start "conda run -n pyZrietveld python tools/pyZRietveld/0zrietveld_refine.py" --name "zrietveld-refine"
+
+pm2 start "conda run -n gsas2_py311 python tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py" --name "gsas2-refine" 
+
+pm2 start "conda run -n sasmodels python tools/sasview/0sasview_refine.py" --name "sasview-refine"
+
+pm2常用指令
+# 查看当前进程
+pm2 list
+# 停止指定名称的进程
+pm2 stop sasview-service
+
+# 停止指定 ID 的进程
+pm2 stop 0
+
+# 停止所有进程
+pm2 stop all
+
+# 停止多个进程（空格分隔）
+pm2 stop 0 1 2
+
+# 删除进程
+stop替换成delete
+
 # 以下已经废弃
 
 ## 3.运行Openweb UI前端
