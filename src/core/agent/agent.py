@@ -279,7 +279,7 @@ class RongZaiAgent(DrSaiAgent):
         self._tools_names = [tool.name for tool in self._tools]
 
         # === Ephemeral multimodal image context (Stage A) ===
-        # pending: 新注入图片，供“下一轮”推理可见
+        # pending: 新注入图片，供“下一轮”推理可见（仅本轮推理拼接到 llm_messages）
         # inflight: 当前这轮推理正在消费，推理完成后清理
         self._ephemeral_images_pending: List[UserMessage] = []
         self._ephemeral_images_inflight: List[UserMessage] = []
@@ -1095,19 +1095,22 @@ class RongZaiAgent(DrSaiAgent):
                                 info2user = f"### ![image.png]({fig_url})\n\n"
                                 yield ModelClientStreamingChunkEvent(content=info2user, source=agent_name)
 
-                                # 同时把图片作为多模态用户消息回注到上下文，便于后续推理
-                                image_ob = Image.from_file(file_path=img_path)
-                                multimodal_msg = UserMessage(
-                                    content=[f"the figure of {img_path}", image_ob],
-                                    source="user",
-                                )
+                                # 同时把图片回注到“临时多模态上下文”，用于下一轮推理。
+                                # 这里不写入 DrSai 的持久化上下文，避免 sanitize 回写时触发字符串校验。
                                 if isinstance(model_context, DrSaiChatCompletionContext):
-                                    # 本地序列化暂不支持多模态持久化，直接写入运行时消息缓存
-                                    model_context._messages.append(multimodal_msg)
-                                    model_context._current_messages.append(multimodal_msg)
+                                    image_ob = Image.from_file(file_path=img_path)
+                                    multimodal_msg = UserMessage(
+                                        content=[f"the figure of {img_path}", image_ob],
+                                        source="user",
+                                    )
                                     if self._record_ephemeral_image_message is not None:
                                         self._record_ephemeral_image_message(multimodal_msg)
                                 else:
+                                    image_ob = Image.from_file(file_path=img_path)
+                                    multimodal_msg = UserMessage(
+                                        content=[f"the figure of {img_path}", image_ob],
+                                        source="user",
+                                    )
                                     await model_context.add_message(multimodal_msg)      
                         
                     else:
@@ -1180,7 +1183,15 @@ class RongZaiAgent(DrSaiAgent):
         else:
             all_messages = await model_context.get_messages()
         
-        llm_messages: List[LLMMessage] = self._get_compatible_context(model_client=model_client, messages=system_messages + all_messages)
+        runtime_messages = list(all_messages)
+        if self._ephemeral_images_inflight:
+            # 仅在本轮调用临时拼接多模态消息，不写入持久化 context。
+            runtime_messages.extend(self._ephemeral_images_inflight)
+
+        llm_messages: List[LLMMessage] = self._get_compatible_context(
+            model_client=model_client,
+            messages=system_messages + runtime_messages,
+        )
 
         # 自定义的memory_function，用于RAG检索等功能，为大模型回复增加最新的知识
         if self._memory_function is not None:

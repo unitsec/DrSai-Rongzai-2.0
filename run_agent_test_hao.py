@@ -16,7 +16,6 @@ from autogen_core.models import RequestUsage
 import autogen_ext.models.openai._openai_client as _openai_client_patch_target
 from drsai.modules.agents.skills_agent import SkillAgent, DrSaiAssistant
 from drsai.modules.baseagent import (
-    DockerCommandLineCodeExecutor,
     LocalCommandLineCodeExecutor,
     CodeBlock
 )

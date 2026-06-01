@@ -54,6 +54,7 @@ tools/pyZRietveld/.build/*
 tools/pyZRietveld/Z-Rietveld/Z-Rietveld/*
 !tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data/
 !tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data/**
+tools/pyZRietveld/testData/**
 
 tools/GSAS-II-master/GSASII/0data_test/*
 tools/GSAS-II-master/GSASII/RUN0021905_20250904/*
