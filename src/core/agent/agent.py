@@ -225,13 +225,6 @@ class RongZaiAgent(DrSaiAgent):
                 name="ConnectMcpServer",
             )
         )
-        self._tools.append(
-            FunctionTool(
-                self.CallMcpTool,
-                description=self.CallMcpTool.__doc__ or "",
-                name="CallMcpTool",
-            )
-        )
 
         # === model context ===
         # 对话上下文管理器
@@ -434,7 +427,6 @@ class RongZaiAgent(DrSaiAgent):
         返回结果：
         - 会返回该 MCP server 暴露出的远程工具列表。
         - 每个远程工具都会被注册为当前 agent 可直接调用的本地代理工具。
-        - 后续应优先使用这些新注册的本地代理工具；只有在确有必要时，才使用 CallMcpTool 兜底。
         """
         conn_type = (type or "").strip().lower()
         try:
@@ -520,33 +512,6 @@ class RongZaiAgent(DrSaiAgent):
             )
         except Exception as e:
             return f"Failed to connect MCP server: {e}"
-
-    async def CallMcpTool(self, server_id: str, tool_name: str, arguments_json: str = "{}") -> str:
-        """调用已连接 MCP server 的原始工具。
-
-        这是兜底工具：
-        - 如果 ConnectMcpServer 已经把远程工具注册成了本地代理工具，优先直接调用那些代理工具。
-        - 仅在你需要按原始远程工具名调用，或暂时无法直接使用本地代理工具时，再使用本工具。
-
-        参数要求：
-        - server_id 是 ConnectMcpServer 连接时使用的 URL 或 command。
-        - tool_name 是远程 MCP 工具的原始名称。
-        - arguments_json 必须是一个 JSON 对象字符串。
-        """
-        if server_id not in self._mcp_connections:
-            return (
-                f"Error: MCP server '{server_id}' is not connected. "
-                "Call ConnectMcpServer first."
-            )
-        try:
-            parsed_args = json.loads(arguments_json or "{}")
-        except json.JSONDecodeError as e:
-            return f"Error: invalid arguments_json: {e}"
-        try:
-            result = await self._mcp_connections[server_id].call_tool(tool_name, parsed_args)
-            return result.to_text()
-        except Exception as e:
-            return f"Error calling '{tool_name}' on '{server_id}': {e}"
 
     def _get_promote_skill_tool(self) -> ToolSchema:
         """供模型调用：将某个 skill 提升为 Core Skill。"""
@@ -858,6 +823,7 @@ class RongZaiAgent(DrSaiAgent):
             return
 
         inner_messages: List[BaseAgentEvent | BaseChatMessage] = []
+        last_buffered_stream_events: List[ModelClientStreamingChunkEvent] = []
         try:
             self._lang_prompt = ""
             
@@ -876,6 +842,10 @@ class RongZaiAgent(DrSaiAgent):
             while True:
                 # 每轮重建系统提示词，以纳入最新 Core Skill 状态。
                 self.update_system_prompt()
+
+                # 中断可能导致工具调用消息不完整（assistant tool_call 缺少对应 tool 结果）。
+                # 该修复可在下一轮推理前自动补齐占位结果，避免模型端返回空响应或上下文报错。
+                await self._sanitize_api_messages()
 
                 # 按需重载系统 skills。
                 skills_changed = self._skills_inputs_changed()
@@ -907,6 +877,7 @@ class RongZaiAgent(DrSaiAgent):
                 self._debug_log_system_prompt(system_messages)
                 model_result = None
                 buffered_stream_events: List[ModelClientStreamingChunkEvent] = []
+                last_buffered_stream_events = buffered_stream_events
                 self._arm_ephemeral_images_for_inference()
                 try:
                     async for inference_output in self._call_llm(
@@ -934,16 +905,10 @@ class RongZaiAgent(DrSaiAgent):
                     # 临时图片只保留到“当前推理”结束。
                     self._cleanup_inflight_ephemeral_images(model_context)
 
-                assert model_result is not None, "No model result was produced."
-
-                # 将 assistant 结果写回上下文（包含可选 thought）
-                await model_context.add_message(
-                    AssistantMessage(
-                        content=model_result.content,
-                        source=self._name,
-                        thought=getattr(model_result, "thought", None),
-                    )
-                )
+                if model_result is None:
+                    if self.is_paused or cancellation_token.is_cancelled():
+                        raise asyncio.CancelledError()
+                    raise RuntimeError("No model result was produced.")
 
                 if model_result.content == "":
                     yield Response(
@@ -955,6 +920,15 @@ class RongZaiAgent(DrSaiAgent):
                     inner_messages=inner_messages,
                     )
                     break
+
+                # 将 assistant 结果写回上下文（包含可选 thought）
+                await model_context.add_message(
+                    AssistantMessage(
+                        content=model_result.content,
+                        source=self._name,
+                        thought=getattr(model_result, "thought", None),
+                    )
+                )
                 
                 
                 # 纯文本响应：不调用工具，直接结束循环。
@@ -1147,12 +1121,14 @@ class RongZaiAgent(DrSaiAgent):
                         ))
 
         except asyncio.CancelledError:
+            for buffered_event in last_buffered_stream_events:
+                yield buffered_event
             # 任务被取消时，返回统一提示
             yield Response(
                 chat_message=TextMessage(
                     content="The task was cancelled by the user.",
                     source=self._agent_name,
-                    metadata={"internal": "yes"},
+                    metadata={"internal": "no"},
                 ),
                 inner_messages=inner_messages,
             )
