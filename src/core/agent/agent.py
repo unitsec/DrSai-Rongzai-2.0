@@ -79,6 +79,7 @@ from .utils import (
 )
 
 from src.utils.check_language import generate_prompt
+import traceback
 
 
 def _get_env_float(name: str, default: float) -> float:
@@ -1079,11 +1080,11 @@ class RongZaiAgent(DrSaiAgent):
                                         yield files_event
                                         sent_count += 1
                                     except Exception:
-                                        import traceback
                                         logger.error(f"Error parsing FilesEvent: {event_data}, error: {traceback.format_exc()}")
                                         continue
                                 result.content = f"Served {sent_count} file event(s) to user."
                         except Exception:
+                            logger.error(f"Error parsing tool result content as JSON: {result.content}, error: {traceback.format_exc()}")
                             pass
                         
                         result.content = f"{self._lang_prompt}\n\n{result.content}\n\n{self._lang_prompt}"
