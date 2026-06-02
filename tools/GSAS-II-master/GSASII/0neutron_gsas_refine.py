@@ -1460,11 +1460,17 @@ def export_neutron_results(gpx, hist, phases, original_cif_files,task_id=None, u
     logger.info(f"len of phases: {len(phases)}")
     refined_cif_files = []
     for i, phase in enumerate(phases):
-        if i < len(original_cif_files):
-            original_cif = original_cif_files[i]
-            refined_cif = create_refined_cif(original_cif, phase, hist.get_wR(), save_dir, task_id)
-            if refined_cif:
-                refined_cif_files.append(refined_cif)
+        phase_name = getattr(phase, 'name', f'Phase_{i+1}')
+        safe_phase_name = str(phase_name).replace(' ', '_')
+        fallback_cif = save_dir / f'{safe_phase_name}_{task_id}.cif'
+        try:
+            phase.export_CIF(str(fallback_cif))
+            refined_cif = str(fallback_cif)
+            logger.info(f"已使用 phase.export_CIF 导出CIF: {refined_cif}")
+        except Exception as e:
+            logger.warning(f"相 {phase_name} 的CIF导出失败: {e}")
+        if refined_cif:
+            refined_cif_files.append(refined_cif)
     
     # 收集所有生成的文件
     output_files = []
