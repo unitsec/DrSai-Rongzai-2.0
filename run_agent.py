@@ -107,7 +107,8 @@ async def create_agent(
         else:
             client_kwargs = {
                 "model": llm_model,
-                "api_key": api_key,
+                "api_key": "sk-qywwUDyCxrUQYyyxhUCNKZbasiRwAzszJSdIQXdsWdsjHOV",
+                # "api_key": api_key,
                 "timeout": 180,
                 "max_retries": llm_max_retries,
             }

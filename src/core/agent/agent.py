@@ -962,6 +962,8 @@ class RongZaiAgent(DrSaiAgent):
                 inner_messages.append(tool_call_msg)
                 logger.debug(tool_call_msg)
                 yield tool_call_msg
+
+                pending_tool_results: List[FunctionExecutionResult] = []
                 
                 # 处理模型请求的工具调用
                 for i in range(len(model_result.content)):
@@ -973,14 +975,14 @@ class RongZaiAgent(DrSaiAgent):
                             skill_content = "No system skill is loaded."
                         else:
                             skill_content = skills_loader.run_skill(argument["skill"])
-                        await model_context.add_message(FunctionExecutionResultMessage(
-                            content=[FunctionExecutionResult(
-                                content = f"Skill for {argument['skill']}:\n\n {skill_content}",
-                                name = tool_name,
-                                call_id = call_id,
-                                is_error = False,
-                            ),]
-                        ))
+                        pending_tool_results.append(
+                            FunctionExecutionResult(
+                                content=f"Skill for {argument['skill']}:\n\n {skill_content}",
+                                name=tool_name,
+                                call_id=call_id,
+                                is_error=False,
+                            )
+                        )
                         yield AgentLogEvent(
                             title=f"I am reading skill: {argument['skill']}.",
                             source=agent_name, 
@@ -993,14 +995,14 @@ class RongZaiAgent(DrSaiAgent):
                             reason=argument["reason"],
                             focus=argument.get("focus", ""),
                         )
-                        await model_context.add_message(FunctionExecutionResultMessage(
-                            content=[FunctionExecutionResult(
+                        pending_tool_results.append(
+                            FunctionExecutionResult(
                                 content=promote_message,
                                 name=tool_name,
                                 call_id=call_id,
                                 is_error=False,
-                            )]
-                        ))
+                            )
+                        )
                         self.update_system_prompt()
                         system_messages = self._system_messages
                         yield AgentLogEvent(
@@ -1014,14 +1016,14 @@ class RongZaiAgent(DrSaiAgent):
                             skill_name=argument["skill"],
                             reason=argument.get("reason", ""),
                         )
-                        await model_context.add_message(FunctionExecutionResultMessage(
-                            content=[FunctionExecutionResult(
+                        pending_tool_results.append(
+                            FunctionExecutionResult(
                                 content=demote_message,
                                 name=tool_name,
                                 call_id=call_id,
                                 is_error=False,
-                            )]
-                        ))
+                            )
+                        )
                         self.update_system_prompt()
                         system_messages = self._system_messages
                         yield AgentLogEvent(
@@ -1038,14 +1040,14 @@ class RongZaiAgent(DrSaiAgent):
                             reason=argument["reason"],
                             focus=argument.get("focus", ""),
                         )
-                        await model_context.add_message(FunctionExecutionResultMessage(
-                            content=[FunctionExecutionResult(
+                        pending_tool_results.append(
+                            FunctionExecutionResult(
                                 content=replace_message,
                                 name=tool_name,
                                 call_id=call_id,
                                 is_error=False,
-                            )]
-                        ))
+                            )
+                        )
                         self.update_system_prompt()
                         system_messages = self._system_messages
                         yield AgentLogEvent(
@@ -1088,7 +1090,7 @@ class RongZaiAgent(DrSaiAgent):
                             pass
                         
                         result.content = f"{self._lang_prompt}\n\n{result.content}\n\n{self._lang_prompt}"
-                        await model_context.add_message(FunctionExecutionResultMessage(content=[result]))
+                        pending_tool_results.append(result)
                         img_paths = []
                         img_paths.extend(_extract_existing_image_paths_from_content(result.content))
                         if img_paths:
@@ -1117,14 +1119,19 @@ class RongZaiAgent(DrSaiAgent):
                                     await model_context.add_message(multimodal_msg)      
                         
                     else:
-                        await model_context.add_message(FunctionExecutionResultMessage(
-                            content=[FunctionExecutionResult(
-                                content = f"Unknown tool: {model_result.content[i].name}",
-                                name = tool_name,
-                                call_id = call_id,
-                                is_error = False,
-                            ),]
-                        ))
+                        pending_tool_results.append(
+                            FunctionExecutionResult(
+                                content=f"Unknown tool: {model_result.content[i].name}",
+                                name=tool_name,
+                                call_id=call_id,
+                                is_error=False,
+                            )
+                        )
+
+                if pending_tool_results:
+                    await model_context.add_message(
+                        FunctionExecutionResultMessage(content=pending_tool_results)
+                    )
 
         except asyncio.CancelledError:
             for buffered_event in last_buffered_stream_events:
