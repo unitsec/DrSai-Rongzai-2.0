@@ -1079,6 +1079,8 @@ class RongZaiAgent(DrSaiAgent):
                                         yield files_event
                                         sent_count += 1
                                     except Exception:
+                                        import traceback
+                                        logger.error(f"Error parsing FilesEvent: {event_data}, error: {traceback.format_exc()}")
                                         continue
                                 result.content = f"Served {sent_count} file event(s) to user."
                         except Exception:
