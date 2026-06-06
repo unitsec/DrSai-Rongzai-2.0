@@ -1073,18 +1073,23 @@ class RongZaiAgent(DrSaiAgent):
 
                         try:
                             parsed = json.loads(result.content)
-                            if isinstance(parsed, dict) and parsed.get("type") == "files_events":
-                                events = parsed.get("events", [])
-                                sent_count = 0
-                                for event_data in events:
+                            if isinstance(parsed, dict) and parsed.get("type") == "files_event":
+                                event_data = parsed.get("event", None)
+                                if isinstance(event_data, str):
+                                    try:
+                                        event_data = json.loads(event_data)
+                                    except Exception:
+                                        event_data = None
+                                if isinstance(event_data, dict):
                                     try:
                                         files_event = FilesEvent.model_validate(event_data)
                                         yield files_event
-                                        sent_count += 1
+                                        result.content = "Served files to the right side of frontend for download."
                                     except Exception:
                                         # logger.error(f"Error parsing FilesEvent: {event_data}, error: {traceback.format_exc()}")
-                                        continue
-                                result.content = f"Served {sent_count} file event(s) to user."
+                                        result.content = "Served 0 file event(s) to user."
+                                else:
+                                    result.content = "Served 0 file event(s) to user."
                         except Exception:
                             # logger.error(f"Error parsing tool result content as JSON: {result.content}, error: {traceback.format_exc()}")
                             pass

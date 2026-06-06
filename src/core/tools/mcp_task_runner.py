@@ -213,6 +213,7 @@ class ProcessPollingMcpToolBase:
             if time.time() >= deadline:
                 snapshot["result"] = {
                     "status": "pending",
+                    "task_id": task_id,
                     "content": (
                         f"Task is still running after timeout ({self.timeout_sec:.1f}s). "
                         "If you want to continue waiting, you should call again with the same task_id and mission_name."
