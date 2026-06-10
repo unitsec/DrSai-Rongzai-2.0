@@ -323,7 +323,7 @@ def get_operator_funcs_rongzai(source_name: str) -> list[callable]:
 
         return f"User has permission to access file in {abs_file_path}."
     
-    return [serve_files_for_user, get_file_for_user]
+    return [serve_files_for_user]
 
 
 if __name__ == "__main__":
