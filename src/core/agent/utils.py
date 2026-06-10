@@ -146,7 +146,7 @@ def get_operator_funcs_rongzai(source_name: str) -> list[callable]:
             descriptions_list (list[str]): The corresponding descriptions of the files to serve.
         """
         try:
-            events = []
+            base64_files = []
             for file_path, description in zip(files_list, descriptions_list):
                 file_base64 = get_file_base64(file_path)
                 if not file_base64:
@@ -158,20 +158,20 @@ def get_operator_funcs_rongzai(source_name: str) -> list[callable]:
                     description=description,
                     download_method="base64"
                     )
+                base64_files.append(base64_file)
                 
-                files=FilesContent(
-                    files=[base64_file],
-                    title="files for download",
-                    description="these files are served for user downloading.",
-                    )
+            files=FilesContent(
+                files=base64_files,
+                title="files for download",
+                description="these files are served for user downloading.",
+                )
 
-                event = FilesEvent(
-                    source=source_name,
-                    content=files.model_dump(),
-                    )
-                events.append(event.model_dump(mode="json"))
+            event = FilesEvent(
+                source=source_name,
+                content=files.model_dump(),
+                )
 
-            return json.dumps({"type": "files_events", "events": events}, ensure_ascii=False)
+            return json.dumps({"type": "files_event", "event": event.model_dump()}, ensure_ascii=False)
         except Exception as e:
             return f"Error in serve_files_for_user: {e}"
         

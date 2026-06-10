@@ -77,7 +77,7 @@ llm_mode_config = {
     "磐石": "scienceone/s1-base-ultra",
     "intern-s1": "intern-ai/intern-s1",
     "intern-s1-pro": "intern-ai/intern-s1-pro",
-    "deepseek":"deepseek-ai/deepseek-v4-pro"
+    "deepseek":"hepai/deepseek-v4-pro"
 }
 
 async def create_agent(

@@ -40,7 +40,7 @@
             "磐石": "scienceone/s1-base-ultra",
             "intern-s1": "intern-ai/intern-s1",
             "intern-s1-pro": "intern-ai/intern-s1-pro",
-            "deepseek":"deepseek-ai/deepseek-v4-pro"
+            "deepseek":"hepai/deepseek-v4-pro"
             },
         "default_config_name": "quick refinement",
         "version": "0.1.0",
@@ -48,7 +48,9 @@
                     "用Z-Rietveld帮我把BL09的RUN0000410的groupMA的衍射谱精修好，cif文件是zeolite.cif",
                     "用我上传的附件文件精修。如果不确定用哪个精修引擎，找我确认。",
                     "这是个电池材料的数据，你先帮我精修好这个数据，然后再做一下LiNi混排（Li与Ni互相有一小部分占据对方位置）然后再精修，最后给出数据分析的结论。",
-                    "帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"],
+                    "帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。",
+                    "附件中是锂电池材料的粉末衍射数据，以及仪器参数文件和一个初始的cif文件。这个样品的化学式是LiNi0.92Co0.06Mn0.02O2,你帮我用精修的方式研究这个样品的LiNi混排情况。",
+                    "附件中是一个掺杂了Al的沸石材料的粉末衍射数据，以及仪器参数文件和一个初始的cif文件。这个样品的化学式是Na4.59H1.61Al6.2Si41.8O96,好，现在请你帮我研究Al在4个T位的富集分布，也研究一下Na放在哪个位置合适。注意T-O键的键长要在1.61埃左右，Al-O的键长则应该在1.73埃左右，不能有太大偏离，否则不合理。Na也要与周围原子保持合适的距离。"],
         "author": "wanghao96@ihep.ac.cn",
         "logo": "https://aiapi.ihep.ac.cn/apiv2/files/file-61518e9f7e8f45049739d7ae58abe35a/preview",
         "owner": "wanghao96@ihep.ac.cn",

@@ -2340,7 +2340,7 @@ class G2Project(G2ObjectWrapper):
         elif G2obj.TestIndexAll():
             self.index_ids()
         if len(varlist) < 2:
-            raise Exception('add_EquivEquation Error: varlist must have at least 2 variables')
+            raise Exception('add_NewVarConstr Error: varlist must have at least 2 variables')
         constr = []
         if name is not None:
             name = str(name)

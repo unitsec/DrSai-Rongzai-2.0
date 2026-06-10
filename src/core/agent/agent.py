@@ -37,6 +37,7 @@ from drsai.modules.components import (
     ComponentModel,
 )
 from drsai.modules.components.model_client import ChatCompletionClient
+from drsai.modules.components.model_client import HepAIChatCompletionClient, ModelFamily
 from drsai.modules.components.model_context import (
     ChatCompletionContext,
     DrSaiChatCompletionContext,
@@ -227,6 +228,15 @@ class RongZaiAgent(DrSaiAgent):
             )
         )
 
+        # 视觉子智能体工具：将读图任务委托给独立视觉模型，主模型无需具备视觉能力。
+        self._tools.append(
+            FunctionTool(
+                self.AnalyzeImageWithVision,
+                description=self.AnalyzeImageWithVision.__doc__ or "",
+                name="AnalyzeImageWithVision",
+            )
+        )
+
         # === model context ===
         # 对话上下文管理器
         self._model_context = DrSaiChatCompletionContext(
@@ -279,50 +289,49 @@ class RongZaiAgent(DrSaiAgent):
         self._mcp_server_tool_names: Dict[str, List[str]] = {}
         self._tools_names = [tool.name for tool in self._tools]
 
-        # === Ephemeral multimodal image context (Stage A) ===
-        # pending: 新注入图片，供“下一轮”推理可见（仅本轮推理拼接到 llm_messages）
-        # inflight: 当前这轮推理正在消费，推理完成后清理
-        self._ephemeral_images_pending: List[UserMessage] = []
-        self._ephemeral_images_inflight: List[UserMessage] = []
+        # Legacy (disabled): tool 图片回注主模型上下文的状态字段。
+        # 如需回滚到旧方案，取消注释以下两行，并恢复下方 Legacy 方法与调用点。
+        # self._ephemeral_images_pending: List[UserMessage] = []
+        # self._ephemeral_images_inflight: List[UserMessage] = []
 
-    def _record_ephemeral_image_message(self, multimodal_msg: UserMessage) -> None:
-        """记录新注入的临时图片消息，供下一轮推理使用。"""
-        self._ephemeral_images_pending.append(multimodal_msg)
+    # Legacy (disabled): tool 图片回注主模型上下文管理方法。
+    # def _record_ephemeral_image_message(self, multimodal_msg: UserMessage) -> None:
+    #     """记录新注入的临时图片消息，供下一轮推理使用。"""
+    #     self._ephemeral_images_pending.append(multimodal_msg)
 
-    def _arm_ephemeral_images_for_inference(self) -> None:
-        """在每轮推理开始前装载临时图片消息。"""
-        self._ephemeral_images_inflight = self._ephemeral_images_pending
-        self._ephemeral_images_pending = []
+    # def _arm_ephemeral_images_for_inference(self) -> None:
+    #     """在每轮推理开始前装载临时图片消息。"""
+    #     self._ephemeral_images_inflight = self._ephemeral_images_pending
+    #     self._ephemeral_images_pending = []
 
-    def _cleanup_inflight_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
-        """在每轮推理结束后清理已消费的临时图片消息。"""
-        if not self._ephemeral_images_inflight:
-            return
-        if not isinstance(model_context, DrSaiChatCompletionContext):
-            # 仅 DrSai 运行时上下文支持按对象身份清理。
-            self._ephemeral_images_inflight = []
-            return
+    # def _cleanup_inflight_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
+    #     """在每轮推理结束后清理已消费的临时图片消息。"""
+    #     if not self._ephemeral_images_inflight:
+    #         return
+    #     if not isinstance(model_context, DrSaiChatCompletionContext):
+    #         self._ephemeral_images_inflight = []
+    #         return
+    #
+    #     target_ids = {id(msg) for msg in self._ephemeral_images_inflight}
+    #     if target_ids:
+    #         model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
+    #         model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
+    #     self._ephemeral_images_inflight = []
 
-        target_ids = {id(msg) for msg in self._ephemeral_images_inflight}
-        if target_ids:
-            model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
-            model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
-        self._ephemeral_images_inflight = []
-
-    def _cleanup_all_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
-        """兜底清理：移除 pending/inflight 的所有临时图片消息。"""
-        if not isinstance(model_context, DrSaiChatCompletionContext):
-            self._ephemeral_images_pending = []
-            self._ephemeral_images_inflight = []
-            return
-
-        all_ephemeral = self._ephemeral_images_pending + self._ephemeral_images_inflight
-        target_ids = {id(msg) for msg in all_ephemeral}
-        if target_ids:
-            model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
-            model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
-        self._ephemeral_images_pending = []
-        self._ephemeral_images_inflight = []
+    # def _cleanup_all_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
+    #     """兜底清理：移除 pending/inflight 的所有临时图片消息。"""
+    #     if not isinstance(model_context, DrSaiChatCompletionContext):
+    #         self._ephemeral_images_pending = []
+    #         self._ephemeral_images_inflight = []
+    #         return
+    #
+    #     all_ephemeral = self._ephemeral_images_pending + self._ephemeral_images_inflight
+    #     target_ids = {id(msg) for msg in all_ephemeral}
+    #     if target_ids:
+    #         model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
+    #         model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
+    #     self._ephemeral_images_pending = []
+    #     self._ephemeral_images_inflight = []
 
     def _file_changed(self, path: Path) -> bool:
         """判断文件或目录是否变化，并更新 mtime 缓存。"""
@@ -387,6 +396,299 @@ class RongZaiAgent(DrSaiAgent):
                 parts.append(f"[SystemMessage {idx}]\n{str(content)}")
 
         logger.info("===== FULL SYSTEM PROMPT BEFORE LLM CALL =====\n{}\n===== END SYSTEM PROMPT =====", "\n\n".join(parts))
+
+    def _is_context_length_error(self, error: Exception) -> bool:
+        """判断异常是否属于上下文超长。"""
+        text = str(error).lower()
+        flags = [
+            "context_length_exceeded",
+            "input tokens exceed",
+            "maximum context length",
+            "context window",
+            "too many tokens",
+        ]
+        return any(flag in text for flag in flags)
+
+    def _flatten_message_content_for_summary(self, content: Any) -> str:
+        """将消息内容拍平成短文本，供总结子智能体使用。"""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, FunctionCall):
+                    parts.append(f"[FunctionCall] name={item.name}, arguments={item.arguments}")
+                else:
+                    try:
+                        parts.append(str(item))
+                    except Exception:
+                        parts.append("[Unserializable list item]")
+            return "\n".join(parts)
+        try:
+            return str(content)
+        except Exception:
+            return "[Unserializable content]"
+
+    def _build_history_text_for_summary(self, messages: List[LLMMessage]) -> str:
+        """将历史消息序列裁剪并序列化成可总结文本。"""
+        max_chars = int(_get_env_float("RONGZAI_SUMMARY_INPUT_MAX_CHARS", 24000))
+        per_msg_max_chars = int(_get_env_float("RONGZAI_SUMMARY_PER_MESSAGE_MAX_CHARS", 1200))
+        lines: List[str] = []
+        total = 0
+        for i, msg in enumerate(messages, start=1):
+            role = msg.__class__.__name__
+            source = getattr(msg, "source", "")
+            raw = self._flatten_message_content_for_summary(getattr(msg, "content", ""))
+            snippet = raw[:per_msg_max_chars]
+            line = f"[{i}] role={role}; source={source}\n{snippet}\n"
+            line_len = len(line)
+            if total + line_len > max_chars:
+                remain = max_chars - total
+                if remain > 0:
+                    lines.append(line[:remain])
+                break
+            lines.append(line)
+            total += line_len
+        return "\n".join(lines)
+
+    def _build_fallback_history_summary(self, old_messages: List[LLMMessage], recent_messages: List[LLMMessage]) -> str:
+        """总结子智能体失败时的兜底摘要（不再额外调用模型）。"""
+        old_count = len(old_messages)
+        recent_count = len(recent_messages)
+        recent_tail: List[str] = []
+        for msg in recent_messages[-6:]:
+            role = msg.__class__.__name__
+            raw = self._flatten_message_content_for_summary(getattr(msg, "content", ""))
+            recent_tail.append(f"- {role}: {raw[:180]}")
+        bullets = "\n".join(recent_tail) if recent_tail else "- (empty)"
+        return (
+            "Auto-generated compressed history (fallback, no model summary).\n"
+            f"Older messages omitted: {old_count}. Recent messages kept: {recent_count}.\n"
+            "Recent message tail:\n"
+            f"{bullets}"
+        )
+
+    def _get_summary_model_client(self) -> ChatCompletionClient:
+        """获取总结子智能体专用模型客户端。
+
+        优先级：
+        1) 环境变量 RONGZAI_SUMMARY_MODEL_CONFIG 对应的 set_model_client 配置
+        2) 主模型客户端（回退）
+        """
+        summary_config_name = os.getenv("RONGZAI_SUMMARY_MODEL_CONFIG", "").strip()
+        if summary_config_name and self._set_model_client:
+            try:
+                summary_client = self._set_model_client(summary_config_name)
+                model_name = ""
+                try:
+                    model_name = summary_client._create_args.get("model", "")
+                except Exception:
+                    model_name = ""
+                logger.info(
+                    "History summarizer model selected by RONGZAI_SUMMARY_MODEL_CONFIG='{}'{}",
+                    summary_config_name,
+                    f" -> {model_name}" if model_name else "",
+                )
+                return summary_client
+            except Exception as e:
+                logger.warning(
+                    "Failed to create summary model client from RONGZAI_SUMMARY_MODEL_CONFIG='{}': {}. Fallback to primary model.",
+                    summary_config_name,
+                    e,
+                )
+
+        return self._model_client
+
+    async def _summarize_history_with_subagent(
+        self,
+        model_client: ChatCompletionClient,
+        old_messages: List[LLMMessage],
+        recent_messages: List[LLMMessage],
+        cancellation_token: CancellationToken,
+    ) -> str:
+        """调用轻量总结子智能体，生成可替代长历史的压缩摘要。"""
+        history_text = self._build_history_text_for_summary(old_messages)
+        if not history_text.strip():
+            return self._build_fallback_history_summary(old_messages, recent_messages)
+
+        prompt = (
+            "Summarize prior conversation history for retry after context overflow.\n"
+            "Output must be concise and preserve only: goal, constraints, decisions, key tool outputs, "
+            "and unresolved questions.\n"
+            "Do not include chain-of-thought.\n"
+            "Return plain text with short bullet points.\n\n"
+            "History to summarize:\n"
+            f"{history_text}"
+        )
+
+        summary_messages: List[LLMMessage] = [
+            SystemMessage(content="You are a history compression sub-agent."),
+            UserMessage(content=prompt, source="user"),
+        ]
+
+        try:
+            summary_model_client = self._get_summary_model_client()
+            rsp = await summary_model_client.create(
+                summary_messages,
+                cancellation_token=cancellation_token,
+            )
+            summary = rsp.content if isinstance(rsp.content, str) else str(rsp.content)
+            summary = (summary or "").strip()
+            if summary:
+                return summary[: int(_get_env_float("RONGZAI_SUMMARY_OUTPUT_MAX_CHARS", 6000))]
+        except Exception as summary_err:
+            logger.warning("History summarizer sub-agent failed: {}", summary_err)
+
+        return self._build_fallback_history_summary(old_messages, recent_messages)
+
+    async def _build_retry_llm_messages_after_context_overflow(
+        self,
+        model_client: ChatCompletionClient,
+        system_messages: List[SystemMessage],
+        runtime_messages: List[LLMMessage],
+        cancellation_token: CancellationToken,
+    ) -> List[LLMMessage]:
+        """基于总结子智能体压缩历史，构建重试上下文。"""
+        keep_recent = int(_get_env_float("RONGZAI_CONTEXT_RETRY_KEEP_RECENT", 12))
+        keep_recent = max(4, keep_recent)
+
+        if len(runtime_messages) <= keep_recent:
+            return self._get_compatible_context(
+                model_client=model_client,
+                messages=system_messages + runtime_messages,
+            )
+
+        old_messages = runtime_messages[:-keep_recent]
+        recent_messages = runtime_messages[-keep_recent:]
+        summary = await self._summarize_history_with_subagent(
+            model_client=model_client,
+            old_messages=old_messages,
+            recent_messages=recent_messages,
+            cancellation_token=cancellation_token,
+        )
+
+        summary_msg = SystemMessage(
+            content=(
+                "Compressed prior context generated after context overflow. "
+                "Use this as authoritative historical memory for this retry only:\n"
+                f"{summary}"
+            )
+        )
+
+        return self._get_compatible_context(
+            model_client=model_client,
+            messages=system_messages + [summary_msg] + recent_messages,
+        )
+
+    def _build_missing_tool_results(self, call_ids: set[str]) -> FunctionExecutionResultMessage:
+        """为缺失的 tool call 生成占位结果，修复上下文消息链。"""
+        results: List[FunctionExecutionResult] = []
+        for call_id in sorted(call_ids):
+            results.append(
+                FunctionExecutionResult(
+                    content="Tool result missing due to context trimming. Continue with available context.",
+                    call_id=call_id,
+                    name="unknown",
+                    is_error=True,
+                )
+            )
+        return FunctionExecutionResultMessage(content=results)
+
+    def _extract_tool_call_id(self, item: Any) -> Optional[str]:
+        """兼容对象/字典两种结构，提取 tool call id。"""
+        if isinstance(item, dict):
+            value = item.get("id") or item.get("call_id")
+        else:
+            value = getattr(item, "id", None) or getattr(item, "call_id", None)
+        if value is None:
+            return None
+        return str(value)
+
+    def _is_tool_call_payload(self, content: Any) -> bool:
+        """判断 assistant content 是否是工具调用列表（宽松判定）。"""
+        if not isinstance(content, list) or not content:
+            return False
+        for item in content:
+            if isinstance(item, FunctionCall):
+                continue
+            if isinstance(item, dict) and "id" in item and "name" in item and "arguments" in item:
+                continue
+            return False
+        return True
+
+    def _repair_trimmed_runtime_messages(self, messages: List[LLMMessage]) -> List[LLMMessage]:
+        """修复 token 裁剪后可能损坏的 tool_call/tool_result 序列。"""
+        repaired: List[LLMMessage] = []
+        pending_call_ids: set[str] = set()
+        repaired_count = 0
+        orphan_result_groups_kept = 0
+        placeholder_results_inserted = 0
+        debug_enabled = os.getenv("RONGZAI_DEBUG_CONTEXT_REPAIR", "").lower() in {"1", "true", "yes", "on"}
+
+        for msg in messages:
+            if isinstance(msg, AssistantMessage) and self._is_tool_call_payload(msg.content):
+                if pending_call_ids:
+                    repaired.append(self._build_missing_tool_results(pending_call_ids))
+                    repaired_count += 1
+                    placeholder_results_inserted += len(pending_call_ids)
+                    pending_call_ids = set()
+                repaired.append(msg)
+                pending_call_ids = {
+                    call_id
+                    for item in msg.content
+                    for call_id in [self._extract_tool_call_id(item)]
+                    if call_id
+                }
+                continue
+
+            if isinstance(msg, FunctionExecutionResultMessage):
+                if not pending_call_ids:
+                    # 保守策略：孤立结果保留，避免误删有效上下文。
+                    orphan_result_groups_kept += 1
+                    repaired.append(msg)
+                    continue
+
+                matched_ids: set[str] = set()
+                for item in msg.content:
+                    item_id = self._extract_tool_call_id(item)
+                    if item_id in pending_call_ids:
+                        matched_ids.add(item_id)
+
+                missing = pending_call_ids - matched_ids
+                repaired.append(msg)
+                if missing:
+                    repaired.append(self._build_missing_tool_results(missing))
+                    repaired_count += 1
+                    placeholder_results_inserted += len(missing)
+
+                pending_call_ids = set()
+                continue
+
+            if pending_call_ids:
+                repaired.append(self._build_missing_tool_results(pending_call_ids))
+                repaired_count += 1
+                placeholder_results_inserted += len(pending_call_ids)
+                pending_call_ids = set()
+
+            repaired.append(msg)
+
+        if pending_call_ids:
+            repaired.append(self._build_missing_tool_results(pending_call_ids))
+            repaired_count += 1
+            placeholder_results_inserted += len(pending_call_ids)
+
+        if debug_enabled and repaired_count:
+            logger.debug(
+                "Context repair stats: repaired_groups={}, orphan_result_groups_kept={}, placeholder_results_inserted={}",
+                repaired_count,
+                orphan_result_groups_kept,
+                placeholder_results_inserted,
+            )
+        return repaired
 
     def _sanitize_tool_name(self, value: str) -> str:
         """将远程工具名转换为本地可用的稳定工具名片段。"""
@@ -513,6 +815,103 @@ class RongZaiAgent(DrSaiAgent):
             )
         except Exception as e:
             return f"Failed to connect MCP server: {e}"
+
+    async def AnalyzeImageWithVision(self, image_path: str, query: str, vision_model: str = "") -> str:
+        """Delegate image understanding to a dedicated vision model.
+
+        Use this tool when you need to extract information from an image file.
+        Args:
+            image_path: local image path (.png/.jpg/.jpeg/.webp/.gif/.bmp/.tif/.tiff)
+            query: what information should be extracted from the image
+            vision_model: optional override model name; default reads env RONGZAI_VISION_MODEL
+        Returns:
+            text answer from the vision model
+        """
+        try:
+            if not image_path or not query:
+                return "Error: image_path and query are required."
+
+            p = Path(image_path).expanduser().resolve()
+            if not p.exists() or not p.is_file():
+                return f"Error: image file not found: {image_path}"
+
+            image_suffixes = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+            if p.suffix.lower() not in image_suffixes:
+                return f"Error: unsupported image type: {p.suffix}"
+
+            # 视觉模型按顺序降级：优先 gpt-5，再 gpt-4o，最后 minimax。
+            # 可通过 RONGZAI_VISION_MODEL_FALLBACKS 覆盖（逗号分隔）。
+            if (vision_model or "").strip():
+                model_candidates = [(vision_model or "").strip()]
+            else:
+                fallback_env = os.getenv("RONGZAI_VISION_MODEL_FALLBACKS", "").strip()
+                if fallback_env:
+                    model_candidates = [m.strip() for m in fallback_env.split(",") if m.strip()]
+                else:
+                    primary_env = os.getenv("RONGZAI_VISION_MODEL", "").strip()
+                    model_candidates = []
+                    if primary_env:
+                        model_candidates.append(primary_env)
+                    for m in ("openai/gpt-5", "openai/gpt-4o", "minimax/minimax-m2.7"):
+                        if m not in model_candidates:
+                            model_candidates.append(m)
+
+            base_url = os.getenv("RONGZAI_VISION_BASE_URL", "https://aiapi.ihep.ac.cn/apiv2").strip()
+
+            api_key = None
+            try:
+                api_key = self._model_client._client.api_key
+            except Exception:
+                api_key = os.getenv("HEPAI_API_KEY")
+            if not api_key:
+                return "Error: missing API key for vision model."
+
+            image_ob = Image.from_file(file_path=str(p))
+            llm_messages: List[LLMMessage] = [
+                SystemMessage(
+                    content="You are a vision sub-agent. Extract only what the user asked from the image and return concise factual text."
+                ),
+                UserMessage(content=[query, image_ob], source="user"),
+            ]
+
+            failures: List[str] = []
+            for model_name in model_candidates:
+                try:
+                    vision_client = HepAIChatCompletionClient(
+                        model=model_name,
+                        api_key=api_key,
+                        base_url=base_url,
+                        timeout=180,
+                        max_retries=1,
+                        model_info={
+                            "vision": True,
+                            "function_calling": False,
+                            "json_output": True,
+                            "structured_output": False,
+                            "family": ModelFamily.GPT_41,
+                            "multiple_system_messages": True,
+                            "token_model": "gpt-4o-2024-11-20",
+                        },
+                    )
+                    rsp = await vision_client.create(
+                        llm_messages,
+                        cancellation_token=CancellationToken(),
+                    )
+                    answer = rsp.content if isinstance(rsp.content, str) else str(rsp.content)
+                    if answer:
+                        return answer
+                    failures.append(f"{model_name}: empty output")
+                except Exception as model_err:
+                    failures.append(f"{model_name}: {model_err}")
+
+            return (
+                "Error: all vision models failed. Tried: "
+                + ", ".join(model_candidates)
+                + ". Details: "
+                + " | ".join(failures)
+            )
+        except Exception as e:
+            return f"Error in AnalyzeImageWithVision: {e}"
 
     def _get_promote_skill_tool(self) -> ToolSchema:
         """供模型调用：将某个 skill 提升为 Core Skill。"""
@@ -879,32 +1278,31 @@ class RongZaiAgent(DrSaiAgent):
                 model_result = None
                 buffered_stream_events: List[ModelClientStreamingChunkEvent] = []
                 last_buffered_stream_events = buffered_stream_events
-                self._arm_ephemeral_images_for_inference()
-                try:
-                    async for inference_output in self._call_llm(
-                        model_client=model_client,
-                        model_client_stream=model_client_stream,
-                        system_messages=system_messages,
-                        model_context=model_context,
-                        workbench=workbench,
-                        handoff_tools=handoff_tools,
-                        manager_tools=manager_tools,
-                        agent_name=agent_name,
-                        cancellation_token=cancellation_token,
-                        output_content_type=output_content_type,
-                    ):
-                        if self.is_paused:
-                            raise asyncio.CancelledError()
-                        
-                        if isinstance(inference_output, CreateResult):
-                            model_result = inference_output
-                        else:
-                            # 先缓存本轮模型流式文本，待确认本轮结果是否合法后再决定是否对用户可见。
-                            if isinstance(inference_output, ModelClientStreamingChunkEvent):
-                                buffered_stream_events.append(inference_output)
-                finally:
-                    # 临时图片只保留到“当前推理”结束。
-                    self._cleanup_inflight_ephemeral_images(model_context)
+                # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
+                # self._arm_ephemeral_images_for_inference()
+                async for inference_output in self._call_llm(
+                    model_client=model_client,
+                    model_client_stream=model_client_stream,
+                    system_messages=system_messages,
+                    model_context=model_context,
+                    workbench=workbench,
+                    handoff_tools=handoff_tools,
+                    manager_tools=manager_tools,
+                    agent_name=agent_name,
+                    cancellation_token=cancellation_token,
+                    output_content_type=output_content_type,
+                ):
+                    if self.is_paused:
+                        raise asyncio.CancelledError()
+                    
+                    if isinstance(inference_output, CreateResult):
+                        model_result = inference_output
+                    else:
+                        # 先缓存本轮模型流式文本，待确认本轮结果是否合法后再决定是否对用户可见。
+                        if isinstance(inference_output, ModelClientStreamingChunkEvent):
+                            buffered_stream_events.append(inference_output)
+                # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
+                # self._cleanup_inflight_ephemeral_images(model_context)
 
                 if model_result is None:
                     if self.is_paused or cancellation_token.is_cancelled():
@@ -914,7 +1312,7 @@ class RongZaiAgent(DrSaiAgent):
                 if model_result.content == "":
                     yield Response(
                     chat_message=TextMessage(
-                        content="(No response was generated by the model.) You can try change a base model.",
+                        content="(No response was generated by the model.) You can try change a base model or wait some time.",
                         source=self._agent_name,
                         metadata={"internal": "no"},
                         ),
@@ -922,18 +1320,16 @@ class RongZaiAgent(DrSaiAgent):
                     )
                     break
 
-                # 将 assistant 结果写回上下文（包含可选 thought）
-                await model_context.add_message(
-                    AssistantMessage(
-                        content=model_result.content,
-                        source=self._name,
-                        thought=getattr(model_result, "thought", None),
-                    )
-                )
-                
-                
                 # 纯文本响应：不调用工具，直接结束循环。
                 if isinstance(model_result.content, str):
+                    # 纯文本场景直接写回 assistant 响应。
+                    await model_context.add_message(
+                        AssistantMessage(
+                            content=model_result.content,
+                            source=self._name,
+                            thought=getattr(model_result, "thought", None),
+                        )
+                    )
                     for buffered_event in buffered_stream_events:
                         yield buffered_event
                     response = await self.handle_str_reponse(
@@ -1073,18 +1469,23 @@ class RongZaiAgent(DrSaiAgent):
 
                         try:
                             parsed = json.loads(result.content)
-                            if isinstance(parsed, dict) and parsed.get("type") == "files_events":
-                                events = parsed.get("events", [])
-                                sent_count = 0
-                                for event_data in events:
+                            if isinstance(parsed, dict) and parsed.get("type") == "files_event":
+                                event_data = parsed.get("event", None)
+                                if isinstance(event_data, str):
+                                    try:
+                                        event_data = json.loads(event_data)
+                                    except Exception:
+                                        event_data = None
+                                if isinstance(event_data, dict):
                                     try:
                                         files_event = FilesEvent.model_validate(event_data)
                                         yield files_event
-                                        sent_count += 1
+                                        result.content = "Served files to the right side of frontend for download."
                                     except Exception:
                                         # logger.error(f"Error parsing FilesEvent: {event_data}, error: {traceback.format_exc()}")
-                                        continue
-                                result.content = f"Served {sent_count} file event(s) to user."
+                                        result.content = "Served 0 file event(s) to user."
+                                else:
+                                    result.content = "Served 0 file event(s) to user."
                         except Exception:
                             # logger.error(f"Error parsing tool result content as JSON: {result.content}, error: {traceback.format_exc()}")
                             pass
@@ -1100,23 +1501,8 @@ class RongZaiAgent(DrSaiAgent):
                                 info2user = f"### ![image.png]({fig_url})\n\n"
                                 yield ModelClientStreamingChunkEvent(content=info2user, source=agent_name)
 
-                                # 同时把图片回注到“临时多模态上下文”，用于下一轮推理。
-                                # 这里不写入 DrSai 的持久化上下文，避免 sanitize 回写时触发字符串校验。
-                                if isinstance(model_context, DrSaiChatCompletionContext):
-                                    image_ob = Image.from_file(file_path=img_path)
-                                    multimodal_msg = UserMessage(
-                                        content=[f"the figure of {img_path}", image_ob],
-                                        source="user",
-                                    )
-                                    if self._record_ephemeral_image_message is not None:
-                                        self._record_ephemeral_image_message(multimodal_msg)
-                                else:
-                                    image_ob = Image.from_file(file_path=img_path)
-                                    multimodal_msg = UserMessage(
-                                        content=[f"the figure of {img_path}", image_ob],
-                                        source="user",
-                                    )
-                                    await model_context.add_message(multimodal_msg)      
+                                # 暂时禁用：工具调用后将图片强制回注到主模型上下文。
+                                # 当前仅回显给用户，不回注到主模型上下文。
                         
                     else:
                         pending_tool_results.append(
@@ -1129,6 +1515,15 @@ class RongZaiAgent(DrSaiAgent):
                         )
 
                 if pending_tool_results:
+                    # 工具调用场景：将 tool_call 与 tool_result 作为一个原子对提交到上下文，
+                    # 避免 pause/cancel 时只写入半对消息导致顺序不一致。
+                    await model_context.add_message(
+                        AssistantMessage(
+                            content=model_result.content,
+                            source=self._name,
+                            thought=getattr(model_result, "thought", None),
+                        )
+                    )
                     await model_context.add_message(
                         FunctionExecutionResultMessage(content=pending_tool_results)
                     )
@@ -1166,7 +1561,8 @@ class RongZaiAgent(DrSaiAgent):
         finally:
             # 收尾：上传会话到 ragflow（如启用）并清理当前消息缓存
             if isinstance(self._model_context, DrSaiChatCompletionContext):
-                self._cleanup_all_ephemeral_images(self._model_context)
+                # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
+                # self._cleanup_all_ephemeral_images(self._model_context)
                 if self._model_context._rag_flow_manager:
                     await self._model_context.upload_conversation_to_ragflow()
                 self._model_context._current_messages = []
@@ -1194,9 +1590,10 @@ class RongZaiAgent(DrSaiAgent):
             all_messages = await model_context.get_messages()
         
         runtime_messages = list(all_messages)
-        if self._ephemeral_images_inflight:
-            # 仅在本轮调用临时拼接多模态消息，不写入持久化 context。
-            runtime_messages.extend(self._ephemeral_images_inflight)
+        # Legacy (disabled): 如需恢复 tool 图片回注上下文，在此拼接 inflight 图片消息。
+        # if self._ephemeral_images_inflight:
+        #     runtime_messages.extend(self._ephemeral_images_inflight)
+        # runtime_messages = self._repair_trimmed_runtime_messages(runtime_messages)
 
         llm_messages: List[LLMMessage] = self._get_compatible_context(
             model_client=model_client,
@@ -1208,30 +1605,71 @@ class RongZaiAgent(DrSaiAgent):
             llm_messages = await self._call_memory_function(llm_messages, model_client, cancellation_token, agent_name)
 
         all_tools = (await workbench.list_tools()) + handoff_tools + manager_tools
-        if self._reply_function is not None:
-            # 自定义回复函数：允许上层接管模型调用流程
-            async for chunk in self._call_reply_function(
-                llm_messages, 
-                model_client = model_client, 
-                workbench=workbench,
-                handoff_tools=handoff_tools,
-                tools = all_tools,
-                agent_name=agent_name, 
+        try:
+            if self._reply_function is not None:
+                # 自定义回复函数：允许上层接管模型调用流程
+                async for chunk in self._call_reply_function(
+                    llm_messages,
+                    model_client=model_client,
+                    workbench=workbench,
+                    handoff_tools=handoff_tools,
+                    tools=all_tools,
+                    agent_name=agent_name,
+                    cancellation_token=cancellation_token,
+                    db_manager=self._db_manager,
+                ):
+                    yield chunk
+            else:
+                async for chunk in self.call_llm(
+                    agent_name=agent_name,
+                    model_client=model_client,
+                    llm_messages=llm_messages,
+                    tools=all_tools,
+                    model_client_stream=model_client_stream,
+                    cancellation_token=cancellation_token,
+                    output_content_type=output_content_type,
+                ):
+                    yield chunk
+            return
+        except Exception as call_err:
+            if not self._is_context_length_error(call_err):
+                raise
+
+            logger.warning(
+                "Detected context overflow, invoking history summarizer sub-agent and retrying once. error={} ",
+                call_err,
+            )
+            retry_messages = await self._build_retry_llm_messages_after_context_overflow(
+                model_client=model_client,
+                system_messages=system_messages,
+                runtime_messages=runtime_messages,
                 cancellation_token=cancellation_token,
-                db_manager=self._db_manager,
-            ):
-                yield chunk
-        else:
-           async for chunk in self.call_llm(
-                agent_name = agent_name,
-                model_client = model_client,
-                llm_messages = llm_messages, 
-                tools = all_tools, 
-                model_client_stream = model_client_stream,
-                cancellation_token = cancellation_token,
-                output_content_type = output_content_type,
-           ):
-               yield chunk
+            )
+
+            # 重试时不再注入 memory_function，避免再次膨胀上下文。
+            if self._reply_function is not None:
+                async for chunk in self._call_reply_function(
+                    retry_messages,
+                    model_client=model_client,
+                    workbench=workbench,
+                    handoff_tools=handoff_tools,
+                    tools=all_tools,
+                    agent_name=agent_name,
+                    cancellation_token=cancellation_token,
+                    db_manager=self._db_manager,
+                ):
+                    yield chunk
+            else:
+                async for chunk in self.call_llm(
+                    agent_name=agent_name,
+                    model_client=model_client,
+                    llm_messages=retry_messages,
+                    tools=all_tools,
+                    model_client_stream=model_client_stream,
+                    cancellation_token=cancellation_token,
+                    output_content_type=output_content_type,
+                ):
+                    yield chunk
 
     async def handle_str_reponse(
             self,
