@@ -3,11 +3,16 @@ import logging
 import sys
 import io
 import json
+import time
+import csv
+import copy
 from pathlib import Path
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import GSASIIscriptable as G2sc
+import GSASIImath as G2mth
+import GSASIIElem as G2elem
 import shutil
 import pprint
 from typing import List, Dict, Union, Optional
@@ -86,8 +91,9 @@ def generate_fit_plot(hist, phases, user_id, mission_name, task_id):
     y_bkg_shifted = y_bkg_plot + y_offset
     
     plt.plot(x_plot, diff_plot, 'k-', label='Difference (Obs-Calc)', linewidth=1)
-    plt.plot(x_plot, y_obs_shifted, color='b', marker='x', linestyle='None', label='Observed', markersize=6, alpha=0.8)
-    plt.plot(x_plot, y_calc_shifted, 'r-', label='Calculated', linewidth=3.6)
+    # 观测谱使用细阶梯线更接近粉末衍射原始计数形态，细节与峰肩更清晰
+    plt.step(x_plot, y_obs_shifted, where='mid', color='#1f77b4', label='Observed', linewidth=0.9, alpha=0.95)
+    plt.step(x_plot, y_calc_shifted, where='mid', color='r', label='Calculated', linewidth=1.1, alpha=0.95)
     plt.plot(x_plot, y_bkg_shifted, 'g-', label='Background', linewidth=1.2)
     plt.axvline(x=tofmin, color='m', linestyle='--', linewidth=1, label='TOF Min')
     plt.axvline(x=tofmax, color='c', linestyle='--', linewidth=1, label='TOF Max')
@@ -255,6 +261,29 @@ def _resolve_initial_atom_value(init_values, phase, phase_idx, atom_idx, atom_la
     return init_values
 
 
+def _resolve_phase_scoped_value(values, phase, phase_idx):
+    """按统一规则解析按相配置的值（支持 all/default/phase/index）。"""
+    if isinstance(values, dict):
+        if hasattr(phase, 'name') and phase.name in values:
+            return values[phase.name]
+        if phase_idx in values:
+            return values[phase_idx]
+        if str(phase_idx) in values:
+            return values[str(phase_idx)]
+        if 'all' in values:
+            return values['all']
+        if 'default' in values:
+            return values['default']
+        return None
+
+    if isinstance(values, (list, tuple)):
+        if phase_idx < len(values):
+            return values[phase_idx]
+        return None
+
+    return values
+
+
 def _resolve_initial_instrument_params(init_values, hist):
     """解析 initial_instrument_params，支持全局与按直方图配置。"""
     if init_values is None:
@@ -293,6 +322,117 @@ def _resolve_initial_instrument_params(init_values, hist):
             resolved.update(hist_cfg)
 
     return resolved
+
+
+def _resolve_spacegroup_symbol(spacegroup_value):
+    """把空间群输入解析为 GSAS-II 可用符号。
+
+    支持：
+    - 编号 1-230（int/数字字符串）
+    - H-M 符号（允许大小写与多空格）
+    - full H-M（会尝试转 short H-M）
+    """
+    try:
+        import GSASIIspc as G2spc
+    except Exception as e:
+        raise RuntimeError(f"导入 GSASIIspc 失败: {e}")
+
+    if spacegroup_value is None:
+        return None
+
+    # 1) 优先支持 1-230 编号
+    if isinstance(spacegroup_value, int) and not isinstance(spacegroup_value, bool):
+        sg_no = int(spacegroup_value)
+        if 1 <= sg_no <= 230:
+            return G2spc.spgbyNum[sg_no]
+        raise ValueError(f"空间群编号超出范围(1-230): {sg_no}")
+
+    sg_text = str(spacegroup_value).strip()
+    if not sg_text:
+        return None
+
+    if sg_text.isdigit():
+        sg_no = int(sg_text)
+        if 1 <= sg_no <= 230:
+            return G2spc.spgbyNum[sg_no]
+        raise ValueError(f"空间群编号超出范围(1-230): {sg_no}")
+
+    # 2) 对符号做标准化尝试
+    cleaned = ' '.join(sg_text.split())
+    candidates = [cleaned]
+
+    try:
+        short_hm = G2spc.fullHM2shortHM(cleaned)
+        if short_hm and short_hm not in candidates:
+            candidates.append(short_hm)
+    except Exception:
+        pass
+
+    try:
+        normalized = G2spc.StandardizeSpcName(cleaned)
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+    except Exception:
+        pass
+
+    for cand in candidates:
+        err, _ = G2spc.SpcGroup(cand)
+        if err == 0:
+            return cand
+
+    raise ValueError(f"空间群无效: {spacegroup_value}")
+
+
+def _apply_spacegroup_to_phase(phase, phase_idx, spacegroup_value, logger):
+    """将单个相切换到指定空间群，并同步各原子的 site sym/mult。"""
+    if spacegroup_value is None:
+        return False
+
+    try:
+        import GSASIIspc as G2spc
+    except Exception as e:
+        raise RuntimeError(f"导入 GSASIIspc 失败: {e}")
+
+    sg_text = _resolve_spacegroup_symbol(spacegroup_value)
+    if not sg_text:
+        return False
+
+    err, sg_data = G2spc.SpcGroup(sg_text)
+    if err != 0:
+        raise ValueError(f"空间群无效: {sg_text}; 详情: {G2spc.SGErrors(err)}")
+
+    general = phase.data.setdefault('General', {})
+    old_sg = general.get('SGData', {}).get('SpGrp', 'UNKNOWN')
+    general['SGData'] = sg_data
+
+    # 按当前相的 AtomPtrs 重新计算 site sym/mult，避免空间群切换后原子元数据不一致。
+    atom_ptrs = general.get('AtomPtrs', None)
+    if not (isinstance(atom_ptrs, (list, tuple)) and len(atom_ptrs) >= 3):
+        atom_ptrs = [3, 1, 7, 9]
+
+    cx = int(atom_ptrs[0])
+    cs = int(atom_ptrs[2])
+    updated_atoms = 0
+
+    atoms = phase.data.get('Atoms', [])
+    for atom in atoms:
+        if not isinstance(atom, list):
+            continue
+        if len(atom) <= max(cx + 2, cs + 1):
+            continue
+        try:
+            xyz = [float(atom[cx]), float(atom[cx + 1]), float(atom[cx + 2])]
+            sytsym, mult = G2spc.SytSym(xyz, sg_data)[:2]
+            atom[cs] = sytsym
+            atom[cs + 1] = mult
+            updated_atoms += 1
+        except Exception:
+            continue
+
+    logger.info(
+        f"相{phase_idx} 空间群已切换: {old_sg} -> {sg_data.get('SpGrp', sg_text)}; 同步原子数: {updated_atoms}"
+    )
+    return True
 
 
 def _auto_open_related_constrained_atoms(gpx, phases, refine_config, logger):
@@ -435,56 +575,6 @@ def _auto_open_related_constrained_atoms(gpx, phases, refine_config, logger):
     return info
 
 def flexible_neutron_refinement(gpx, hist, phases, task_id,user_id, mission_name, refine_config=None, use_constraints=False):
-    """
-    灵活的中子精修函数 - 一次性精修所有启用的参数
-
-    参数:
-    gpx: GSAS-II项目对象
-    hist: 历史数据对象
-    phases: 相列表
-    output_dir: 输出目录
-    refine_config: 精修配置字典，支持以下参数:
-        {
-            # 基础参数
-            'refine_background': True,           # 背景精修
-            'background_coeffs': 3,              # 背景系数数量
-            'refine_cell': True,                 # 晶胞参数精修
-            'refine_scale': True,                # 标度因子精修
-            'refine_absorption': False,          # 吸收参数精修
-
-            # 仪器参数 (可以整体或单独控制)
-            'refine_instrument': True,           # 整体仪器参数精修
-            'refine_instrument_difc': False,     # difC
-            'refine_instrument_difa': False,     # difA
-            'refine_instrument_difb': False,     # difB
-            'refine_instrument_zero': False,     # Zero
-            'refine_instrument_alpha': False,    # alpha
-            'refine_instrument_beta': False,     # beta-0, beta-1, beta-q
-            'refine_instrument_sig': False,      # sig-0, sig-1, sig-2, sig-q
-            'refine_instrument_x': False,        # X
-            'refine_instrument_y': False,        # Y
-            'refine_instrument_z': False,        # Z
-            'initial_instrument_params': None,   # 仪器参数初始值
-                                                 # 例如: {'difC': 6861.355, 'Zero': 4.565}
-                                                 # 或 {'all': {...}, 'histograms': {'PWDR xxx': {...}}}
-
-            # 原子参数 (可以灵活控制)
-            'refine_atoms': {},               # 要精修的原子标签字典，'all'表示所有原子
-                                              # 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'}
-            'initial_atom_uiso': None,        # 原子热无序因子初始值：支持按原子设置
-                                              # 格式: {'Fe1': 0.05, 'O2': 0.03}
-            'initial_atom_occupancy': None,   # 原子占有率初始值：支持按原子设置
-                                              # 格式: {'Fe1': 1.0, 'O2': 0.5}
-
-            # 高级参数
-            'refine_limits': False,              # Limits精修
-            'refine_sample_displacement': False, # 样品位移
-            'refine_size': False,                # 晶粒尺寸
-            'refine_mustrain': False,            # 微应变
-            'refine_phase_fraction': False,      # 相分数
-        }
-    use_constraints: 是否使用约束
-    """
     logger = logging.getLogger(__name__)
     logger.info("开始一次性精修流程...")
 
@@ -493,6 +583,7 @@ def flexible_neutron_refinement(gpx, hist, phases, task_id,user_id, mission_name
         # 基础参数
         'refine_background': False,
         'background_coeffs': 3,
+        'remove_fixed_background': False,
         'refine_cell': False,
         'refine_scale': False,
         'refine_absorption': False,
@@ -523,7 +614,13 @@ def flexible_neutron_refinement(gpx, hist, phases, task_id,user_id, mission_name
         'refine_size': False,
         'refine_mustrain': False,
         'initial_mustrain': None,  # 微应变初始值：支持 'isotropic'模式
+        'refine_preferred_orientation': False,
+        'preferred_orientation_model': 'MD',
+        'initial_preferred_orientation': None,
+        'preferred_orientation_axis': None,
         'refine_phase_fraction': False,
+        'initial_limits': None,
+        'spacegroup': None,
     }
 
     # 使用用户定义的配置或默认配置
@@ -544,6 +641,23 @@ def flexible_neutron_refinement(gpx, hist, phases, task_id,user_id, mission_name
     # 记录启用的精修参数
     enabled_refinements = [key for key, value in refine_config.items() if value and isinstance(value, bool)]
     logger.info(f"启用的精修参数: {enabled_refinements}")
+
+    # 如果用户提供空间群(spacegroup)，在精修前更新相的 SGData，并同步原子位点对称与重数。
+    spacegroup_cfg = refine_config.get('spacegroup')
+    if spacegroup_cfg is not None:
+        logger.info('检测到 spacegroup 配置，尝试切换相空间群')
+        applied_count = 0
+        for i, phase in enumerate(phases):
+            sg_value = _resolve_phase_scoped_value(spacegroup_cfg, phase, i)
+            if sg_value is None:
+                continue
+            try:
+                if _apply_spacegroup_to_phase(phase, i, sg_value, logger):
+                    applied_count += 1
+            except Exception as e:
+                logger.warning(f"相{i} 切换空间群失败: {e}")
+        if applied_count == 0:
+            logger.warning('spacegroup 已提供，但未成功应用到任何相')
 
     # 如果用户提供初始晶胞参数(initial_cell)，在执行任何晶胞精修前写入 phase
     # 支持格式：列表（按相索引）或字典（按相名或索引键）
@@ -748,6 +862,68 @@ def flexible_neutron_refinement(gpx, hist, phases, task_id,user_id, mission_name
             except Exception as e:
                 logger.warning(f"写入相{i}初始微应变失败: {e}")
 
+    # 如果用户提供择优取向配置，在精修前写入 HAP 的 Pref.Ori. 数据
+    po_value_cfg = refine_config.get('initial_preferred_orientation')
+    po_axis_cfg = refine_config.get('preferred_orientation_axis')
+    po_model_cfg = refine_config.get('preferred_orientation_model')
+    if po_value_cfg is not None or po_axis_cfg is not None or po_model_cfg is not None:
+        logger.info('检测到 preferred orientation 配置，尝试写入各相的 Pref.Ori. 参数')
+        for i, phase in enumerate(phases):
+            try:
+                hdata = phase.data.get('Histograms', {}).get(hist.name, None)
+                if not isinstance(hdata, dict) or 'Pref.Ori.' not in hdata:
+                    logger.warning(f"相{i}在直方图 {hist.name} 下不存在 Pref.Ori.，已跳过")
+                    continue
+
+                po_data = hdata['Pref.Ori.']
+                if not isinstance(po_data, list) or len(po_data) < 4:
+                    logger.warning(f"相{i} 的 Pref.Ori. 数据结构异常，已跳过")
+                    continue
+
+                model_val = _resolve_phase_scoped_value(po_model_cfg, phase, i)
+                if model_val is not None:
+                    model_text = str(model_val).strip().upper()
+                    if model_text in {'MD', 'MARCH', 'MARCH-DOLLASE', 'MARCH_DOLLASE'}:
+                        po_data[0] = 'MD'
+                    elif model_text in {'SH', 'SPHERICAL_HARMONICS', 'SPHERICAL-HARMONICS'}:
+                        po_data[0] = 'SH'
+                    else:
+                        logger.warning(f"相{i} 的 preferred_orientation_model 不支持: {model_val}，保留当前模型 {po_data[0]}")
+
+                po_val = _resolve_phase_scoped_value(po_value_cfg, phase, i)
+                if po_val is not None:
+                    if str(po_data[0]).upper() == 'MD':
+                        po_data[1] = float(po_val)
+                    else:
+                        logger.warning(f"相{i} 当前模型为 {po_data[0]}，暂不支持 initial_preferred_orientation 直接写入")
+
+                axis_val = _resolve_phase_scoped_value(po_axis_cfg, phase, i)
+                if axis_val is not None:
+                    if isinstance(axis_val, str):
+                        axis_parts = axis_val.replace(',', ' ').split()
+                    else:
+                        axis_parts = list(axis_val) if isinstance(axis_val, (list, tuple)) else None
+                    if axis_parts is None or len(axis_parts) != 3:
+                        logger.warning(f"相{i} 的 preferred_orientation_axis 格式错误: {axis_val}")
+                    else:
+                        axis_hkl = [int(axis_parts[0]), int(axis_parts[1]), int(axis_parts[2])]
+                        if any(axis_hkl):
+                            po_data[3] = axis_hkl
+                        else:
+                            logger.warning(f"相{i} 的 preferred_orientation_axis 不能为 [0,0,0]，已忽略")
+
+                logger.info(f"相{i} Pref.Ori. 设置完成: model={po_data[0]}, value={po_data[1]}, axis={po_data[3]}, refine={po_data[2]}")
+            except Exception as e:
+                logger.warning(f"写入相{i}择优取向参数失败: {e}")
+
+    # 如果用户提供 TOF 范围初值(initial_limits)，在精修前写入当前直方图 limits
+    init_limits = refine_config.get('initial_limits')
+    if init_limits:
+        lim = init_limits.get(hist.name, init_limits.get('all'))
+        if lim:
+            hist.data['Limits'][1][0], hist.data['Limits'][1][1] = float(lim[0]), float(lim[1])
+            logger.info(f"设置初始TOF范围: {hist.data['Limits'][1][0]} - {hist.data['Limits'][1][1]}")
+
     # 如果用户提供仪器参数初始值(initial_instrument_params)，在执行精修前写入当前直方图
     if refine_config.get('initial_instrument_params') is not None:
         logger.info('检测到 initial_instrument_params 配置，尝试写入当前直方图的仪器参数')
@@ -822,10 +998,58 @@ def flexible_neutron_refinement(gpx, hist, phases, task_id,user_id, mission_name
                     except Exception as e:
                         logger.warning(f"写入仪器参数 {target_key} 失败: {e}")
 
-    
+    # 增加精修约束
+    logger.info("处理精修约束配置...")
+    if 'set_constraints' in refine_config:
+        logger.info(f"添加约束配置数量: {len(refine_config.get('set_constraints', []))}")
+        cdata = gpx.data.get('Constraints', {}).get('data', None)
+        if cdata is None:
+            gpx.data.setdefault('Constraints', {}).setdefault('data', {})
+            cdata = gpx.data['Constraints']['data']
+        for scope in ('Hist', 'HAP', 'Phase', 'Global'):
+            cdata[scope] = []
+        
+        for i, c in enumerate(refine_config.get('set_constraints', [])):
+            if not isinstance(c, dict):
+                logger.warning(f"第 {i} 个约束配置格式错误，应该是字典，已跳过")
+                continue
+            if 'type' not in c:
+                logger.warning(f"第 {i} 个约束配置缺少 type 字段，已跳过")
+                continue
+            if c['type'] == 'eqn':
+                vars_cfg = c.get('vars', [])
+                varlist = [_build_var_from_spec(gpx, phases, v) for v in vars_cfg]
+                multlist = c.get('mults', [])
+                total = float(c.get('total', 0.0))
+                gpx.add_EqnConstr(total=total, varlist=varlist, multlist=multlist, reloadIdx=True)
+            if c['type'] == 'equiv':
+                vars_cfg = c.get('vars', [])
+                varlist = [_build_var_from_spec(gpx, phases, v) for v in vars_cfg]
+                multlist = c.get('mults', [])
+                gpx.add_EquivConstr(varlist=varlist, multlist=multlist, reloadIdx=True)
+            if c['type'] == 'hold':
+                vars_cfg = c.get('vars', [])
+                varlist = [_build_var_from_spec(gpx, phases, v) for v in vars_cfg]
+                gpx.add_HoldConstr(varlist=varlist, reloadIdx=True)
+            if c['type'] == 'newvar':
+                vars_cfg = c.get('vars', [])
+                varlist = [_build_var_from_spec(gpx, phases, v) for v in vars_cfg]
+                multlist = c.get('mults', [])
+                name = c.get('name', None)
+                vary = bool(c.get('vary', False))
+                gpx.add_NewVarConstr(varlist=varlist, multlist=multlist, name=name, vary=vary, reloadIdx=True)
     
     # 构建一次性精修字典
     ref_dict = {"set": {}}
+
+    # 可选：清除固定背景文件引用并删除其背景直方图
+    if refine_config.get('remove_fixed_background', False):
+        logger.info("检测到 remove_fixed_background=True，开始清理固定背景")
+        clear_fixed_background(
+            gpx,
+            hist,
+            logger=logger,
+        )
 
     # 0. 设置最大精修循环次数
     if refine_config.get('refine_cycle', False):
@@ -993,7 +1217,19 @@ def flexible_neutron_refinement(gpx, hist, phases, task_id,user_id, mission_name
             except Exception as e:
                 logger.warning(f"  设置微应变精修失败: {str(e)}")
 
-    # 10. 相分数精修
+    # 10. 择优取向精修（Preferred Orientation, March-Dollase/SH）
+    if refine_config.get('refine_preferred_orientation', False):
+        logger.info("添加择优取向参数到精修字典")
+        for phase_idx, phase in enumerate(phases):
+            try:
+                phase.set_HAP_refinements({"Pref.Ori.": True}, [hist.name])
+                po_data = phase.data.get('Histograms', {}).get(hist.name, {}).get('Pref.Ori.', None)
+                if isinstance(po_data, list) and len(po_data) >= 4:
+                    logger.info(f"  相{phase_idx} 择优取向精修已启用: model={po_data[0]}, value={po_data[1]}, axis={po_data[3]}")
+            except Exception as e:
+                logger.warning(f"  设置择优取向精修失败: {str(e)}")
+
+    # 11. 相分数精修
     if refine_config.get('refine_phase_fraction', False):
         logger.info("添加相分数参数到精修字典")
         for phase in phases:
@@ -1003,7 +1239,7 @@ def flexible_neutron_refinement(gpx, hist, phases, task_id,user_id, mission_name
                 logger.warning(f"  设置相分数精修失败: {str(e)}")
 
     # 检查是否有需要精修的参数
-    if not any(refine_config.values()) and not refine_config.get('initial_cell') and not refine_config.get('initial_mustrain'):
+    if not any(refine_config.values()) and not refine_config.get('initial_cell') and not refine_config.get('initial_mustrain') and not refine_config.get('initial_preferred_orientation') and not refine_config.get('preferred_orientation_axis'):
         logger.warning("没有启用任何精修参数，跳过精修")
         save_dir = TMP_DIR / f"{user_id}"/f"{mission_name}"
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -1084,6 +1320,78 @@ def safe_float(value, default=0.0):
     except (ValueError, TypeError):
         return default
 
+
+def export_reflection_table(gpx, user_id, mission_name, task_id):
+    """导出反射表（hkl 等）到 CSV，返回文件路径与行数。"""
+    save_dir = TMP_DIR / f"{user_id}" / f"{mission_name}"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = save_dir / f"{task_id}_reflections.csv"
+
+    def _build_ref_columns(n_cols, is_super=False):
+        cols = ['h', 'k', 'l']
+        if is_super:
+            cols.append('m')
+        cols.extend(['multiplicity', 'd_spacing', 'position', 'sig', 'gam', 'f_obs_sq', 'f_calc_sq', 'phase_term', 'i_corr'])
+        remain = n_cols - len(cols)
+        if remain == 3:
+            cols.extend(['prfo', 'abs', 'ext'])
+        elif remain == 5:
+            cols.extend(['alp', 'bet', 'prfo', 'abs', 'ext'])
+        elif remain == 6:
+            cols.extend(['alp', 'bet', 'wave', 'prfo', 'abs', 'ext'])
+        else:
+            cols.extend([f'extra_{i+1}' for i in range(max(0, remain))])
+        return cols
+
+    rows = []
+    all_ref_cols = set()
+    for hist in gpx.histograms():
+        hname = getattr(hist, 'name', str(hist))
+        hnode = gpx.data.get(hname, {})
+        refl_lists = hnode.get('Reflection Lists', {})
+        if not isinstance(refl_lists, dict) or not refl_lists:
+            continue
+
+        for phase_name, phase_refl in refl_lists.items():
+            if not isinstance(phase_refl, dict):
+                continue
+            ref_arr = phase_refl.get('RefList', None)
+            if ref_arr is None or len(ref_arr) == 0:
+                continue
+
+            is_super = bool(phase_refl.get('Super', False))
+            ref_cols = _build_ref_columns(int(ref_arr.shape[1]), is_super=is_super)
+            all_ref_cols.update(ref_cols)
+            for row in ref_arr:
+                rec = {
+                    'histogram': hname,
+                    'phase': str(phase_name),
+                    'is_super': is_super,
+                }
+                for idx, col in enumerate(ref_cols):
+                    val = row[idx]
+                    rec[col] = val.item() if hasattr(val, 'item') else val
+                rows.append(rec)
+
+    if not rows:
+        return None, 0
+
+    preferred_order = [
+        'histogram', 'phase', 'is_super',
+        'h', 'k', 'l', 'm', 'multiplicity', 'd_spacing', 'position',
+        'sig', 'gam', 'f_obs_sq', 'f_calc_sq', 'phase_term', 'i_corr',
+        'alp', 'bet', 'wave', 'prfo', 'abs', 'ext',
+    ]
+    extra_cols = sorted([c for c in all_ref_cols if c not in preferred_order])
+    fieldnames = [c for c in preferred_order if c in {'histogram', 'phase', 'is_super'} or c in all_ref_cols] + extra_cols
+
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return str(csv_path), len(rows)
+
 def ensure_fixed_background(gpx, hist):
     """如果 histogram 的 Background 包含 FixedPoints，则用线性插值写回 data[1][4]，
     并克隆为一个新的 PWDR histogram，设置为 background PWDR。
@@ -1150,6 +1458,108 @@ def ensure_fixed_background(gpx, hist):
     return
 
 
+def _remove_histogram_from_project(gpx, hist_name):
+    """尽力从项目中移除一个 histogram（仅用于清理自动生成的背景 histogram）。"""
+    removed = False
+    if not hist_name:
+        return removed
+
+    try:
+        if hist_name in gpx.data:
+            del gpx.data[hist_name]
+            removed = True
+    except Exception:
+        pass
+
+    try:
+        gpx.names = [node for node in gpx.names if not (node and node[0] == hist_name)]
+    except Exception:
+        pass
+
+    try:
+        phases_dict = gpx.data.get('Phases', {})
+        if isinstance(phases_dict, dict):
+            for _, phase_data in phases_dict.items():
+                if not isinstance(phase_data, dict):
+                    continue
+                hdict = phase_data.get('Histograms')
+                if isinstance(hdict, dict) and hist_name in hdict:
+                    del hdict[hist_name]
+    except Exception:
+        pass
+
+    try:
+        seq_data = gpx.data.get('Controls', {}).get('data', {}).get('Seq Data')
+        if isinstance(seq_data, list):
+            gpx.data['Controls']['data']['Seq Data'] = [h for h in seq_data if h != hist_name]
+    except Exception:
+        pass
+
+    return removed
+
+
+def clear_fixed_background(gpx, hist, logger=None):
+    """清除当前 histogram 的固定背景文件绑定，并删除对应背景 histogram。"""
+    info = {
+        'cleared_reference': False,
+        'removed_fixed_points': False,
+        'removed_auto_params': False,
+        'removed_background_histogram': False,
+        'background_histogram_name': '',
+    }
+
+    try:
+        histname = hist.name if hasattr(hist, 'name') else str(hist)
+        hdata = gpx.data.get(histname, {})
+        bg = hdata.get('Background')
+        if not (isinstance(bg, list) and len(bg) >= 2 and isinstance(bg[1], dict)):
+            return info
+
+        bkg_dict = bg[1]
+        back_ref = bkg_dict.get('background PWDR', ['', 1.0, False])
+        back_name = ''
+        if isinstance(back_ref, (list, tuple)) and back_ref:
+            back_name = str(back_ref[0]).strip()
+        elif isinstance(back_ref, str):
+            back_name = back_ref.strip()
+        info['background_histogram_name'] = back_name
+
+        bkg_dict['background PWDR'] = ['', 1.0, False]
+        info['cleared_reference'] = True
+
+        if bkg_dict.pop('FixedPoints', None) is not None:
+            info['removed_fixed_points'] = True
+        if bkg_dict.pop('autoPrms', None) is not None:
+            info['removed_auto_params'] = True
+
+        if back_name:
+            candidate_names = [back_name]
+            if back_name.startswith('PWDR '):
+                candidate_names.append(back_name[5:])
+            else:
+                candidate_names.append(f'PWDR {back_name}')
+
+            removed_any = False
+            for candidate in candidate_names:
+                if candidate == histname:
+                    continue
+                if candidate in gpx.data:
+                    removed_any = _remove_histogram_from_project(gpx, candidate) or removed_any
+            info['removed_background_histogram'] = removed_any
+
+        if logger:
+            logger.info(f"固定背景清理结果: {info}")
+        else:
+            print(f"固定背景清理结果: {info}")
+    except Exception as e:
+        if logger:
+            logger.warning(f"清理固定背景失败: {e}")
+        else:
+            print(f"清理固定背景失败: {e}")
+
+    return info
+
+
 def _resolve_phase_obj(phases, phase_ref):
     """Resolve phase object by index/name/id/ranId. Defaults to first phase."""
     if not phases:
@@ -1182,6 +1592,38 @@ def _resolve_phase_obj(phases, phase_ref):
                 return p, i
 
     raise ValueError(f"无法定位 phase: {phase_ref}")
+
+
+def _resolve_hist_obj(hists, hist_ref):
+    """Resolve histogram object by index/name/id/ranId. Defaults to first histogram."""
+    if not hists:
+        raise ValueError("GPX 项目中没有可用的 histogram")
+
+    if hist_ref is None:
+        return hists[0], 0
+
+    if isinstance(hist_ref, int):
+        if hist_ref < 0 or hist_ref >= len(hists):
+            raise ValueError(f"histogram 索引越界: {hist_ref}")
+        return hists[hist_ref], hist_ref
+
+    if isinstance(hist_ref, str):
+        s = hist_ref.strip()
+        if s.isdigit():
+            idx = int(s)
+            if idx < 0 or idx >= len(hists):
+                raise ValueError(f"histogram 索引越界: {hist_ref}")
+            return hists[idx], idx
+
+        for i, h in enumerate(hists):
+            if getattr(h, 'name', None) == s:
+                return h, i
+            if str(getattr(h, 'id', '')) == s:
+                return h, i
+            if str(getattr(h, 'ranId', '')) == s:
+                return h, i
+
+    raise ValueError(f"无法定位 histogram: {hist_ref}")
 
 
 def _extract_atom_xyz(atom_cfg):
@@ -1277,7 +1719,7 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
         user_id: 用户ID，字符串，标识当前用户身份，用于日志记录和权限控制
         mission_name: 大任务名称。同一个精修任务下会涉及多次该工具调用，需保持相同 mission_name；
                   工具会使用它和 user_id 共同定位该大任务的文件目录。
-        task_id: mission 内的子任务ID。继续轮询已有未完成任务时，必须传入之前的 task_id，并保持 mission_name 一致。
+        task_id: mission 内的子任务ID，必须指定。继续轮询已有未完成任务时，必须传入之前的 task_id，并保持 mission_name 一致。
 
     Returns:
         dict: 包含初始化结果的字典，包含以下键:
@@ -1288,9 +1730,17 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
             'refinement_log': 精修过程中的日志信息,
             'main_lst_content': 精修生成的lst文件内容文本,
             'lst_path': 精修生成的lst文件路径,
+            'reflection_table_path': 导出的反射表CSV文件路径,
+            'execution_time_sec': initialize_project 总执行时长（秒）,
             "error":字符串，错误信息（仅当status为'failed'时存在）
     '''
-    
+
+    start_time = time.perf_counter()
+
+    def _finalize_result(payload: Dict) -> Dict:
+        payload['execution_time_sec'] = round(time.perf_counter() - start_time, 3)
+        return payload
+
     result = {'status': 'failure', 'task_id': task_id}
     """初始化GSAS-II项目并添加中子数据"""
 
@@ -1303,7 +1753,7 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
     # 添加中子数据
     if not (neutron_data and neutron_inst):
         result['error'] = "必须提供中子数据和仪器参数文件"
-        return result
+        return _finalize_result(result)
 
     print("步骤 2/8: 清理数据文件中的NaN值")
     # 对 GSAS 原生格式文件（.gsa/.gda/.raw）保持原样，避免丢失 BANK/头信息。
@@ -1317,10 +1767,10 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
                 print(f"  检测到GSAS原生格式({ext})，跳过重写，仅做文件可读性检查")
                 if not Path(neutron_data).exists():
                     result['error'] = f"数据文件不存在: {neutron_data}"
-                    return result
+                    return _finalize_result(result)
                 if Path(neutron_data).stat().st_size <= 0:
                     result['error'] = f"数据文件为空: {neutron_data}"
-                    return result
+                    return _finalize_result(result)
             else:
             # 读取原始文件
                 print(f"  读取原始数据文件: {neutron_data}")
@@ -1376,7 +1826,7 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
     except Exception as e:
         print(f"GSA文件数据处理失败: {str(e)}")
         result['error'] = f"无法处理GSA文件中的NaN值: {str(e)}"
-        return result
+        return _finalize_result(result)
 
     print("✓ 数据清理完成")
 
@@ -1608,11 +2058,13 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
     result['refinement_log'] = captured_output
     result['lst_path'] = str(save_dir / f'{task_id}.lst')
     result['main_lst_content'] = prune_lst_keep_main(save_dir / f'{task_id}.lst') if (save_dir / f'{task_id}.lst').exists() else ''
-    return result
+    refl_csv, refl_rows = export_reflection_table(gpx, user_id, mission_name, task_id)
+    result['reflection_table_path'] = refl_csv
+    return _finalize_result(result)
 
 
 
-def addOrRemove_atoms(
+def set_atoms(
     gpx_file: str,
     add_atoms_config: Union[List[Dict], Dict],
     remove_atoms_config: Union[List[Dict], Dict] = None,
@@ -1780,7 +2232,7 @@ def addOrRemove_atoms(
     print(f"新增/删除原子结果: {results}")
     return results
 
-def addOrChange_constraints(
+def set_constraints(
     gpx_file: str,
     constraints_config: List[Dict],
     mission_name: str = None,
@@ -1954,6 +2406,297 @@ def addOrChange_constraints(
     print(f"约束替换结果: {results}")
     return results
 
+def set_restraints(
+    gpx_file: str,
+    restraints_config: List[Dict],
+    mission_name: str = None,
+    user_id: str = None,
+    task_id: Optional[str] = None,
+) -> Dict:
+    """
+    在不修改原始 gpx 文件的前提下，创建一个新 gpx 并执行“替换 restraints”操作。
+    注意此工具会先把gpx文件中现有的所有restraints全部清空，再去添加指定的约束配置。所以你想在添加新约束情况下保持之前约束的话，就要把之前的约束也包含在 restraints_config 里重新添加一遍。
+    当前版本实现键长（Bond）与键角（Angle）约束。
+
+    Args：
+        gpx_file: 原始 .gpx 文件路径（必填）
+        restraints_config: 约束配置，list[dict] 格式，示例如下
+            [{
+            "type": "bond",
+            "phase": "Phase_1",
+            "weight": 1000,
+            "rules": [
+                {"origin": {"labels": ["Si1"]}, "target": {"element": "O"}, "distance": 1.64},
+                {"origin": {"labels": ["Si2"]}, "target": {"labels": ["O1", "O2"]}, "distance": 1.62, "esd": 0.02}
+            ]},
+            {"type": "bond", "phase": "Phase_2", "rules": {"origin": {"labels": ["C1"]}, "target": {"labels": ["O1"]}, "distance": 1.43}}
+            ]
+             - type: 约束类型，支持 "bond"（键长）或 "angle"（键角）
+             - phase: 约束作用的 phase，可以通过名称或索引指定
+             - weight: 约束权重（可选，默认为 1.0），值越大约束在精修中被违反时的惩罚越大
+             - rules: 约束规则，包含一个或多个规则的列表。每条规则包含：
+                - origin: 原子选择器，指定约束中原子角色的选择条件，支持以下字段（至少一个）：
+                    - label: str，选择特定标签的原子
+                    - labels: list[str]，选择多个标签的原子
+                    - element: str，选择特定元素的原子
+                    - elements: list[str]，选择多个元素的原子
+                - target: 原子选择器，指定约束中原子角色的选择条件，支持同 origin
+                - distance: float，约束的目标距离（bond 必填）
+                - angle: float，约束的目标角度（angle 必填，单位度）
+                - esd: float，约束的标准偏差（可选）；bond 默认 0.01，angle 默认 1.0
+        mission_name: 任务命名空间，用于轮询隔离
+        user_id: 用户 ID
+        task_id: 子任务 ID，由你传入，每次任务调用都应该是独一无二的task_id，且将用于新 gpx 文件命名
+    
+        Returns:
+        {
+            "status": "success"|"failed",
+            "new_gpx_path": "...", 新的 gpx 文件路径
+            "total_added_bonds": int, 键长约束总数
+            "total_added_angles": int, 键角约束总数
+            "added_restraint_rules": list, 新增的约束规则详情列表，格式示例: [{"phase_name": "Phase_1", "origin": ["Si1"], "target": ["O"], "distance": 1.64, "esd": 0.0, "weight": 1000}, ...]
+            "error": "错误信息（仅在失败时）"
+        }
+    """
+    results = {'status': 'failed'}
+    if not gpx_file:
+        results['error'] = "gpx_file 不能为空"
+        return results
+    if not task_id:
+        results['error'] = "task_id 不能为空，且将用于新 gpx 文件命名"
+        return results
+    src = Path(gpx_file)
+    if not src.exists():
+        results['error'] = f"gpx 文件不存在: {gpx_file}"
+        return results
+    if src.suffix.lower() != '.gpx':
+        results['error'] = f"输入文件必须是 .gpx: {gpx_file}"
+        return results
+
+    dst = src.with_name(f"{task_id}.gpx")
+    shutil.copy2(src, dst)
+    gpx = G2sc.G2Project(gpxfile=str(dst))
+    phases = gpx.phases()
+    if not phases:
+        results['error'] = "GPX 中未找到任何 phase"
+        return results
+
+    if not isinstance(restraints_config, list):
+        results['error'] = "restraints_config 必须是 list[dict]"
+        return results
+
+    def _ensure_phase_bond_bucket(phase_name: str):
+        rdata = gpx.data.setdefault('Restraints', {}).setdefault('data', {})
+        pdata = rdata.setdefault(phase_name, {})
+        if 'Bond' not in pdata:
+            pdata['Bond'] = {'wtFactor': 1.0, 'Range': 1.1, 'Bonds': [], 'Use': True}
+        return pdata['Bond']
+
+    def _ensure_phase_angle_bucket(phase_name: str):
+        rdata = gpx.data.setdefault('Restraints', {}).setdefault('data', {})
+        pdata = rdata.setdefault(phase_name, {})
+        if 'Angle' not in pdata:
+            pdata['Angle'] = {'wtFactor': 1.0, 'Range': 0.85, 'Angles': [], 'Use': True}
+        return pdata['Angle']
+
+    def _resolve_atom_selector(phase_obj, selector, role_name='origin'):
+        atoms = phase_obj.atoms()
+
+        def _from_dict(d):
+            if 'label' in d:
+                return [str(d['label'])]
+            if 'labels' in d:
+                return [str(x) for x in d.get('labels', [])]
+            if 'element' in d:
+                elem = str(d.get('element')).strip().upper()
+                return [a for a in atoms if str(a.element).strip().upper() == elem]
+            if 'elements' in d:
+                elems = {str(x).strip().upper() for x in d.get('elements', [])}
+                return [a for a in atoms if str(a.element).strip().upper() in elems]
+            raise ValueError(f"{role_name} 仅支持 label/labels/element/elements: {d}")
+
+        if selector is None:
+            raise ValueError(f"{role_name} 不能为空")
+        if not isinstance(selector, dict):
+            raise ValueError(f"{role_name} 必须是字典，且仅支持 label/labels/element/elements")
+        out = _from_dict(selector)
+
+        if not out:
+            raise ValueError(f"{role_name} 未选中任何原子")
+        return out
+
+    def _selector_to_labels(phase_obj, picked_atoms, role_name='origin'):
+        labels = []
+        for item in picked_atoms:
+            if isinstance(item, str):
+                labels.append(item)
+                continue
+            atom_label = getattr(item, 'label', None)
+            if atom_label is None:
+                raise ValueError(f"{role_name} 选择结果中包含无法识别的原子类型: {type(item)}")
+            labels.append(str(atom_label))
+
+        resolved = []
+        for lbl in labels:
+            if phase_obj.atom(lbl) is None:
+                raise ValueError(f"{role_name} 原子不存在: {lbl}")
+            resolved.append(lbl)
+        return resolved
+
+    try:
+        # 覆盖式更新：先清空所有已有 restraints
+        gpx.data.setdefault('Restraints', {})['data'] = {}
+
+        added_rules = []
+        total_added_bonds = 0
+        total_added_angles = 0
+
+        for i, cfg in enumerate(restraints_config):
+            if not isinstance(cfg, dict):
+                results['error'] = f"第 {i} 个 restraints 配置不是字典"
+                return results
+
+            rtype = str(cfg.get('type', 'bond')).strip().lower()
+            if rtype not in {'bond', 'distance', 'dist', 'angle'}:
+                results['error'] = f"第 {i} 个 restraints 类型暂不支持: {cfg.get('type')}（当前仅支持 bond/angle）"
+                return results
+
+            phase_ref = cfg.get('phase', cfg.get('phase_name', cfg.get('phase_index', None)))
+            phase_obj, phase_idx = _resolve_phase_obj(phases, phase_ref)
+            bond_bucket = _ensure_phase_bond_bucket(phase_obj.name)
+            angle_bucket = _ensure_phase_angle_bucket(phase_obj.name)
+
+            if bool(cfg.get('clear_existing', False)):
+                if rtype in {'bond', 'distance', 'dist'}:
+                    try:
+                        phase_obj.clearDistRestraint()
+                    except Exception:
+                        bond_bucket['Bonds'] = []
+                elif rtype == 'angle':
+                    angle_bucket['Angles'] = []
+
+            if cfg.get('weight', cfg.get('wtFactor', None)) is not None:
+                wt = float(cfg.get('weight', cfg.get('wtFactor')))
+                if rtype in {'bond', 'distance', 'dist'}:
+                    try:
+                        phase_obj.setDistRestraintWeight(wt)
+                    except Exception:
+                        bond_bucket['wtFactor'] = wt
+                elif rtype == 'angle':
+                    angle_bucket['wtFactor'] = wt
+
+            rules = cfg.get('rules', None)
+            if not isinstance(rules, list) or not rules:
+                results['error'] = f"第 {i} 个 restraints 的 rules 必须是非空 list"
+                return results
+
+            for j, rule in enumerate(rules):
+                if not isinstance(rule, dict):
+                    results['error'] = f"第 {i} 项第 {j} 条规则不是字典"
+                    return results
+
+                origin_sel = rule.get('origin', cfg.get('origin', None))
+                target_sel = rule.get('target', cfg.get('target', None))
+                if rtype in {'bond', 'distance', 'dist'}:
+                    distance = rule.get('distance', rule.get('bond', cfg.get('distance', cfg.get('bond', None))))
+                    factor = float(rule.get('factor', cfg.get('factor', 1.1)))
+                    esd = float(rule.get('esd', cfg.get('esd', 0.01)))
+
+                    if distance is None:
+                        results['error'] = f"第 {i} 项第 {j} 条规则缺少 distance/bond"
+                        return results
+
+                    origin = _resolve_atom_selector(phase_obj, origin_sel, 'origin')
+                    target = _resolve_atom_selector(phase_obj, target_sel, 'target')
+
+                    nadd = phase_obj.addDistRestraint(
+                        origin=origin,
+                        target=target,
+                        bond=float(distance),
+                        factor=factor,
+                        ESD=esd,
+                    )
+                    total_added_bonds += int(nadd)
+                    added_rules.append({
+                        'type': 'bond',
+                        'phase_index': phase_idx,
+                        'phase_name': getattr(phase_obj, 'name', f'Phase_{phase_idx+1}'),
+                        'rule_index': j,
+                        'distance': float(distance),
+                        'factor': factor,
+                        'esd': esd,
+                        'added_count': int(nadd),
+                    })
+                else:
+                    # Angle 模式：origin 作为中心原子，target 生成两侧原子对。
+                    from itertools import combinations
+
+                    angle_val = rule.get('angle', cfg.get('angle', None))
+                    esd = float(rule.get('esd', cfg.get('esd', 1.0)))
+                    target2_sel = rule.get('target2', rule.get('other', cfg.get('target2', cfg.get('other', None))))
+
+                    if angle_val is None:
+                        results['error'] = f"第 {i} 项第 {j} 条 angle 规则缺少 angle"
+                        return results
+
+                    center_raw = _resolve_atom_selector(phase_obj, origin_sel, 'origin')
+                    target_raw = _resolve_atom_selector(phase_obj, target_sel, 'target')
+                    centers = _selector_to_labels(phase_obj, center_raw, 'origin')
+                    targets_a = _selector_to_labels(phase_obj, target_raw, 'target')
+
+                    if target2_sel is not None:
+                        target2_raw = _resolve_atom_selector(phase_obj, target2_sel, 'target2')
+                        targets_b = _selector_to_labels(phase_obj, target2_raw, 'target2')
+                        pair_list = [(a, b) for a in targets_a for b in targets_b if a != b]
+                    else:
+                        pair_list = list(combinations(targets_a, 2))
+
+                    if not pair_list:
+                        results['error'] = f"第 {i} 项第 {j} 条 angle 规则未生成任何 target 原子对"
+                        return results
+
+                    nadd = 0
+                    for center_label in centers:
+                        center_atom = phase_obj.atom(center_label)
+                        if center_atom is None:
+                            continue
+                        for a_label, b_label in pair_list:
+                            if center_label in (a_label, b_label):
+                                continue
+                            a_atom = phase_obj.atom(a_label)
+                            b_atom = phase_obj.atom(b_label)
+                            if a_atom is None or b_atom is None:
+                                continue
+
+                            new_angle = [[a_atom.ranId, center_atom.ranId, b_atom.ranId], ['1', '1', '1'], float(angle_val), esd]
+                            if new_angle not in angle_bucket['Angles']:
+                                angle_bucket['Angles'].append(new_angle)
+                                nadd += 1
+
+                    total_added_angles += nadd
+                    added_rules.append({
+                        'type': 'angle',
+                        'phase_index': phase_idx,
+                        'phase_name': getattr(phase_obj, 'name', f'Phase_{phase_idx+1}'),
+                        'rule_index': j,
+                        'angle': float(angle_val),
+                        'esd': esd,
+                        'added_count': int(nadd),
+                    })
+
+        gpx.save(str(dst))
+
+        results['status'] = 'success'
+        results['new_gpx_path'] = str(dst)
+        results['total_added_bonds'] = total_added_bonds
+        results['total_added_angles'] = total_added_angles
+        results['added_restraint_rules'] = added_rules
+    except Exception as e:
+        results['error'] = f"设置 restraints 失败: {str(e)}"
+
+    print(f"Restraints 设置结果: {results}")
+    return results
+
 def export_cifs(    
     gpx_file: str,
     mission_name: str = None,
@@ -2004,6 +2747,301 @@ def export_cifs(
     return results
 
 
+def recommend_ion_positions(
+    gpx_file: str = None,
+    task_id: Optional[str] = None,
+    user_id: str = None,
+    mission_name: str = None,
+    phase_ref: Union[str, int, None] = None,
+    hist_ref: Union[str, int, None] = None,
+    map_type: str = 'delt-F',
+    cutoff: float = None,
+    grid_step: float = None,
+    top_n: int = 20,
+    include_negative: bool = False,
+    unique_symmetry: bool = True,
+) -> Dict:
+    """
+    使用 GSAS-II 的差值傅里叶图（Difference Fourier Map）推荐可能的离子占位点。
+
+    该工具会在指定的 gpx 项目中，选择目标 phase 与 histogram，计算 Fourier map，
+    搜索局部峰位，并按峰强排序输出候选分数坐标。可选地包含负峰、去除对称等价峰。
+
+    Mission / Task 语义约定（与其他工具一致）：
+        - mission_name 表示一个完整的大任务（用户的总体目标）。
+        - task_id 表示该 mission 下的一次具体子任务/步骤。
+        - 同一个 mission 的多轮调用，mission_name 应保持一致。
+        - task_id 必须唯一，并用于输出文件命名。
+
+    Args:
+        gpx_file: str
+            输入的 GSAS-II 项目文件路径（.gpx）。
+            必填，且必须存在。
+
+        task_id: Optional[str]
+            当前子任务 ID。
+            必填，用于输出文件命名（例如 `{task_id}_ion_positions.csv`）。
+
+        user_id: str
+            用户 ID，用于输出目录分层。
+            可选；未提供时输出目录使用 `anonymous`。
+
+        mission_name: str
+            大任务名称，用于输出目录分层。
+            可选；未提供时输出目录使用 `default`。
+
+        phase_ref: Union[str, int, None]
+            目标相选择器。可选，默认使用第一个 phase。
+            支持以下格式：
+            1) int 索引（0-based）
+            2) 数字字符串索引（如 "0"）
+            3) phase 名称（如 "Phase_1"）
+            4) phase id / ranId 字符串
+
+        hist_ref: Union[str, int, None]
+            目标 histogram 选择器。可选，默认使用第一个 histogram。
+            支持格式与 phase_ref 相同：索引、名称、id、ranId。
+
+        map_type: str
+            Fourier map 类型，默认 `delt-F`。
+            支持值：`Fobs`、`Fcalc`、`delt-F`、`2*Fo-Fc`、`Patterson`。
+            各类型含义：
+            - `Fobs`：仅由观测结构因子 Fo 构建的电子/核密度图，反映实验数据主导的实际密度分布。
+            - `Fcalc`：仅由模型计算结构因子 Fc 构建的密度图，反映当前结构模型“理论上应有”的密度分布。
+            - `delt-F`：差值图（Fo-Fc）。正峰常提示模型缺失密度（可能漏原子/漏占位），负峰常提示模型过量密度（占位偏高或原子位置不合理）。
+            - `2*Fo-Fc`：加权差值图（2Fo-Fc），通常用于查看“接近实验又受模型约束”的整体密度连续性，常用于人工判读结构合理性。
+            - `Patterson`：Patterson 自相关图（基于强度），强调原子间矢量信息；对重原子定位和初始结构线索有帮助，但不给出直接原子相位信息。
+            选型建议：
+            - 做离子补位/缺位搜索：优先 `delt-F`（本工具默认）。
+            - 查看整体密度连贯性：可用 `2*Fo-Fc`。
+            - 做重原子矢量线索分析：可尝试 `Patterson`。
+
+        cutoff: float
+            峰搜索阈值。可选。
+            单位/量纲说明：
+            - `cutoff` 本身为相对阈值，单位是 `%`（相对于当前 map 的最大峰值 `rhoMax`）。
+            - 实际判峰阈值计算为：`contLevel = cutoff * rhoMax / 100`。
+            - 因此 `cutoff=50` 表示仅保留高于最大峰值 50% 的峰。
+            - 传入时：覆盖 map 的 `cutOff`。
+            - 不传时：使用 GSAS-II 默认值。
+
+        grid_step: float
+            网格步长。可选。
+            单位/量纲说明：
+            - 单位为 `Å`（埃）。
+            - 在 GSAS-II 中其与 map 分辨率关系为：`dmin = 2 * GridStep`，因此 `GridStep` 可理解为最小 d 间距阈值的一半。
+            - 数值越小，网格越细、计算更慢；数值越大，网格越粗、计算更快。
+            - 传入时：覆盖 map 的 `GridStep`。
+            - 不传时：使用 GSAS-II 默认值。
+
+        top_n: int
+            返回候选峰数量上限，默认 20。
+            - `top_n > 0` 时截断为前 N 个。
+            - 其他情况按实际峰数量返回。
+
+        include_negative: bool
+            是否同时搜索负峰，默认 False。
+            仅在 map_type 为 `delt-F` 或 `2*Fo-Fc` 时生效。
+
+        unique_symmetry: bool
+            是否去除对称等价峰，默认 True。
+
+    Returns:
+        dict，统一返回结构如下：
+
+        成功时：
+        {
+            "status": "success",
+            "task_id": str,
+            "phase_name": str,              # 实际参与计算的相名
+            "histogram_name": str,          # 实际参与计算的直方图名
+            "map_type": str,                # 实际 map 类型
+            "grid_step": float,             # 实际使用的网格步长
+            "cutoff": float,                # 实际使用的峰阈值
+            "candidate_count": int,         # 最终候选数量
+            "recommended_positions": [      # 候选列表（按峰强降序）
+                {
+                    "rank": int,            # 排名（从 1 开始）
+                    "kind": str,            # "positive" 或 "negative"
+                    "mag": float,           # 峰强
+                    "x": float,             # 分数坐标 x
+                    "y": float,             # 分数坐标 y
+                    "z": float,             # 分数坐标 z
+                    "dzero": float,
+                    "dcent": float
+                }
+            ],
+            "csv_path": str,                # CSV 明细文件路径
+            "report_path": str              # TXT 报告文件路径
+        }
+
+        失败时：
+        {
+            "status": "failed",
+            "task_id": str,
+            "error": str                    # 错误信息
+        }
+
+    输出文件说明：
+        - CSV: `{task_id}_ion_positions.csv`，列为
+          `rank, kind, mag, x, y, z, dzero, dcent`
+        - TXT: `{task_id}_ion_positions.txt`，包含 phase/histogram/map 参数与候选摘要。
+        - 输出目录：`tools/GSAS-II-master/tmp/{user_id or 'anonymous'}/{mission_name or 'default'}/`
+    """
+    try:
+        results = {'status': 'failed', 'task_id': task_id}
+        if not gpx_file:
+            results['error'] = 'gpx_file 不能为空'
+            return results
+        if not task_id:
+            results['error'] = 'task_id 不能为空，且将用于输出文件命名'
+            return results
+
+        src = Path(gpx_file)
+        if not src.exists():
+            results['error'] = f'gpx 文件不存在: {gpx_file}'
+            return results
+        if src.suffix.lower() != '.gpx':
+            results['error'] = f'输入文件必须是 .gpx: {gpx_file}'
+            return results
+
+        gpx = G2sc.G2Project(gpxfile=str(src))
+        hists = gpx.histograms()
+        phases = gpx.phases()
+        if not hists:
+            results['error'] = 'GPX项目中未找到任何 histogram 数据'
+            return results
+        if not phases:
+            results['error'] = 'GPX项目中未找到任何晶体结构'
+            return results
+
+        hist, hist_idx = _resolve_hist_obj(hists, hist_ref)
+        phase, phase_idx = _resolve_phase_obj(phases, phase_ref)
+        phase_name = getattr(phase, 'name', None) or f'Phase_{phase_idx + 1}'
+        hist_name = getattr(hist, 'name', None) or f'Histogram_{hist_idx + 1}'
+
+        refl_lists = hist.reflections()
+        refl_data = refl_lists.get(phase_name)
+        if refl_data is None:
+            if len(refl_lists) == 1:
+                refl_data = next(iter(refl_lists.values()))
+            else:
+                for key, value in refl_lists.items():
+                    if str(key).strip().lower() == str(phase_name).strip().lower():
+                        refl_data = value
+                        break
+        if refl_data is None:
+            results['error'] = f'未找到 phase {phase_name!r} 对应的反射列表'
+            return results
+
+        generalData = phase.data['General']
+        if generalData.get('Modulated'):
+            results['error'] = '当前工具仅支持普通 3D Fourier map，暂不支持调制结构的 4D map'
+            return results
+
+        mapData = generalData.setdefault('Map', copy.deepcopy(G2elem.mapDefault))
+        mapData['MapType'] = map_type
+        mapData['RefList'] = hist_name
+        if cutoff is not None:
+            mapData['cutOff'] = float(cutoff)
+        else:
+            mapData.setdefault('cutOff', G2elem.mapDefault['cutOff'])
+        if grid_step is not None:
+            mapData['GridStep'] = float(grid_step)
+        else:
+            mapData.setdefault('GridStep', G2elem.mapDefault['GridStep'])
+
+        valid_map_types = {'Fobs', 'Fcalc', 'delt-F', '2*Fo-Fc', 'Patterson'}
+        if map_type not in valid_map_types:
+            results['error'] = f'不支持的 map_type: {map_type}，可选值为 {sorted(valid_map_types)}'
+            return results
+
+        G2mth.FourierMap(phase.data, refl_data)
+        peaks, mags, dzeros, dcents = G2mth.SearchMap(generalData, {})
+        if include_negative and mapData.get('MapType') in ['delt-F', '2*Fo-Fc']:
+            npeaks, nmags, ndzeros, ndcents = G2mth.SearchMap(generalData, {}, Neg=True)
+            peaks = np.concatenate((peaks, npeaks))
+            mags = np.concatenate((mags, nmags))
+            dzeros = np.concatenate((dzeros, ndzeros))
+            dcents = np.concatenate((dcents, ndcents))
+
+        if len(peaks) == 0:
+            results['error'] = '未在差值傅里叶图中找到满足阈值的峰位'
+            return results
+
+        map_peaks = np.concatenate((mags, peaks, dzeros, dcents), axis=1)
+        order = np.argsort(map_peaks[:, 0])[::-1]
+        map_peaks = map_peaks[order]
+
+        if unique_symmetry:
+            dedup_data = {'General': generalData, 'Map Peaks': map_peaks.tolist()}
+            unique_idx = G2mth.PeaksEquiv(dedup_data, list(range(len(map_peaks))))
+            map_peaks = map_peaks[unique_idx]
+
+        if top_n and top_n > 0:
+            map_peaks = map_peaks[:top_n]
+
+        save_dir = TMP_DIR / f"{user_id or 'anonymous'}" / f"{mission_name or 'default'}"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = save_dir / f"{task_id}_ion_positions.csv"
+        txt_path = save_dir / f"{task_id}_ion_positions.txt"
+
+        recommendations = []
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['rank', 'kind', 'mag', 'x', 'y', 'z', 'dzero', 'dcent'])
+            for rank, row in enumerate(map_peaks, start=1):
+                mag = float(row[0])
+                xyz = [float(v) for v in row[1:4]]
+                dzero = float(row[4])
+                dcent = float(row[5])
+                kind = 'negative' if mag < 0 else 'positive'
+                writer.writerow([rank, kind, mag, *xyz, dzero, dcent])
+                recommendations.append({
+                    'rank': rank,
+                    'kind': kind,
+                    'mag': mag,
+                    'x': xyz[0],
+                    'y': xyz[1],
+                    'z': xyz[2],
+                    'dzero': dzero,
+                    'dcent': dcent,
+                })
+
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write(f'phase: {phase_name}\n')
+            f.write(f'histogram: {hist_name}\n')
+            f.write(f'map_type: {map_type}\n')
+            f.write(f'grid_step: {mapData.get("GridStep")}\n')
+            f.write(f'cutoff: {mapData.get("cutOff")}\n')
+            f.write(f'unique_symmetry: {unique_symmetry}\n')
+            f.write(f'include_negative: {include_negative}\n')
+            f.write(f'candidate_count: {len(recommendations)}\n')
+            f.write('\n')
+            for item in recommendations:
+                f.write(
+                    f"{item['rank']:>3d}  {item['kind']:<8s}  mag={item['mag']:.4f}  "
+                    f"xyz=({item['x']:.5f}, {item['y']:.5f}, {item['z']:.5f})  "
+                    f"dzero={item['dzero']:.4f}  dcent={item['dcent']:.4f}\n"
+                )
+
+        results['status'] = 'success'
+        results['phase_name'] = phase_name
+        results['histogram_name'] = hist_name
+        results['map_type'] = map_type
+        results['grid_step'] = mapData.get('GridStep')
+        results['cutoff'] = mapData.get('cutOff')
+        results['candidate_count'] = len(recommendations)
+        results['recommended_positions'] = recommendations
+        results['csv_path'] = str(csv_path)
+        results['report_path'] = str(txt_path)
+    except Exception as e:
+        results = {'status': 'failed', 'task_id': task_id, 'error': f'差值傅里叶推荐失败: {str(e)}'}
+
+    print(f"差值傅里叶推荐结果: {results}")
+    return results
+
+
 def refine(
     gpx_file: str = None,                 # 可选的已有gpx项目文件路径
     refine_config: Dict = {},          # 高级配置字典,支持所有GSAS-II精修参数
@@ -2033,11 +3071,12 @@ def refine(
             "state":字符串，当前精修任务状态，通常为 "completed"；在超时场景下可能为 "running"，
             "task_id":字符串，当前子任务ID，供后续轮询使用，
             'rwp': 当前Rwp值,
-            'plot_path': 生成的fit plot图表路径, 蓝色X点线是实验谱线obsrved，红色线是计算谱线calculated，绿色线是背景，黑色线是拟合差值（obs-calc），竖虚线是Limits范围，
+            'plot_path': 生成的fit plot图路径, 蓝色X点线是实验谱线obsrved，红色线是计算谱线calculated，绿色线是背景，黑色线是拟合差值（obs-calc），竖虚线是Limits范围，图下方的竖线簇是各相计算的每个衍射峰的位置，
             'refinement_log': 精修过程中的日志信息,
             'new_gpx_path': 精修后拿到的新gpx项目文件路径,
             'main_lst_content': 精修生成的lst文件内容文本,
             'lst_path': 精修生成的lst文件路径,
+            'reflection_table_path': 精修生成的反射表格文件路径（csv格式）,
              "error":字符串，错误信息（仅当status为'failed'时存在）
         }
 
@@ -2052,6 +3091,7 @@ def refine(
         | `refine_cycle` | int | 1 | 精修循环次数 (Refine Cycle) |
         | `refine_background` | bool | False | 是否精修背景 |
         | `background_coeffs` | int | 3 | 背景函数系数数量 |
+        | `remove_fixed_background` | bool | False | 是否在精修前清除固定背景文件绑定（background PWDR），并同时删除对应背景 histogram（通常是 Autobkg） |
         | `refine_scale` | bool | False | scale |
         | `refine_cell` | bool | False | 晶胞参数 (a, b, c, α, β, γ)，启用则在精修中调整晶胞 |
         | `initial_cell` | dict/list | None | 在精修前设置晶胞初始值（见下文详细说明） |
@@ -2062,15 +3102,22 @@ def refine(
         | `refine_instrument_x` | bool | False | 仪器参数X |
         | `refine_instrument_y` | bool | False | 仪器参数Y |
         | `refine_instrument_z` | bool | False | 仪器参数Z |
-        | `refine_atoms` | dict | {} | 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'},参数打开后不会自动关闭，关闭需要使用 `close_atoms` |
+        | `set_constraints` | list[dict] | 无 | 约束配置列表，详见下文说明 |
+        | `refine_atoms` | dict | {} | 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'},一定注意参数打开后不会自动关闭，关闭需要你手动传 `close_atoms` |
         | `close_atoms` | dict | {} | 要关闭精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'}|
         注意：'X' 为位置，'U' 为等效各向同性温度因子，'F' 为占位率。例如 'XU' 表示同时精修位置和 U。
         | `refine_size` | bool | False | 晶粒尺寸,一般不修,除非你有特殊需求 |
         | `refine_mustrain` | bool | False | 微应变,一般不修,除非你有特殊需求|
+        | `refine_preferred_orientation` | bool | False | 择优取向精修开关（对应 HAP 的 `Pref.Ori.`） |
+        | `preferred_orientation_model` | str/dict/list | "MD" | 择优取向模型，建议 `MD`（March-Dollase）；支持按相设置 |
+        | `initial_preferred_orientation` | float/dict/list | None | 择优取向初值（MD 系数），支持按相设置 |
+        | `preferred_orientation_axis` | list/dict/list-of-list | None | 择优取向轴向 `[h,k,l]`，支持按相设置 |
         | `initial_mustrain` | float/list/dict | None | 在精修前设置微应变初始值，仅支持isotropic模式（见下文详细说明） |
         | `initial_atom_uiso` | dict/list/float | None | 在精修前设置原子热无序因子(Uiso)初始值，支持多种格式（见下文详细说明） |
         | `initial_atom_occupancy` | dict/list/float | None | 在精修前设置原子占有率初始值，支持多种格式（见下文详细说明） |
         | `refine_phase_fraction` | bool | False | 相分数, 仅多相精修中需要 |
+        | `spacegroup` | str/dict/list | None | 在精修前切换空间群；支持单值应用到所有相，或按相名/索引分别指定 |
+        | `initial_limits` | dict | None | 在精修前设置TOF范围限制的初始值，格式示例: {'histogram_name': [min_tof, max_tof]}，单位微秒 |
 
         参数 `initial_cell`用途与使用方法：
             - 目的：在执行任何晶胞精修之前设置相（phase）的初始晶胞数值，避免直接修改核心.
@@ -2107,6 +3154,29 @@ def refine(
             - 支持格式：
                 1. 字典（按原子标签）：例如 `{'Ni1': 0.95, 'Li1': 0.05}`。
                 2. 单个数值：例如 `1.0`，应用于所有原子。
+
+        参数 `set_constraints` 的配置格式与使用方法：
+            约束配置，list[dict] 格式，示例如下：
+                [
+                    {"type": "eqn", "vars": [{"phase": "Phase_1", "atom": "Ni_Li", "parameter": "occupancy"},{"phase": "Phase_1", "atom": "Li1", "parameter": "occupancy"}],"mults": [1,1], "total": 1},
+                    {"type": "equiv", "vars": [{"phase": "Phase_1", "atom": "Ni_Li", "parameter": "occupancy"},{"phase": "Phase_1", "atom": "Li_Ni", "parameter": "occupancy"}],"mults": [1,1]}
+                ]
+                eqn: 线性方程约束: mult1*var1 + mult2*var2 + ... = total
+                equiv: 等值约束: mult1*var1 = mult2*var2 = ...
+            一定注意，如果你传了set_constraints参数，工具会覆盖式更新（覆盖而非追加）所有约束，也就是说之前的约束会被清空，只有你在set_constraints里传的约束会被保留，所以请务必每次都把你想保留的约束完整传入。
+            如果你想保持现有约束不动，直接不传set_constraints参数即可。
+            此外，约束要想生效，必须同时打开相关参数的精修开关（例如占有率约束需要 refine_atoms 中对应原子参数包含 'F'），否则约束虽然被设置了但不会在精修中起作用。
+
+        参数 `spacegroup` 的配置格式与使用方法：
+            - 目的：在本次精修开始前切换相的空间群。
+            - 支持格式：
+                1. 空间群编号：`1-230`（推荐，最稳妥），例如 `14`。
+                2. 字符串符号：例如 `'P 21/c'`，将应用到所有相。
+                3. 字典：例如 `{'all': 1}` 或 `{'Phase_1': 'P 21/c', 1: 62}`。
+                4. 列表：例如 `['P 21/c', 62]`，按相索引对应。
+            - 行为：切换后会自动按新空间群更新每个原子的 `site sym` 与 `mult`，避免元数据不一致。
+
+
     """
     print("精修配置 (展开):\n" + pprint.pformat(refine_config, width=120))
 
@@ -2164,6 +3234,8 @@ def refine(
             lst_file = dst.with_name(f"{task_id}.lst")
             results['lst_path'] = str(lst_file)
             results['main_lst_content'] = prune_lst_keep_main(lst_file) if lst_file.exists() else ''
+            refl_csv, refl_rows = export_reflection_table(gpx, user_id, mission_name, task_id)
+            results['reflection_table_path'] = refl_csv
 
         except Exception as e:
             print(f"导出结果时遇到问题: {str(e)}")
@@ -2203,40 +3275,54 @@ if __name__ == '__main__':
     )
 
     initialize_runner = ProcessPollingMcpToolBase(
-    timeout_sec=300.0,
+    timeout_sec=60.0,
     poll_interval=1.0,
     target_func=initialize_project,
     )
     
     refine_runner = ProcessPollingMcpToolBase(
-    timeout_sec=300.0,
+    timeout_sec=60.0,
     poll_interval=1.0,
     target_func=refine,
     )
 
-    add_atoms_runner = ProcessPollingMcpToolBase(
-        timeout_sec=300.0,
-        poll_interval=0.5,
-        target_func=addOrRemove_atoms,
+    set_atoms_runner = ProcessPollingMcpToolBase(
+        timeout_sec=60.0,
+        poll_interval=1,
+        target_func=set_atoms,
     )
 
-    addOrChangeConstraints_runner = ProcessPollingMcpToolBase(
-        timeout_sec=300.0,
-        poll_interval=0.5,
-        target_func=addOrChange_constraints,
+    SetConstraints_runner = ProcessPollingMcpToolBase(
+        timeout_sec=60.0,
+        poll_interval=1,
+        target_func=set_constraints,
+    )
+
+    SetRestraints_runner = ProcessPollingMcpToolBase(
+        timeout_sec=60.0,
+        poll_interval=1,
+        target_func=set_restraints,
     )
 
     export_cifs_runner = ProcessPollingMcpToolBase(
-        timeout_sec=300.0,
-        poll_interval=0.5,
+        timeout_sec=60.0,
+        poll_interval=1,
         target_func=export_cifs,
+    )
+
+    recommend_ion_positions_runner = ProcessPollingMcpToolBase(
+        timeout_sec=60.0,
+        poll_interval=1,
+        target_func=recommend_ion_positions,
     )
 
     initialize_runner.register_mcp_tool(mcp, name="InitializeProject")
     refine_runner.register_mcp_tool(mcp, name="Refine")
-    add_atoms_runner.register_mcp_tool(mcp, name="AddAtoms")
-    addOrChangeConstraints_runner.register_mcp_tool(mcp, name="AddOrChangeConstraints")
+    set_atoms_runner.register_mcp_tool(mcp, name="SetAtoms")
+    # SetConstraints_runner.register_mcp_tool(mcp, name="SetConstraints")
+    SetRestraints_runner.register_mcp_tool(mcp, name="SetRestraints")
     export_cifs_runner.register_mcp_tool(mcp, name="ExportCIFs")
+    recommend_ion_positions_runner.register_mcp_tool(mcp, name="RecommendIonPositions")
 
     mcp.run(transport="sse")
 
@@ -2254,7 +3340,7 @@ if __name__ == '__main__':
     #         mission_name="test_mission_refinement"
     #     )
     
-    # result2 = addOrRemove_atoms(
+    # result2 = set_atoms(
     #     gpx_file=result1['gpx_path'],
     #     task_id="test_task_002",
     #     user_id="user_123",
@@ -2265,20 +3351,42 @@ if __name__ == '__main__':
     #     ],
     #     remove_atoms_config=[]
     # )
+
+    # result_restraints = set_restraints(
+    #     gpx_file=result2['new_gpx_path'],
+    #     task_id="test_task_003",
+    #     user_id="user_123",
+    #     mission_name="test_mission_refinement",
+    #     restraints_config=[
+    #         {
+    #             "type": "bond",
+    #             "phase": "Phase_1",
+    #             "weight": 1000,
+    #             "rules": [
+    #                 {
+    #                     "origin": {"labels": ["Ni_Li"]},
+    #                     "target": {"elements": ["O"]},
+    #                     "distance": 2.10,
+    #                 }
+    #             ],
+    #         }
+    #     ],
+    # )
+    # # print("set_restraints result:\n" + pprint.pformat(result_restraints, width=120))
     
-    # # result = addOrChange_constraints(
-    # #     gpx_file=result['new_gpx_path'],
-    # #     task_id="test_task_003",
-    # #     user_id="user_123",
-    # #     mission_name="test_mission_refinement",
-    # #     constraints_config=[
-    # #         {"type": "eqn", "vars": [{"phase": "Phase_1", "atom": "Ni_Li", "parameter": "occupancy"},{"phase": "Phase_1", "atom": "Li1", "parameter": "occupancy"}],"mults": [1,1], "total": 1},
-    # #         {"type": "eqn", "vars": [{"phase": "Phase_1", "atom": "Li_Ni", "parameter": "occupancy"},{"phase": "Phase_1", "atom": "Ni1", "parameter": "occupancy"}],"mults": [1,1], "total": 0.25},
-    # #     ]
-    # # )
+    # # # result = addOrChange_constraints(
+    # # #     gpx_file=result['new_gpx_path'],
+    # # #     task_id="test_task_003",
+    # # #     user_id="user_123",
+    # # #     mission_name="test_mission_refinement",
+    # # #     constraints_config=[
+    # # #         {"type": "eqn", "vars": [{"phase": "Phase_1", "atom": "Ni_Li", "parameter": "occupancy"},{"phase": "Phase_1", "atom": "Li1", "parameter": "occupancy"}],"mults": [1,1], "total": 1},
+    # # #         {"type": "eqn", "vars": [{"phase": "Phase_1", "atom": "Li_Ni", "parameter": "occupancy"},{"phase": "Phase_1", "atom": "Ni1", "parameter": "occupancy"}],"mults": [1,1], "total": 0.25},
+    # # #     ]
+    # # # )
     
     # result3 = refine(
-    #         gpx_file=result2['new_gpx_path'],
+    #         gpx_file=result_restraints['new_gpx_path'],
     #         task_id="test_task_004",
     #         user_id="user_123",
     #         mission_name="test_mission_refinement",
@@ -2287,39 +3395,54 @@ if __name__ == '__main__':
     #         }
     #     )
     
-    # # result = refine(
-    # #         gpx_file=result['new_gpx_path'],
-    # #         task_id="test_task_005",
+    # # # result = refine(
+    # # #         gpx_file=result['new_gpx_path'],
+    # # #         task_id="test_task_005",
+    # # #         user_id="user_123",
+    # # #         mission_name="test_mission_refinement",
+    # # #         refine_config={
+    # # #             "refine_atoms": {"Ni_Li": ""},
+    # # #             "initial_atom_occupancy": {"Ni_Li": 0.05, "Li_Ni": 0.05}
+    # # #         }
+    # # #     )
+    
+    # # result4 = export_cifs(
+    # #     gpx_file=result3['new_gpx_path'],
+    # #     task_id="test_task_006",
+    # #     user_id="user_123",
+    # #     mission_name="test_mission_refinement",
+    # # )
+
+    # # result5 = refine(
+    # #         gpx_file=result3['new_gpx_path'],
+    # #         task_id="test_task_007",
     # #         user_id="user_123",
     # #         mission_name="test_mission_refinement",
     # #         refine_config={
-    # #             "refine_atoms": {"Ni_Li": ""},
-    # #             "initial_atom_occupancy": {"Ni_Li": 0.05, "Li_Ni": 0.05}
+    # #             "close_atoms": {"Ni_Li": "U"}
     # #         }
     # #     )
     
-    # result4 = export_cifs(
+    # # result6 = export_cifs(
+    # #     gpx_file=result5['new_gpx_path'],
+    # #     task_id="test_task_008",
+    # #     user_id="user_123",
+    # #     mission_name="test_mission_refinement"
+    # # )
+
+    # result7 = recommend_ion_positions(
     #     gpx_file=result3['new_gpx_path'],
-    #     task_id="test_task_006",
+    #     task_id="test_task_009",
     #     user_id="user_123",
     #     mission_name="test_mission_refinement",
+    #     map_type="delt-F",
+    #     cutoff=30.0,
+    #     grid_step=0.25,
+    #     unique_symmetry=True,
+    #     include_negative=False,
+    #     hist_ref=None,
+    #     phase_ref=None,
     # )
-
-    # result5 = refine(
-    #         gpx_file=result3['new_gpx_path'],
-    #         task_id="test_task_007",
-    #         user_id="user_123",
-    #         mission_name="test_mission_refinement",
-    #         refine_config={
-    #             "close_atoms": {"Ni_Li": "U"}
-    #         }
-    #     )
-    
-    # result6 = export_cifs(
-    #     gpx_file=result5['new_gpx_path'],
-    #     task_id="test_task_008",
-    #     user_id="user_123",
-    #     mission_name="test_mission_refinement"
-    # )
+    # print("recommend_ion_positions result:\n" + pprint.pformat(result7, width=120))
 
     
