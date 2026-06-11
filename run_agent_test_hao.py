@@ -23,7 +23,6 @@ from drsai.modules.managers.database import DatabaseManager
 from drsai.modules.managers.messages import (
     ModelClientStreamingChunkEvent,
     TextMessage,)
-from drsai.configs.constant import RUNS_DIR
 
 here = Path(__file__).parent.absolute()
 
@@ -42,6 +41,7 @@ appdir = os.path.join(parent_path, "tmp/drsai")
 os.makedirs(appdir, exist_ok=True)
 
 VIP_USER_LIST = os.getenv("VIP_USER_LIST", "").split(",") if os.getenv("VIP_USER_LIST") else []
+
 
 
 def _normalize_users(users: list[str]) -> list[str]:
@@ -220,9 +220,7 @@ if __name__ == "__main__":
             # use_api_key_mode = "backend",
             join_topics = ["test"],
             metadata={"others": "test"},
-            link_wechat = False,
-            
-            
+            link_wechat = False
         )
     )
 

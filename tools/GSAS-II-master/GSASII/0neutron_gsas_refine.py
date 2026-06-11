@@ -27,10 +27,15 @@ except ImportError:
         sys.path.insert(0, str(repo_root))
     from src.core.tools import ProcessPollingMcpToolBase
 
-TMP_DIR = (Path(__file__).resolve().parent.parent / 'tmp')
-TMP_DIR.mkdir(parents=True, exist_ok=True)
+import os
+from dotenv import load_dotenv
+here = Path(__file__).parent.parent.parent.parent.absolute()
+print(f"Loading environment variables from: {here / '.env'}")
+load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
+TMP_DIR = Path(os.getenv("WORKDIR", ""))
+print(f"Using WORKER_SPACE: {TMP_DIR}")
 
-def generate_fit_plot(hist, phases, user_id, mission_name, task_id):
+def generate_fit_plot(hist, phases, user_id, session_id, mission_name, task_id):
     
     x_data = hist.getdata('x')
     y_obs = hist.getdata('yobs')
@@ -38,7 +43,7 @@ def generate_fit_plot(hist, phases, user_id, mission_name, task_id):
     y_bkg = hist.getdata('background')
     [tofmin, tofmax] = hist.data['Limits'][1]
     # 保存详细的数据文件，包含验证信息
-    save_dir = TMP_DIR / f"{user_id}"/f"{mission_name}"
+    save_dir = TMP_DIR / f"{user_id}"/f"{session_id}"/f"{mission_name}"
     save_dir.mkdir(parents=True, exist_ok=True)
     
     
@@ -92,8 +97,8 @@ def generate_fit_plot(hist, phases, user_id, mission_name, task_id):
     
     plt.plot(x_plot, diff_plot, 'k-', label='Difference (Obs-Calc)', linewidth=1)
     # 观测谱使用细阶梯线更接近粉末衍射原始计数形态，细节与峰肩更清晰
-    plt.step(x_plot, y_obs_shifted, where='mid', color='#1f77b4', label='Observed', linewidth=0.9, alpha=0.95)
-    plt.step(x_plot, y_calc_shifted, where='mid', color='r', label='Calculated', linewidth=1.1, alpha=0.95)
+    plt.step(x_plot, y_obs_shifted, where='mid', color='#1f77b4', label='Experiment Pattern', linewidth=0.9, alpha=0.95)
+    plt.step(x_plot, y_calc_shifted, where='mid', color='r', label='Calculated Pattern', linewidth=1.1, alpha=0.95)
     plt.plot(x_plot, y_bkg_shifted, 'g-', label='Background', linewidth=1.2)
     plt.axvline(x=tofmin, color='m', linestyle='--', linewidth=1, label='TOF Min')
     plt.axvline(x=tofmax, color='c', linestyle='--', linewidth=1, label='TOF Max')
@@ -574,7 +579,7 @@ def _auto_open_related_constrained_atoms(gpx, phases, refine_config, logger):
         logger.info(f"根据约束联动自动放开占位参数: {[x['atom'] for x in opened_now]}")
     return info
 
-def flexible_neutron_refinement(gpx, hist, phases, task_id,user_id, mission_name, refine_config=None, use_constraints=False):
+def flexible_neutron_refinement(gpx, hist, phases, user_id, session_id, mission_name, task_id, refine_config=None, use_constraints=False):
     logger = logging.getLogger(__name__)
     logger.info("开始一次性精修流程...")
 
@@ -1241,7 +1246,7 @@ def flexible_neutron_refinement(gpx, hist, phases, task_id,user_id, mission_name
     # 检查是否有需要精修的参数
     if not any(refine_config.values()) and not refine_config.get('initial_cell') and not refine_config.get('initial_mustrain') and not refine_config.get('initial_preferred_orientation') and not refine_config.get('preferred_orientation_axis'):
         logger.warning("没有启用任何精修参数，跳过精修")
-        save_dir = TMP_DIR / f"{user_id}"/f"{mission_name}"
+        save_dir = TMP_DIR / f"{user_id}"/f"{session_id}"/f"{mission_name}"
         save_dir.mkdir(parents=True, exist_ok=True)
         gpx.save(str(save_dir / f'{task_id}.gpx')) #备份这次的结果
         return hist.get_wR(), "没有执行任何精修"
@@ -1321,9 +1326,9 @@ def safe_float(value, default=0.0):
         return default
 
 
-def export_reflection_table(gpx, user_id, mission_name, task_id):
+def export_reflection_table(gpx, user_id, session_id, mission_name, task_id):
     """导出反射表（hkl 等）到 CSV，返回文件路径与行数。"""
-    save_dir = TMP_DIR / f"{user_id}" / f"{mission_name}"
+    save_dir = TMP_DIR / f"{user_id}" / f"{session_id}" / f"{mission_name}"
     save_dir.mkdir(parents=True, exist_ok=True)
     csv_path = save_dir / f"{task_id}_reflections.csv"
 
@@ -1710,13 +1715,14 @@ def _build_var_from_spec(gpx, phases, var_spec):
     gsas_var = _map_param_to_gsas_var(param)
     return _make_var_obj_safe(gpx, phase_obj, gsas_var, atom)
 
-def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=None, mission_name=None):
+def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=None, session_id=None, mission_name=None):
     '''
     Args:
         neutron_data: GSAS的gsa文件绝对路径 (必需)
         neutron_inst: GSAS的instprm文件绝对路径 (必需)
         cif_files: 结构文件列表 (必需)
-        user_id: 用户ID，字符串，标识当前用户身份，用于日志记录和权限控制
+        user_id: 用户ID，字符串，标识当前用户身份
+        session_id: 线程ID，字符串，标识当前对话session
         mission_name: 大任务名称。同一个精修任务下会涉及多次该工具调用，需保持相同 mission_name；
                   工具会使用它和 user_id 共同定位该大任务的文件目录。
         task_id: mission 内的子任务ID，必须指定。继续轮询已有未完成任务时，必须传入之前的 task_id，并保持 mission_name 一致。
@@ -1726,7 +1732,7 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
             "status":字符串，当前精修任务状态，通常为 "completed"；在超时场景下可能为 "running"，
             "task_id":字符串，当前子任务ID，供后续轮询使用，
             'gpx_path': 初始化后拿到的gpx项目文件路径,
-            'plot_path': 生成的fit plot图表路径, 蓝色X点线是实验谱线obsrved，红色线是计算谱线calculated，绿色线是背景，黑色线是拟合差值（obs-calc），竖虚线是Limits范围，
+            'plot_path': 生成的fit plot图表路径。蓝色线是实验谱线，红色线是计算谱线，绿色线是背景，黑色线是拟合差值谱线，左右两侧竖虚线是Limits范围，图下方的竖线簇是各相计算的每个衍射峰的位置。
             'refinement_log': 精修过程中的日志信息,
             'main_lst_content': 精修生成的lst文件内容文本,
             'lst_path': 精修生成的lst文件路径,
@@ -1745,7 +1751,7 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
     """初始化GSAS-II项目并添加中子数据"""
 
     print("步骤 1/8: 创建新的 GSAS-II 项目")
-    save_dir = TMP_DIR / f"{user_id}"/f"{mission_name}"
+    save_dir = TMP_DIR / f"{user_id}"/f"{session_id}"/f"{mission_name}"
     save_dir.mkdir(parents=True, exist_ok=True)
     gpx = G2sc.G2Project(newgpx=save_dir / f'{task_id}.gpx')
     print("✓ 项目创建成功")
@@ -1812,7 +1818,7 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
 
                 # 创建临时文件保存有效数据。使用 .xye 扩展名以匹配文本读取器。
                 
-                temp_dir = TMP_DIR / f'{user_id}' / f'{mission_name}'
+                temp_dir = TMP_DIR / f'{user_id}' / f'{session_id}' / f'{mission_name}'
                 temp_dir.mkdir(parents=True, exist_ok=True)
                 clean_data_file = temp_dir / 'cleaned_neutron_data.xye'
 
@@ -2054,11 +2060,11 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
 
     result['status'] = "success"
     result['gpx_path'] = str(save_dir / f'{task_id}.gpx')
-    result['plot_path'] = generate_fit_plot(hist,phases, user_id, mission_name, task_id)
+    result['plot_path'] = generate_fit_plot(hist,phases, user_id,session_id, mission_name, task_id)
     result['refinement_log'] = captured_output
     result['lst_path'] = str(save_dir / f'{task_id}.lst')
     result['main_lst_content'] = prune_lst_keep_main(save_dir / f'{task_id}.lst') if (save_dir / f'{task_id}.lst').exists() else ''
-    refl_csv, refl_rows = export_reflection_table(gpx, user_id, mission_name, task_id)
+    refl_csv, refl_rows = export_reflection_table(gpx, user_id, session_id, mission_name, task_id)
     result['reflection_table_path'] = refl_csv
     return _finalize_result(result)
 
@@ -2070,6 +2076,7 @@ def set_atoms(
     remove_atoms_config: Union[List[Dict], Dict] = None,
     mission_name: str = None,
     user_id: str = None,
+    session_id: str = None,
     task_id: Optional[str] = None,
 ) -> Dict:
     """
@@ -2083,6 +2090,7 @@ def set_atoms(
             [{"phase": "Phase_1", "label": "O1"},{"phase": "Phase_2", "label": "C1"}]
         mission_name: 任务命名空间，用于轮询隔离
         user_id: 用户 ID
+        session_id: 对话session ID
         task_id: 子任务 ID，由框架注入或调用方传入
 
     Returns:
@@ -2237,6 +2245,7 @@ def set_constraints(
     constraints_config: List[Dict],
     mission_name: str = None,
     user_id: str = None,
+    session_id: str = None,
     task_id: Optional[str] = None,
 ) -> Dict:
     """
@@ -2260,6 +2269,7 @@ def set_constraints(
             newvar: 新变量约束（定义一个新变量等于现有变量的线性组合，可选是否参与精修）
         mission_name: 任务命名空间，用于轮询隔离
         user_id: 用户 ID
+        session_id: 对话session ID
         task_id: 子任务 ID，由框架注入或调用方传入
     
         returns:
@@ -2411,6 +2421,7 @@ def set_restraints(
     restraints_config: List[Dict],
     mission_name: str = None,
     user_id: str = None,
+    session_id: str = None,
     task_id: Optional[str] = None,
 ) -> Dict:
     """
@@ -2446,6 +2457,7 @@ def set_restraints(
                 - esd: float，约束的标准偏差（可选）；bond 默认 0.01，angle 默认 1.0
         mission_name: 任务命名空间，用于轮询隔离
         user_id: 用户 ID
+        session_id: 对话session ID
         task_id: 子任务 ID，由你传入，每次任务调用都应该是独一无二的task_id，且将用于新 gpx 文件命名
     
         Returns:
@@ -2701,6 +2713,7 @@ def export_cifs(
     gpx_file: str,
     mission_name: str = None,
     user_id: str = None,
+    session_id: str = None,
     task_id: Optional[str] = None,
 ) -> Dict:
     try:
@@ -2751,6 +2764,7 @@ def recommend_ion_positions(
     gpx_file: str = None,
     task_id: Optional[str] = None,
     user_id: str = None,
+    session_id: str = None,
     mission_name: str = None,
     phase_ref: Union[str, int, None] = None,
     hist_ref: Union[str, int, None] = None,
@@ -2785,6 +2799,9 @@ def recommend_ion_positions(
         user_id: str
             用户 ID，用于输出目录分层。
             可选；未提供时输出目录使用 `anonymous`。
+
+        session_id: str
+            对话 session ID，用于输出目录分层。
 
         mission_name: str
             大任务名称，用于输出目录分层。
@@ -2886,7 +2903,7 @@ def recommend_ion_positions(
         - CSV: `{task_id}_ion_positions.csv`，列为
           `rank, kind, mag, x, y, z, dzero, dcent`
         - TXT: `{task_id}_ion_positions.txt`，包含 phase/histogram/map 参数与候选摘要。
-        - 输出目录：`tools/GSAS-II-master/tmp/{user_id or 'anonymous'}/{mission_name or 'default'}/`
+        - 输出目录：`work_dir/{user_id}/{session_id}/{mission_name}/`
     """
     try:
         results = {'status': 'failed', 'task_id': task_id}
@@ -2981,7 +2998,7 @@ def recommend_ion_positions(
         if top_n and top_n > 0:
             map_peaks = map_peaks[:top_n]
 
-        save_dir = TMP_DIR / f"{user_id or 'anonymous'}" / f"{mission_name or 'default'}"
+        save_dir = TMP_DIR / f"{user_id or 'anonymous'}" / f"{session_id or 'default'}" / f"{mission_name or 'default'}"
         save_dir.mkdir(parents=True, exist_ok=True)
         csv_path = save_dir / f"{task_id}_ion_positions.csv"
         txt_path = save_dir / f"{task_id}_ion_positions.txt"
@@ -3046,6 +3063,7 @@ def refine(
     gpx_file: str = None,                 # 可选的已有gpx项目文件路径
     refine_config: Dict = {},          # 高级配置字典,支持所有GSAS-II精修参数
     user_id: str = None,
+    session_id: str = None,
     mission_name: str = None,
     task_id: Optional[str] = None,                    # 由框架自动注入用于日志记录和输出文件命名
 ) -> Dict:
@@ -3063,6 +3081,7 @@ def refine(
         gpx_file: 可选,已有的GSAS-II项目文件(.gpx)路径,如果提供则加载现有项目继续精修
         refine_config: 配置字典,支持很多GSAS-II精修参数，详细说明见下文
         user_id: 用户ID，字符串，标识当前用户身份，用于日志记录和权限控制
+        session_id: 线程ID，字符串，标识当前对话线程，用于日志记录和权限控制
         mission_name: 大任务名称。
         task_id: mission 内的子任务ID。开启新子任务时可传 None 或不传，不传会自动生成。
          
@@ -3071,7 +3090,7 @@ def refine(
             "state":字符串，当前精修任务状态，通常为 "completed"；在超时场景下可能为 "running"，
             "task_id":字符串，当前子任务ID，供后续轮询使用，
             'rwp': 当前Rwp值,
-            'plot_path': 生成的fit plot图路径, 蓝色X点线是实验谱线obsrved，红色线是计算谱线calculated，绿色线是背景，黑色线是拟合差值（obs-calc），竖虚线是Limits范围，图下方的竖线簇是各相计算的每个衍射峰的位置，
+            'plot_path': 生成的fit plot图路径。蓝色线是实验谱线，红色线是计算谱线，绿色线是背景，黑色线是拟合差值谱线，左右两侧竖虚线是Limits范围，图下方的竖线簇是各相计算的每个衍射峰的位置。
             'refinement_log': 精修过程中的日志信息,
             'new_gpx_path': 精修后拿到的新gpx项目文件路径,
             'main_lst_content': 精修生成的lst文件内容文本,
@@ -3218,7 +3237,7 @@ def refine(
         print("开始一次性精修流程...")
 
         rwp, refinement_log = flexible_neutron_refinement(
-            gpx, hist, phases, task_id, user_id, mission_name,
+            gpx, hist, phases, task_id, user_id,session_id, mission_name,
             refine_config=refine_config
         )
         
@@ -3226,15 +3245,15 @@ def refine(
         try:
             results['status'] = 'success'
             results['rwp'] = rwp
-            results['plot_path'] = generate_fit_plot(hist,phases, user_id, mission_name, task_id)
+            results['plot_path'] = generate_fit_plot(hist,phases, user_id, session_id, mission_name, task_id)
             results['refinement_log'] = refinement_log
-            save_dir = TMP_DIR / f"{user_id}"/f"{mission_name}"
+            save_dir = TMP_DIR / f"{user_id}"/f"{session_id}"/f"{mission_name}"
             save_dir.mkdir(parents=True, exist_ok=True)
             results['new_gpx_path'] = str(dst)
             lst_file = dst.with_name(f"{task_id}.lst")
             results['lst_path'] = str(lst_file)
             results['main_lst_content'] = prune_lst_keep_main(lst_file) if lst_file.exists() else ''
-            refl_csv, refl_rows = export_reflection_table(gpx, user_id, mission_name, task_id)
+            refl_csv, refl_rows = export_reflection_table(gpx, user_id, session_id, mission_name, task_id)
             results['reflection_table_path'] = refl_csv
 
         except Exception as e:

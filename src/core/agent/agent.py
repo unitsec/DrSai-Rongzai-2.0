@@ -146,6 +146,7 @@ class RongZaiAgent(DrSaiAgent):
         user_id: str | None = None,
         set_model_client: Callable | None = None,
         llm_mode_config: Dict = {},
+        fallback_config_names: Optional[List[str]] = None,
         # skills and executor
         skills_dir: Optional[str | List[str]] = None,
         work_dir: str | None = None,
@@ -180,6 +181,8 @@ class RongZaiAgent(DrSaiAgent):
             set_model_client=set_model_client,
             llm_mode_config=llm_mode_config,
         )
+
+        self._fallback_config_names = fallback_config_names or []
 
         self._developer_system_message = system_message
 
@@ -248,7 +251,10 @@ class RongZaiAgent(DrSaiAgent):
             token_limit=token_limit,
         )
 
-        self._download_dir = self._work_dir / "downloads"
+        self._upload_dir = self._work_dir / self._thread_id /"uploads"
+        self._upload_dir.mkdir(parents=True, exist_ok=True)
+        
+        self._download_dir = self._work_dir / self._thread_id /"downloads"
         self._download_dir.mkdir(parents=True, exist_ok=True)
 
         # === skills ===
@@ -366,13 +372,13 @@ class RongZaiAgent(DrSaiAgent):
         """构建系统提示词：开发者提示词 + 会话 ID + Core Skill 规则区。"""
         enhanced_system_message = f"{self._lang_prompt}\n\n{self._developer_system_message}"
         if self._thread_id:
-            enhanced_system_message = f"{enhanced_system_message}\n\nCurrent Session_ID is {self._thread_id}"
+            enhanced_system_message = f"{enhanced_system_message}\n\nCurrent session_id is {self._thread_id}"
         if self._user_id:
             enhanced_system_message = (
                 f"{enhanced_system_message}\n\nCurrent user_id is {self._user_id}. ")
         if self._work_dir:
             enhanced_system_message = (
-                f"{enhanced_system_message}\n\nThe files user uploaded are in {self._work_dir}/downloads. ")
+                f"{enhanced_system_message}\n\nThe files user uploaded are in {self._work_dir}/{self._thread_id}/uploads.")
         enhanced_system_message += f"\n\n{self._core_skill_policy_prompt}"
         core_skill_prompt = self._build_core_skill_prompt()
         if core_skill_prompt:
@@ -852,7 +858,7 @@ class RongZaiAgent(DrSaiAgent):
                     model_candidates = []
                     if primary_env:
                         model_candidates.append(primary_env)
-                    for m in ("openai/gpt-5", "openai/gpt-4o", "minimax/minimax-m2.7"):
+                    for m in ("openai/gpt-4o", "openai/gpt-5", "minimax/minimax-m2.7"):
                         if m not in model_candidates:
                             model_candidates.append(m)
 
@@ -1165,19 +1171,78 @@ class RongZaiAgent(DrSaiAgent):
         else:
             if not task:
                 raise ValueError("Task list cannot be empty.")
+
+            has_any_attached_files = any(
+                isinstance(m, BaseChatMessage)
+                and (
+                    (m.metadata or {}).get("attached_files")
+                    or (m.metadata or {}).get("files")
+                )
+                for m in task
+            )
+
             for msg in task:
                 if isinstance(msg, BaseChatMessage):
                     msg.metadata["internal"] = "yes"
-                    input_messages.append(msg)
-                    output_messages.append(msg)
                     try:
-                        attached_files_json = msg.metadata.get("attached_files")
+                        attached_files_json = msg.metadata.get("attached_files") or msg.metadata.get("files")
+
+                        # 过滤 construct_task 注入的“文件正文消息”，避免正文直接进入模型上下文。
+                        if (
+                            has_any_attached_files
+                            and not attached_files_json
+                            and isinstance(msg.content, str)
+                            and msg.content.lstrip().startswith(("Attached file:", "Attached image:"))
+                        ):
+                            continue
+
+                        # output_messages 保留原始消息（含图片对象）供前端展示；
+                        # input_messages 只放纯文本消息，因为 DrSaiChatCompletionContext
+                        # 的 LocalMesssage 不接受 list 类型 content。
+                        output_messages.append(msg)
+
                         if attached_files_json:
                             attached_files = json.loads(attached_files_json)
+                            saved_files: List[str] = []
                             for file in attached_files:
+                                save_path = f"{self._upload_dir}/{file['name']}"
                                 download_file_from_url_or_base64(
-                                    file_info = file, 
-                                    save_path = f"{self._download_dir}/{file['name']}")
+                                    file_info=file,
+                                    save_path=save_path,
+                                )
+                                saved_files.append(save_path)
+
+                            # 提取纯文本内容（多模态消息 content 是 list，取其中的字符串部分）。
+                            if isinstance(msg.content, list):
+                                text_parts = [c for c in msg.content if isinstance(c, str)]
+                                text_content = "\n".join(text_parts)
+                            else:
+                                text_content = msg.content or ""
+
+                            # 追加文件名提示，让模型自行决定是否读取。
+                            if saved_files:
+                                file_names = [Path(p).name for p in saved_files]
+                                names_block = "\n".join(f"- {name}" for name in file_names)
+                                file_hint = (
+                                    f"User uploaded files:{names_block}"
+                                )
+                                text_content = f"{text_content}\n\n{file_hint}" if text_content else file_hint
+
+                            # 若原消息是多模态，用纯文本 TextMessage 替换进入上下文的消息。
+                            if isinstance(msg.content, list):
+                                context_msg = TextMessage(
+                                    content=text_content,
+                                    source=msg.source,
+                                    metadata=msg.metadata,
+                                )
+                            else:
+                                msg.content = text_content
+                                context_msg = msg
+                        else:
+                            context_msg = msg
+
+                        input_messages.append(context_msg)
+
                         settings_config = msg.metadata.get("settings_config")
                         if settings_config:
                             settings_config = json.loads(settings_config)
@@ -1303,7 +1368,7 @@ class RongZaiAgent(DrSaiAgent):
                             buffered_stream_events.append(inference_output)
                 # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
                 # self._cleanup_inflight_ephemeral_images(model_context)
-
+                
                 if model_result is None:
                     if self.is_paused or cancellation_token.is_cancelled():
                         raise asyncio.CancelledError()
