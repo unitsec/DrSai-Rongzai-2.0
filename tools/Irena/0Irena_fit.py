@@ -481,7 +481,10 @@ def plot_results(
     ax = axes[0]
     ax.errorbar(q_vec, intensity, yerr=errors, fmt="o", ms=3,
                 color="steelblue", label="Data (original)", alpha=0.7)
-    ax.plot(q_fit, fit_int, "r-", lw=1.5, label=f"Fit ({method})")
+    # 把 background_curve 重新计算/插值到与 q_fit 相同长度的数组
+    bg_on_qfit = np.interp(q_fit, q_vec, background_curve)
+    # print(len(fit_int),len(bg_on_qfit), len(background_curve))
+    ax.plot(q_fit, fit_int+bg_on_qfit, "r-", lw=1.5, label=f"Fit ({method})")
     if background_curve is not None:
         ax.plot(q_vec, background_curve, "--", color="orange", lw=1.2, label="Background (B*q^-P + flat)")
 
@@ -1596,6 +1599,8 @@ if __name__ == "__main__":
                 "d_max": 5000.0,
                 "n_points": 120,
                 "q_power": 4.0,
+                "fit_flat_background": True,
+                "estimate_uncertainties": True
             },
             user_id="test_user",
             mission_name="irena_test_local",

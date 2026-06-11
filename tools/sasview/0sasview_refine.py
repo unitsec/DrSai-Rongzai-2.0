@@ -288,6 +288,7 @@ def sasview_fit(
     fit_params: dict = None,
     user_id: str = None,
     mission_name: str = "",
+    session_id: str = None,
     task_id: int | str = 0,
 ) -> dict:
     """
