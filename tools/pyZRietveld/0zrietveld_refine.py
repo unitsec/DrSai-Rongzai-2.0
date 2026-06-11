@@ -9,7 +9,8 @@ from itertools import dropwhile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from dotenv import load_dotenv
 
 from mcp.server.fastmcp import FastMCP
 
@@ -32,12 +33,17 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+ZRT_TOOL_ROOT = MODULE_DIR
+ZRT_DEFAULT_DATA_DIR = ZRT_TOOL_ROOT / "Z-Rietveld" / "Z-Rietveld" / "utility_atomic_data"
+ZRT_DEFAULT_LIB_DIR = ZRT_TOOL_ROOT / "Z-Rietveld" / "lib"
 
 import refineTool  # noqa: E402
 
-
-TMP_DIR = WORKSPACE_ROOT / "userRecord"
-TMP_DIR.mkdir(parents=True, exist_ok=True)
+here = Path(__file__).parent.parent.parent.absolute()
+print(f"Loading environment variables from: {here / '.env'}")
+load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
+TMP_DIR = Path(os.getenv("WORKDIR", ""))
+print(f"Using WORKER_SPACE: {TMP_DIR}")
 
 
 mcp = FastMCP(
@@ -78,13 +84,13 @@ def _ensure_env(zrt_data_dir: Optional[str], zrt_lib_dir: Optional[str]) -> None
     else:
         os.environ.setdefault(
             "ZRT_DATA_DIR",
-            str(REPO_ROOT / "Z-Rietveld" / "Z-Rietveld" / "utility_atomic_data"),
+            str(ZRT_DEFAULT_DATA_DIR),
         )
 
     if zrt_lib_dir:
         os.environ["ZRT_LIB_DIR"] = zrt_lib_dir
     else:
-        os.environ.setdefault("ZRT_LIB_DIR", str(REPO_ROOT / "Z-Rietveld" / "lib"))
+        os.environ.setdefault("ZRT_LIB_DIR", str(ZRT_DEFAULT_LIB_DIR))
 
 
 def _normalize_cfg(cfg: Optional[Dict[str, object]]) -> Dict[str, str]:
@@ -154,12 +160,14 @@ def _prepare_task_zrtn_copy(
     run_dir: Path,
     task_id: Optional[str],
     logger: logging.Logger,
-) -> (str, str):
+) -> Tuple[str, str]:
     src = Path(zrtn_path)
     if not src.exists():
         raise FileNotFoundError(f"zrietveldn file not found: {zrtn_path}")
 
-    effective_task_id = str(task_id).strip() if task_id is not None and str(task_id).strip() else str(uuid.uuid4())
+    effective_task_id = str(task_id).strip() if task_id is not None else ""
+    if not effective_task_id:
+        raise ValueError("task_id is required and will be used for output file naming")
     dst = run_dir / f"{effective_task_id}.zrietveldn"
 
     # Keep a task-scoped snapshot so the model can rollback by selecting another task file.
@@ -484,6 +492,7 @@ def zrt_generate_project(
     neutron_inst: str,
     cif_files: List[str],
     user_id: str = "default",
+    session_id: str = "default",
     mission_name: str = "default",
     task_id: Optional[str] = None,
 ) -> Dict[str, object]:
@@ -510,16 +519,15 @@ def zrt_generate_project(
                    for multi-phase refinement.
 
         user_id: User identifier string, used for file management and logging.
-                 Default value is "default".
+
+        session_id: Session identifier string, used for file management and logging.
 
         mission_name: Task name string identifying the current task. For refinement of one
                       dataset, the same mission_name should be used. Used to organize
                       generated project files and logs.
 
-        task_id: Unique task identifier (optional).
-                 When starting a new tool call, pass None or omit this parameter; the tool
-                 will automatically generate a unique ID. If querying the result of an
-                 existing task, the previous task_id must be passed.
+        task_id: Unique task identifier.
+                New task need a new task_id. If querying the result of an existing task, the previous task_id must be passed.
 
     Returns:
         A dictionary containing the following keys:
@@ -529,29 +537,15 @@ def zrt_generate_project(
         - 'error': str, error message (on failure).
         - 'traceback': str, complete exception stack trace (on failure, for debugging).
 
-    Usage example:
-        result = zrt_generate_project(
-            neutron_data="/data/sample.xye",
-            neutron_inst="/data/instrument.zDiffractometer",
-            cif_files=["/data/structure1.cif", "/data/structure2.cif"],
-            user_id="wanghao96",
-            mission_name="LNO_refinement"
-        )
-        if result['ok']:
-            zrtn_file = result['zrietveldn']
-            print(f"Project generated successfully: {zrtn_file}")
-        else:
-            print(f"Project generation failed: {result['error']}")
-
     Notes:
         - Generation may take several seconds to tens of seconds depending on data volume
           and structural complexity.
         - If multiple CIF files point to the same structure, it will only be loaded once.
         - The generated .zrietveldn file can be loaded and refined by the zrt_manual_refine tool.
     """
-    run_dir = TMP_DIR / user_id / mission_name
+    run_dir = TMP_DIR / user_id / session_id / mission_name
     logger = _setup_logging(run_dir)
-    _ensure_env("/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data", "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib")
+    _ensure_env(None, None)
 
     logger.info("Generate project start")
     logger.info("data=%s", neutron_data)
@@ -559,7 +553,13 @@ def zrt_generate_project(
     logger.info("cif_count=%d", len(cif_files or []))
 
     try:
-        effective_task_id = str(task_id).strip() if task_id is not None and str(task_id).strip() else str(uuid.uuid4())
+        effective_task_id = str(task_id).strip() if task_id is not None else ""
+        if not effective_task_id:
+            return {
+                "ok": False,
+                "error": "task_id is required and will be used for output file naming",
+                "run_dir": str(run_dir),
+            }
         dst = run_dir / f"{effective_task_id}.zrietveldn"
 
         zrt_path = refineTool.genZRTn(neutron_data, neutron_inst, cif_files, str(dst))
@@ -589,6 +589,7 @@ def zrt_manual_refine(
     zrtn_path: str,
     cfg: Optional[Dict[str, object]] = None,
     user_id: str = "default",
+    session_id: str = "default",
     mission_name: str = "default",
     task_id: Optional[str] = None,
 ) -> Dict[str, object]:
@@ -634,16 +635,14 @@ def zrt_manual_refine(
              | `refine_profile` | str | (none) | Peak profile parameter refinement control (TOF neutron diffraction only). Available values: `level0` / `level1` / `level2`, mutually exclusive. Parameters opened at each level: `level0` opens σ₁², γ₁; `level1` opens σ₀², σ₂², γ₀, γ₂; `level2` simultaneously opens σ₀², σ₁², σ₂², γ₀, γ₁, γ₂ (all Gaussian/Lorentzian peak width parameters). α, β₀, β₁, r₀ remain fixed at any level. Recommended to enable only after completing scale/background/unit cell refinement, typically starting with `level0`. |
 
         user_id: User identifier string, used for file management and logging.
-                 Default value is "default".
 
         mission_name: High-level mission name. Keep it the same across multiple calls
                   for the same overall refinement goal. Used to organize generated
                   files/logs and namespace task polling records.
 
-        task_id: Sub-task identifier inside the mission (optional).
-             This parameter is automatically injected by the MCP wrapper layer for task
-             tracking. To continue polling an unfinished task, pass the same task_id
-             together with the same mission_name.
+        task_id: Sub-task identifier inside the mission.
+            New task need a new task_id.
+            To continue polling an unfinished task, pass the same task_id together with the same mission_name.
 
     Returns:
         A dictionary containing the following keys:
@@ -675,31 +674,6 @@ def zrt_manual_refine(
         - 'error': str, error message (on failure).
         - 'traceback': str, complete exception stack trace (on failure, for debugging).
 
-    Usage examples:
-        # Refine scale and background
-        result = zrt_manual_refine(
-            zrtn_path="/output/project.zrietveldn",
-            cfg={
-                "refine_scale": "true",
-                "refine_background": "true",
-                "background_coeffs": "6"
-            },
-            user_id="wanghao96",
-            mission_name="LNO_step1"
-        )
-
-        # Further refine unit cell and atomic positions
-        result = zrt_manual_refine(
-            zrtn_path="/output/project.zrietveldn",
-            cfg={
-                "refine_cell": "true",
-                "refine_atoms": "{\"all\":\"XU\"}",
-                "refine_cycle": "10"
-            },
-            user_id="wanghao96",
-            mission_name="LNO_step2"
-        )
-
     Notes:
         - All values in cfg must be strings. For boolean values, use "true" or "false".
         - If cfg is None or an empty dict, no refinement is performed; the project is only loaded.
@@ -710,9 +684,9 @@ def zrt_manual_refine(
 
     
     """
-    run_dir = TMP_DIR / user_id / mission_name
+    run_dir = TMP_DIR / user_id / session_id / mission_name
     logger = _setup_logging(run_dir)
-    _ensure_env("/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data", "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib")
+    _ensure_env(None, None)
     cfg_str = _normalize_cfg(cfg)
 
     try:
@@ -755,6 +729,7 @@ def zrt_export_cif(
     output_cif_path: str = "",
     phase_label: str = "",
     user_id: str = "default",
+    session_id: str = "default",
     mission_name: str = "default",
     task_id: Optional[str] = None,
 ) -> Dict[str, object]:
@@ -767,11 +742,12 @@ def zrt_export_cif(
                          near the input .zrietveldn file.
         phase_label: Optional phase label. If empty, export the first phase.
         user_id: User identifier used for log/run directory organization.
+        session_id: Session identifier used for log/run directory organization.
         mission_name: High-level mission name used for log/run directory organization.
                   Keep it stable for the same overall workflow.
-        task_id: Optional sub-task ID injected by MCP wrapper.
-             To continue polling the same unfinished task, reuse the same
-             mission_name and task_id pair.
+        task_id: sub-task ID injected by MCP wrapper.
+            New task need a new task_id.
+            To continue polling the same unfinished task, reuse the same mission_name and task_id pair.
 
     Returns:
         A dictionary with:
@@ -782,14 +758,20 @@ def zrt_export_cif(
         - run_dir: str, task run directory.
         - error/traceback: failure details (on failure).
     """
-    run_dir = TMP_DIR / user_id / mission_name
+    run_dir = TMP_DIR / user_id / session_id / mission_name
     logger = _setup_logging(run_dir)
     _ensure_env(
-        "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/Z-Rietveld/utility_atomic_data",
-        "/home/dur/rongzai-agent/tools/pyZRietveld/Z-Rietveld/lib",
+        None,
+        None,
     )
 
-    effective_task_id = str(task_id).strip() if task_id is not None and str(task_id).strip() else str(uuid.uuid4())
+    effective_task_id = str(task_id).strip() if task_id is not None else ""
+    if not effective_task_id:
+        return {
+            "ok": False,
+            "error": "task_id is required and will be used for output file naming",
+            "run_dir": str(run_dir),
+        }
     logger.info("Export CIF start: zrtn=%s phase_label=%s", zrtn_path, phase_label)
 
     try:
@@ -846,14 +828,14 @@ zrt_export_cif_runner.register_mcp_tool(mcp, name="zrt_export_cif")
 if __name__ == "__main__":
     mcp.run(transport="sse")
 
-    # difPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/RUN0001094_groupBM.histogramIgor"
-    # cifPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/LNO.cif"
-    # instruPath = "/home/dur/rongzai-agent/tools/pyZRietveld/testData/BM.zDiffractometer"
+    # difPath = str((MODULE_DIR / "testData" / "RUN0001094_groupBM.histogramIgor").resolve())
+    # cifPath = str((MODULE_DIR / "testData" / "LNO.cif").resolve())
+    # instruPath = str((MODULE_DIR / "testData" / "BM.zDiffractometer").resolve())
 
     # result = zrt_generate_project(difPath, instruPath, [cifPath], user_id="test_user", mission_name="test_mission")
     # print(result)
 
-    # zrietveldnPath = "/home/dur/rongzai-agent/userRecord/wanghao96/LNO_RUN0001094_BM/6862ac44-3adb-4427-a8af-730310406243.zrietveldn"
+    # zrietveldnPath = str((WORKSPACE_ROOT / "userRecord" / "wanghao96" / "LNO_RUN0001094_BM" / "6862ac44-3adb-4427-a8af-730310406243.zrietveldn").resolve())
     
     # cfg0 = {
     # "refine_scale": "true",
