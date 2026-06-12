@@ -6,12 +6,14 @@ parent_path = os.path.dirname(os.path.abspath(__file__))
 appdir = os.path.join(parent_path, "tmp/drsai_ui")
 os.makedirs(appdir, exist_ok=True)
 from dotenv import load_dotenv
-load_dotenv(dotenv_path=os.path.join(parent_path, ".env"), override=True)
+# load_dotenv(dotenv_path=os.path.join(parent_path, ".env"), override=True)
+load_dotenv(dotenv_path=os.path.join(parent_path, ".env_zjj"), override=True)
+
 
 if __name__ == "__main__":
     ui(
         # reload=True,
-        port=8081,
+        port=30004,
         appdir=appdir,
         database_uri= f"sqlite:////{appdir}/drsai_ui.db",
     )

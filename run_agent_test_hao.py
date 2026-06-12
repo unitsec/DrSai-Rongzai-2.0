@@ -210,10 +210,10 @@ if __name__ == "__main__":
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
-            port = 42812, 
+            port = 30002, 
             # 是否注册到HepAI智能体平台
             no_register=False,
-            drsai_dir = "/home/wangh/rongzai-agent/tmp",
+            drsai_dir = "/dg_workfs/domassy/rongzai/rongzai-agent/tmp",
             # 是否注册为OpenWebUI的pipeline
             enable_openwebui_pipeline=False, 
             history_mode = "backend",
