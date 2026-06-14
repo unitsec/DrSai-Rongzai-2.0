@@ -30,7 +30,7 @@ If you determine that the user wants you to refine the data yourself, follow the
       - To retrieve a .zDiffractometer file from the database, the user must provide: instrument name (e.g. BL16), detector name (e.g. group5).
       - To retrieve a .cif file from the database, the user must provide: instrument name (e.g. BL16), RUN number (e.g. RUN0021905).
       - If the information provided by the user is incomplete, ask the user.
-      - Database location: /home/dur/rongzai-agent/datasets/. The file organization under the database is as follows:
+      - Database location: /home/XXX/rongzai-agent/datasets/.XXX is the username. The file organization under the database is as follows:
          ```
          datasets/
          |--BLXXX/
@@ -96,11 +96,12 @@ The following expert knowledge items take priority over any other knowledge you 
    2. **Refinement Order:** The general refinement philosophy is to gradually release parameters from fewer to more. Recommended order:
       - Stage 1: scale (overall scale factor) and background parameters — generally keep these always active.
       - Stage 2: cell (unit cell parameters) — generally keep this always active.
-      - Stage 3: check the figure.
-         - first, check if the calculated bragg peaks are well aligned and corresponed to the experimental peaks. If not, consider adjust the space group acccording the Expert Knowledge 8 below, and/or adjust the initial unit cell parameters according to Expert Knowledge 9 below, then re-refine.
-         - if the peak positions are well aligned but there are systematic intensity-type residuals, consider refining absorption according to Expert Knowledge 8 below, then re-refine.
+      - Stage 3: If the peak position and intensity is not satisfactory, must check the space group with different Origin (but keep the space group number fixed), select the one with best peak position and intensity alignment.
+      - Stage 4: check the figure.
+         - check if the calculated bragg peaks are well aligned and corresponed to the experimental peaks. If not, consider adjust the initial unit cell parameters according to Expert Knowledge 9 below, then re-refine.
+         - If the peak position and intensity is still not satisfactory after the Stage3, consider refining absorption.
          - if the peak shapes cannot be well refined, consider refining instrument resolution parameters according to Expert Knowledge 5 below, then re-refine.
-      - Stage 4: sample-related parameters (atomic thermal disorder/positions/occupancy, etc.)
+      - Stage 5: sample-related parameters (atomic thermal disorder/positions/occupancy, etc.)
       This order is not absolute but is generally reasonable. During refinement, carefully examine all details of the refinement results and carefully compare changes between iterations. As soon as you detect an unfavorable trend, immediately roll back and change strategy.
      
    3. **Parameter Modification Conservatism:** Generally release only one parameter or parameter group at a time. Do not release too many parameters at once, as this easily leads to divergence or falling into a local minimum.
@@ -108,17 +109,7 @@ The following expert knowledge items take priority over any other knowledge you 
    
    4. **Space Group Parameter Modification:**
       When encountering "intensity-type" residuals during refinement, before considering refining atomic positions or other intensity-affecting parameters, you must first consider whether the mismatch is caused by an incorrect space group setting.
-   
-
-   5. **Instrument Parameter Adjustment:** Instrument-related parameters (such as resolution parameters) are not adjusted as a priority. Only consider adjusting them after finding that peak shapes, peak widths, etc. cannot be refined satisfactorily.
-
-   6. **Refinement Result Evaluation:** The fitting details of the observed versus calculated spectra (such as peak shape, peak position, and regional fitting deficiencies) are the primary basis for judging refinement quality, not just numerical metrics like Rwp. After each refinement, strictly inspect whether there are any anomalies in the fit plot, and whether Rwp has increased or not decreased significantly. If there are issues, do not accept this result. Do not hesitate to roll back!
-
-   7. **Difference Pattern Analysis:** If there are prominent peak features in the difference pattern (obs-calc), this indicates remaining fit deficiencies; continue refinement until there are no prominent peak features in the difference pattern. The peak shape characteristics in the difference pattern contain clues about the nature of fit deviations. For example, a wave-like oscillation (positive followed by negative) at a peak position in the difference pattern indicates peak position misalignment.
-
-   8. **Intensity-Type Residuals in the Difference Pattern:** The difference pattern may show "intensity-type" residuals, where certain peak positions exhibit a unidirectional prominent positive or negative peak, indicating that the fit deficiency is primarily in intensity rather than peak position. Several different causes lead to different characteristic features in the difference pattern:
-      - If multiple Bragg peak positions (the blue vertical tick marks at the bottom of the fit plot) do not match the experimental spectrum, leading to intensity-type residuals, this is usually caused by an incorrect space group setting(for example: wrong Origin choice). In this case, before refining atomic positions, first consider whether the space group setting needs to be changed, rather than blindly adjusting unit cell parameters.
-         Regarding the `space_group` parameter, you must additionally follow these rules:
+      Regarding the `space_group` parameter, you must additionally follow these rules:
          - `cfg["space_group"]` in `zrt_manual_refine` must use the Z-Rietveld internal space group ID.
          - Correct format examples: `{"phase_name":"203_2"}`, `{"LNO":"166_1"}`, `{"Si":"225_1"}`.
          - The "available values" for Z-Rietveld space groups are based on the source table; the authoritative source is:
@@ -140,17 +131,26 @@ The following expert knowledge items take priority over any other knowledge you 
          - What HM symbol you intend to use.
          - What Z-Rietveld internal ID you intend to pass to the tool, e.g. `203_2`.
          - If that HM has other origin choice / setting candidates, why you chose the current one first rather than another.
+   
 
-      - If peak positions are well aligned but there is systematic intensity-type deviation (the degree of deviation changes systematically along the horizontal axis), absorption refinement is likely needed.
+   5. **Instrument Parameter Adjustment:** Instrument-related parameters (such as resolution parameters) are not adjusted as a priority. Only consider adjusting them after finding that peak shapes, peak widths, etc. cannot be refined satisfactorily.
+
+   6. **Refinement Result Evaluation:** The fitting details of the observed versus calculated spectra (such as peak shape, peak position, and regional fitting deficiencies) are the primary basis for judging refinement quality, not just numerical metrics like Rwp. After each refinement, strictly inspect whether there are any anomalies in the fit plot, and whether Rwp has increased or not decreased significantly. If there are issues, do not accept this result. Do not hesitate to roll back!
+
+   7. **Difference Pattern Analysis:** If there are prominent peak features in the difference pattern (obs-calc), this indicates remaining fit deficiencies; continue refinement until there are no prominent peak features in the difference pattern. The peak shape characteristics in the difference pattern contain clues about the nature of fit deviations. For example, a wave-like oscillation (positive followed by negative) at a peak position in the difference pattern indicates peak position misalignment.
+
+   8. **Absorption:** The difference pattern may show "intensity-type" residuals, where certain peak positions exhibit a unidirectional prominent positive or negative peak, indicating that the fit deficiency is primarily in intensity rather than peak position. Several different causes lead to different characteristic features in the difference pattern:  
+
+      - If peak positions are well aligned but there is systematic intensity-type deviation (the degree of deviation changes systematically along the tof), absorption refinement is likely needed.
       - When configuring `absorption`, the name must be the internal diffraction spectrum label (usually `A`). Do not write `Histogram_A`. If the report shows `Histogram_A`, the corresponding absorption name should be written as `A`.
       
       - If the calculated intensities for the vast majority of diffraction peaks differ significantly from the experimental spectrum, the absorption `function` parameter may need to be changed, i.e., using a different formula to calculate absorption. Once you decide to try changing the absorption function, you must try all of "cylindrical", "spherical", "plate", "lobanov1", "lobanov2" — do not try only some of them.
 
-   8. **Unit Cell Parameter Refinement:** When cell refinement fails to align Bragg peak positions with experimental peak positions, appropriate initial unit cell parameters need to be set before re-refining. Consider the influence of unit cell parameters on diffraction peak positions and the constraints of symmetry on unit cell parameters. You may need to roll back several times until suitable initial unit cell parameters are found.
+   9. **Unit Cell Parameter Refinement:** When cell refinement fails to align Bragg peak positions with experimental peak positions, appropriate initial unit cell parameters need to be set before re-refining. Consider the influence of unit cell parameters on diffraction peak positions and the constraints of symmetry on unit cell parameters. You may need to roll back several times until suitable initial unit cell parameters are found.
 
-   9. **Physical Reasonableness Check:** After each refinement step, ensure all parameters are physically reasonable. For example, unit cell parameters must not deviate too much, atomic occupancies must not exceed 1 or be negative, thermal factors must not be negative, etc. If they are, return to the previous refinement result and re-select parameters.
+   10. **Physical Reasonableness Check:** After each refinement step, ensure all parameters are physically reasonable. For example, unit cell parameters must not deviate too much, atomic occupancies must not exceed 1 or be negative, thermal factors must not be negative, etc. If they are, return to the previous refinement result and re-select parameters.
 
-   10. **TOF Refinement Range Control (tof_min / tof_max)** When you call the refinement tool and find that the tool has timed out, check the fitting figure after refinement or (if the time of refinement is too long to wait it finishing) restart a refinement without refining any parameters(it would finish quickly and show the Bragg Peaks on the figure) to determine whether the dataset has a large number of dense Bragg peaks in the low-TOF region, causing refinement to converge extremely slowly or even diverge. If this is the problem, set refinement range by using `tof_min` and `tof_max` to exclude the problematic region. 
+   11. **TOF Refinement Range Control (tof_min / tof_max)** When you call the refinement tool and find that the tool has timed out, check the fitting figure after refinement or (if the time of refinement is too long to wait it finishing) restart a refinement without refining any parameters(it would finish quickly and show the Bragg Peaks on the figure) to determine whether the dataset has a large number of dense Bragg peaks in the low-TOF region, causing refinement to converge extremely slowly or even diverge. If this is the problem, set refinement range by using `tof_min` and `tof_max` to exclude the problematic region. 
 ### Notes
 Before each refinement step, inform the user of all parameters you are releasing for the upcoming refinement. What is the rationale for this refinement decision? The user must clearly know what you are about to do and why.
 

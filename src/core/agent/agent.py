@@ -38,6 +38,10 @@ from drsai.modules.components import (
 )
 from drsai.modules.components.model_client import ChatCompletionClient
 from drsai.modules.components.model_client import HepAIChatCompletionClient, ModelFamily
+from drsai.modules.components.model_client.anthropic import (
+    HepAIAnthropicChatCompletionClient,
+    _MODEL_INFO,
+)
 from drsai.modules.components.model_context import (
     ChatCompletionContext,
     DrSaiChatCompletionContext,
@@ -183,6 +187,7 @@ class RongZaiAgent(DrSaiAgent):
         )
 
         self._fallback_config_names = fallback_config_names or []
+        self._env_fallback_config_names = self._parse_fallback_configs_from_env()
 
         self._developer_system_message = system_message
 
@@ -294,6 +299,12 @@ class RongZaiAgent(DrSaiAgent):
         # key: server_id，value: 该 server 注册到 workbench 的代理工具名列表
         self._mcp_server_tool_names: Dict[str, List[str]] = {}
         self._tools_names = [tool.name for tool in self._tools]
+        self._default_model_client_component = self._model_client.dump_component()
+        self._default_model_client_name = ""
+        try:
+            self._default_model_client_name = self._model_client._create_args.get("model", "")
+        except Exception:
+            self._default_model_client_name = ""
 
         # Legacy (disabled): tool 图片回注主模型上下文的状态字段。
         # 如需回滚到旧方案，取消注释以下两行，并恢复下方 Legacy 方法与调用点。
@@ -415,6 +426,26 @@ class RongZaiAgent(DrSaiAgent):
         ]
         return any(flag in text for flag in flags)
 
+    def _is_retryable_model_error(self, error: Exception) -> bool:
+        """判断异常是否适合切换到备用模型后重试。"""
+        text = str(error).lower()
+        flags = [
+            "insufficient_quota",
+            "rate limit",
+            "too many requests",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "timeout",
+            "timed out",
+            "connection reset",
+            "service unavailable",
+            "no resource",
+        ]
+        return any(flag in text for flag in flags)
+
     def _flatten_message_content_for_summary(self, content: Any) -> str:
         """将消息内容拍平成短文本，供总结子智能体使用。"""
         if content is None:
@@ -508,6 +539,188 @@ class RongZaiAgent(DrSaiAgent):
                 )
 
         return self._model_client
+
+    def _parse_fallback_configs_from_env(self) -> List[str]:
+        """从环境变量读取备用模型列表，支持 JSON 数组或逗号分隔文本。"""
+        raw = (os.getenv("RONGZAI_LLM_FALLBACK_CONFIGS") or "").strip()
+        if not raw:
+            return []
+
+        parsed: List[str] = []
+        try:
+            value = json.loads(raw)
+            if isinstance(value, list):
+                parsed = [str(item).strip() for item in value if str(item).strip()]
+            elif isinstance(value, str) and value.strip():
+                parsed = [value.strip()]
+        except Exception:
+            parsed = [item.strip() for item in raw.split(",") if item.strip()]
+
+        # 去重并保序
+        seen: set[str] = set()
+        ordered: List[str] = []
+        for item in parsed:
+            if item not in seen:
+                ordered.append(item)
+                seen.add(item)
+        return ordered
+
+    def _get_fallback_config_names(self) -> List[str]:
+        """获取备用模型标识列表（配置传参或环境变量）。"""
+        names: List[str] = []
+        seen: set[str] = set()
+
+        for config_name in self._fallback_config_names:
+            if config_name and config_name not in seen:
+                names.append(config_name)
+                seen.add(config_name)
+
+        if not names:
+            for config_name in self._env_fallback_config_names:
+                if config_name and config_name not in seen:
+                    names.append(config_name)
+                    seen.add(config_name)
+
+        if names:
+            return names
+        return names
+
+    def _ensure_component_token_model(self, component: ComponentModel) -> ComponentModel:
+        """为模型组件补齐 token_model，避免未知模型名导致 token 计数初始化失败。"""
+        try:
+            cfg = getattr(component, "config", None)
+            if not isinstance(cfg, dict):
+                return component
+
+            model_info = cfg.get("model_info")
+            if not isinstance(model_info, dict):
+                model_info = {}
+                cfg["model_info"] = model_info
+
+            token_model = model_info.get("token_model")
+            if not token_model:
+                model_info["token_model"] = os.getenv("RONGZAI_TOKEN_MODEL_FALLBACK", "gpt-4o-2024-11-20")
+        except Exception:
+            pass
+        return component
+
+    def _build_model_client_from_model_name(self, model_name: str) -> Optional[ChatCompletionClient]:
+        """按模型名称构建客户端；claude/minimax 走 Anthropic 路径，其他走 OpenAI 兼容路径。"""
+        candidate = (model_name or "").strip()
+        if not candidate:
+            return None
+
+        try:
+            api_key = None
+            try:
+                api_key = self._model_client._client.api_key
+            except Exception:
+                api_key = os.getenv("HEPAI_API_KEY")
+
+            if not api_key:
+                return None
+
+            timeout = float(_get_env_float("RONGZAI_FALLBACK_TIMEOUT", 180.0))
+            # 与主路径保持一致：默认重试更高，避免瞬时 5xx 导致过早判定失败。
+            max_retries = int(_get_env_float("RONGZAI_FALLBACK_MAX_RETRIES", 12.0))
+            max_tokens = int(_get_env_float("RONGZAI_FALLBACK_MAX_TOKENS", 60000.0))
+            is_openai_gpt = candidate.startswith("openai/gpt-")
+
+            if ("claude" in candidate) or ("minimax" in candidate):
+                return HepAIAnthropicChatCompletionClient(
+                    model=candidate,
+                    api_key=api_key,
+                    base_url=os.getenv("RONGZAI_ANTHROPIC_BASE_URL", "https://aiapi.ihep.ac.cn/apiv2/anthropic").strip(),
+                    timeout=timeout,
+                    max_retries=max_retries,
+                    max_tokens=max_tokens,
+                    # 使用稳定已知的 Anthropic model_info，避免未知模型名触发 token 计数初始化错误。
+                    model_info=_MODEL_INFO["claude-sonnet-4-5"],
+                )
+
+            is_vision = "deepseek" not in candidate
+            token_model = os.getenv("RONGZAI_TOKEN_MODEL_FALLBACK", "gpt-4o-2024-11-20").strip()
+            client_kwargs: Dict[str, Any] = {
+                "model": candidate,
+                "api_key": api_key,
+                "base_url": os.getenv("RONGZAI_OPENAI_BASE_URL", "https://aiapi.ihep.ac.cn/apiv2").strip(),
+                "timeout": timeout,
+                "max_retries": max_retries,
+                "model_info": {
+                    "vision": is_vision,
+                    "function_calling": True,
+                    "json_output": True,
+                    "structured_output": False,
+                    "family": ModelFamily.GPT_41,
+                    "multiple_system_messages": True,
+                    "token_model": token_model,
+                },
+            }
+            if not is_openai_gpt:
+                client_kwargs["max_tokens"] = max_tokens
+            return HepAIChatCompletionClient(**client_kwargs)
+        except Exception as e:
+            logger.warning("Failed to clone model client for model '{}': {}", candidate, e)
+            return None
+
+    async def _switch_to_fallback_model(self, config_name: str) -> Optional[str]:
+        """尝试切换到一个备用模型（优先按模型名直连，不依赖 llm_mode_config）。"""
+        fallback_id = (config_name or "").strip()
+        if not fallback_id:
+            return None
+
+        new_model_client: ChatCompletionClient | None = self._build_model_client_from_model_name(fallback_id)
+
+        # 兜底：若外部注入了 set_model_client，则将标识原样透传给外部工厂。
+        if new_model_client is None and self._set_model_client:
+            try:
+                new_model_client = self._set_model_client(fallback_id)
+            except Exception as e:
+                logger.warning("Failed to create fallback model client from identifier '{}': {}", fallback_id, e)
+                return None
+
+        if new_model_client is None:
+            logger.warning("Fallback identifier '{}' did not produce a model client.", fallback_id)
+            return None
+
+        try:
+            await self.switch_model(new_model_client)
+            logger.info(
+                "Switched to fallback model '{}'.",
+                fallback_id,
+            )
+            return fallback_id
+        except Exception as e:
+            logger.warning("Failed to switch to fallback model '{}': {}", fallback_id, e)
+            return None
+
+    async def _restore_default_model(self) -> None:
+        """在一轮任务结束后恢复初始化时的默认模型。"""
+        try:
+            current_component = self._model_client.dump_component()
+        except Exception:
+            current_component = None
+
+        if current_component == self._default_model_client_component:
+            return
+
+        try:
+            default_model_client: ChatCompletionClient | None = None
+
+            # 优先按默认模型名重建，走与 fallback 一致的 provider-specific 构造路径。
+            if self._default_model_client_name:
+                default_model_client = self._build_model_client_from_model_name(self._default_model_client_name)
+
+            # 回退：使用初始化快照组件重建。
+            if default_model_client is None:
+                default_component = self._default_model_client_component.model_copy(deep=True)
+                default_component = self._ensure_component_token_model(default_component)
+                default_model_client = ChatCompletionClient.load_component(default_component)
+
+            await self.switch_model(default_model_client)
+            logger.info("Restored default model client after run.")
+        except Exception as e:
+            logger.warning("Failed to restore default model client: {}", e)
 
     async def _summarize_history_with_subagent(
         self,
@@ -1289,6 +1502,9 @@ class RongZaiAgent(DrSaiAgent):
 
         inner_messages: List[BaseAgentEvent | BaseChatMessage] = []
         last_buffered_stream_events: List[ModelClientStreamingChunkEvent] = []
+        fallback_candidates: List[str] = self._get_fallback_config_names()
+        fallback_attempted: set[str] = set()
+        forced_invalid_output_once = False
         try:
             self._lang_prompt = ""
             
@@ -1345,27 +1561,53 @@ class RongZaiAgent(DrSaiAgent):
                 last_buffered_stream_events = buffered_stream_events
                 # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
                 # self._arm_ephemeral_images_for_inference()
-                async for inference_output in self._call_llm(
-                    model_client=model_client,
-                    model_client_stream=model_client_stream,
-                    system_messages=system_messages,
-                    model_context=model_context,
-                    workbench=workbench,
-                    handoff_tools=handoff_tools,
-                    manager_tools=manager_tools,
-                    agent_name=agent_name,
-                    cancellation_token=cancellation_token,
-                    output_content_type=output_content_type,
-                ):
-                    if self.is_paused:
-                        raise asyncio.CancelledError()
-                    
-                    if isinstance(inference_output, CreateResult):
-                        model_result = inference_output
-                    else:
-                        # 先缓存本轮模型流式文本，待确认本轮结果是否合法后再决定是否对用户可见。
-                        if isinstance(inference_output, ModelClientStreamingChunkEvent):
-                            buffered_stream_events.append(inference_output)
+                try:
+                    async for inference_output in self._call_llm(
+                        model_client=model_client,
+                        model_client_stream=model_client_stream,
+                        system_messages=system_messages,
+                        model_context=model_context,
+                        workbench=workbench,
+                        handoff_tools=handoff_tools,
+                        manager_tools=manager_tools,
+                        agent_name=agent_name,
+                        cancellation_token=cancellation_token,
+                        output_content_type=output_content_type,
+                    ):
+                        if self.is_paused:
+                            raise asyncio.CancelledError()
+                        
+                        if isinstance(inference_output, CreateResult):
+                            model_result = inference_output
+                        else:
+                            # 先缓存本轮模型流式文本，待确认本轮结果是否合法后再决定是否对用户可见。
+                            if isinstance(inference_output, ModelClientStreamingChunkEvent):
+                                buffered_stream_events.append(inference_output)
+                except Exception as llm_err:
+                    if not self._is_retryable_model_error(llm_err):
+                        raise
+
+                    remaining_fallbacks = [name for name in fallback_candidates if name not in fallback_attempted]
+                    switched_model: Optional[str] = None
+                    for fallback_config_name in remaining_fallbacks:
+                        fallback_attempted.add(fallback_config_name)
+                        switched_model = await self._switch_to_fallback_model(fallback_config_name)
+                        if switched_model:
+                            break
+
+                    if switched_model:
+                        yield ModelClientStreamingChunkEvent(
+                            content=f"\n[System Notice] Model call failed. Switched to fallback model: {switched_model}. Retrying.\n",
+                            source=agent_name,
+                        )
+                        logger.warning(
+                            "Retryable model error detected; switched to fallback model '{}' and retrying. error={}",
+                            switched_model,
+                            llm_err,
+                        )
+                        continue
+
+                    raise
                 # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
                 # self._cleanup_inflight_ephemeral_images(model_context)
                 
@@ -1374,14 +1616,42 @@ class RongZaiAgent(DrSaiAgent):
                         raise asyncio.CancelledError()
                     raise RuntimeError("No model result was produced.")
 
+                force_invalid_output = os.getenv("RONGZAI_FORCE_INVALID_MODEL_OUTPUT", "").lower() in {"1", "true", "yes", "on"}
+                if force_invalid_output and not forced_invalid_output_once:
+                    # 测试开关：强制注入非法输出类型，验证备用模型切换与重试链路。
+                    model_result.content = {
+                        "forced_error": "invalid model output for fallback verification"
+                    }
+                    logger.warning("RONGZAI_FORCE_INVALID_MODEL_OUTPUT is enabled: forcing invalid model output type.")
+                    forced_invalid_output_once = True
+
                 if model_result.content == "":
+                    remaining_fallbacks = [name for name in fallback_candidates if name not in fallback_attempted]
+                    switched_model: Optional[str] = None
+                    for fallback_config_name in remaining_fallbacks:
+                        fallback_attempted.add(fallback_config_name)
+                        switched_model = await self._switch_to_fallback_model(fallback_config_name)
+                        if switched_model:
+                            break
+
+                    if switched_model:
+                        yield ModelClientStreamingChunkEvent(
+                            content=f"\n[System Notice] The current model returned no response. Switched to fallback model: {switched_model}. Retrying.\n",
+                            source=agent_name,
+                        )
+                        logger.warning(
+                            "No response from current model; switched to fallback model '{}' and retrying.",
+                            switched_model,
+                        )
+                        continue
+
                     yield Response(
-                    chat_message=TextMessage(
-                        content="(No response was generated by the model.) You can try change a base model or wait some time.",
-                        source=self._agent_name,
-                        metadata={"internal": "no"},
+                        chat_message=TextMessage(
+                            content="(No response was generated by the model.) All fallback models are unavailable now. Please try again later.",
+                            source=self._agent_name,
+                            metadata={"internal": "no"},
                         ),
-                    inner_messages=inner_messages,
+                        inner_messages=inner_messages,
                     )
                     break
 
@@ -1407,191 +1677,241 @@ class RongZaiAgent(DrSaiAgent):
                     yield response
                     break
 
-                # 否则进入工具调用分支
-                assert isinstance(model_result.content, list) and all(
+                # 工具调用分支：严格要求返回 FunctionCall 列表。
+                if isinstance(model_result.content, list) and all(
                     isinstance(item, FunctionCall) for item in model_result.content
-                )
-                for buffered_event in buffered_stream_events:
-                    yield buffered_event
+                ):
+                    for buffered_event in buffered_stream_events:
+                        yield buffered_event
 
-                # 记录模型请求的工具调用
-                tool_call_msg = ToolCallRequestEvent(
-                    content=model_result.content,
-                    source=agent_name,
-                    models_usage=model_result.usage,
-                )
-                inner_messages.append(tool_call_msg)
-                logger.debug(tool_call_msg)
-                yield tool_call_msg
+                    # 记录模型请求的工具调用
+                    tool_call_msg = ToolCallRequestEvent(
+                        content=model_result.content,
+                        source=agent_name,
+                        models_usage=model_result.usage,
+                    )
+                    inner_messages.append(tool_call_msg)
+                    logger.debug(tool_call_msg)
+                    yield tool_call_msg
 
-                pending_tool_results: List[FunctionExecutionResult] = []
-                
-                # 处理模型请求的工具调用
-                for i in range(len(model_result.content)):
-                    argument = json.loads(model_result.content[i].arguments)
-                    tool_name = model_result.content[i].name
-                    call_id = model_result.content[i].id
-                    if tool_name == "Skill":
-                        if skills_loader is None:
-                            skill_content = "No system skill is loaded."
-                        else:
-                            skill_content = skills_loader.run_skill(argument["skill"])
-                        pending_tool_results.append(
-                            FunctionExecutionResult(
-                                content=f"Skill for {argument['skill']}:\n\n {skill_content}",
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
-                            )
-                        )
-                        yield AgentLogEvent(
-                            title=f"I am reading skill: {argument['skill']}.",
-                            source=agent_name, 
-                            content=str(argument), 
-                            content_type="tools")
-                    elif tool_name == "PromoteSkillToCore":
-                        promote_message = self._promote_skill_to_core(
-                            skills_loader=skills_loader,
-                            skill_name=argument["skill"],
-                            reason=argument["reason"],
-                            focus=argument.get("focus", ""),
-                        )
-                        pending_tool_results.append(
-                            FunctionExecutionResult(
-                                content=promote_message,
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
-                            )
-                        )
-                        self.update_system_prompt()
-                        system_messages = self._system_messages
-                        yield AgentLogEvent(
-                            title="I am promoting a skill to core system rules.",
-                            source=agent_name,
-                            content=str(argument),
-                            content_type="tools",
-                        )
-                    elif tool_name == "DemoteCoreSkill":
-                        demote_message = self._demote_core_skill(
-                            skill_name=argument["skill"],
-                            reason=argument.get("reason", ""),
-                        )
-                        pending_tool_results.append(
-                            FunctionExecutionResult(
-                                content=demote_message,
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
-                            )
-                        )
-                        self.update_system_prompt()
-                        system_messages = self._system_messages
-                        yield AgentLogEvent(
-                            title="I am demoting a core skill.",
-                            source=agent_name,
-                            content=str(argument),
-                            content_type="tools",
-                        )
-                    elif tool_name == "ReplaceCoreSkill":
-                        replace_message = self._replace_core_skill(
-                            skills_loader=skills_loader,
-                            old_skill=argument["old_skill"],
-                            new_skill=argument["new_skill"],
-                            reason=argument["reason"],
-                            focus=argument.get("focus", ""),
-                        )
-                        pending_tool_results.append(
-                            FunctionExecutionResult(
-                                content=replace_message,
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
-                            )
-                        )
-                        self.update_system_prompt()
-                        system_messages = self._system_messages
-                        yield AgentLogEvent(
-                            title="I am replacing a core skill.",
-                            source=agent_name,
-                            content=str(argument),
-                            content_type="tools",
-                        )
-                    elif tool_name in self._tools_names:
-                        yield AgentLogEvent(
-                            title="I am using tool: " + tool_name,
-                            source=agent_name, 
-                            content=str(model_result.content[i]), 
-                            content_type="tools")
+                    pending_tool_results: List[FunctionExecutionResult] = []
 
-                        _, result = await self._execute_tool_call(
-                            tool_call=model_result.content[i],
-                            workbench=workbench,
-                            handoff_tools=handoff_tools,
-                            agent_name=agent_name,
-                            cancellation_token=cancellation_token,
-                        )
+                    # 处理模型请求的工具调用
+                    for i in range(len(model_result.content)):
+                        argument = json.loads(model_result.content[i].arguments)
+                        tool_name = model_result.content[i].name
+                        call_id = model_result.content[i].id
+                        if tool_name == "Skill":
+                            if skills_loader is None:
+                                skill_content = "No system skill is loaded."
+                            else:
+                                skill_content = skills_loader.run_skill(argument["skill"])
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=f"Skill for {argument['skill']}:\n\n {skill_content}",
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=False,
+                                )
+                            )
+                            yield AgentLogEvent(
+                                title=f"I am reading skill: {argument['skill']}.",
+                                source=agent_name,
+                                content=str(argument),
+                                content_type="tools")
+                        elif tool_name == "PromoteSkillToCore":
+                            promote_message = self._promote_skill_to_core(
+                                skills_loader=skills_loader,
+                                skill_name=argument["skill"],
+                                reason=argument["reason"],
+                                focus=argument.get("focus", ""),
+                            )
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=promote_message,
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=False,
+                                )
+                            )
+                            self.update_system_prompt()
+                            system_messages = self._system_messages
+                            yield AgentLogEvent(
+                                title="I am promoting a skill to core system rules.",
+                                source=agent_name,
+                                content=str(argument),
+                                content_type="tools",
+                            )
+                        elif tool_name == "DemoteCoreSkill":
+                            demote_message = self._demote_core_skill(
+                                skill_name=argument["skill"],
+                                reason=argument.get("reason", ""),
+                            )
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=demote_message,
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=False,
+                                )
+                            )
+                            self.update_system_prompt()
+                            system_messages = self._system_messages
+                            yield AgentLogEvent(
+                                title="I am demoting a core skill.",
+                                source=agent_name,
+                                content=str(argument),
+                                content_type="tools",
+                            )
+                        elif tool_name == "ReplaceCoreSkill":
+                            replace_message = self._replace_core_skill(
+                                skills_loader=skills_loader,
+                                old_skill=argument["old_skill"],
+                                new_skill=argument["new_skill"],
+                                reason=argument["reason"],
+                                focus=argument.get("focus", ""),
+                            )
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=replace_message,
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=False,
+                                )
+                            )
+                            self.update_system_prompt()
+                            system_messages = self._system_messages
+                            yield AgentLogEvent(
+                                title="I am replacing a core skill.",
+                                source=agent_name,
+                                content=str(argument),
+                                content_type="tools",
+                            )
+                        elif tool_name in self._tools_names:
+                            yield AgentLogEvent(
+                                title="I am using tool: " + tool_name,
+                                source=agent_name,
+                                content=str(model_result.content[i]),
+                                content_type="tools")
 
-                        try:
-                            parsed = json.loads(result.content)
-                            if isinstance(parsed, dict) and parsed.get("type") == "files_event":
-                                event_data = parsed.get("event", None)
-                                if isinstance(event_data, str):
-                                    try:
-                                        event_data = json.loads(event_data)
-                                    except Exception:
-                                        event_data = None
-                                if isinstance(event_data, dict):
-                                    try:
-                                        files_event = FilesEvent.model_validate(event_data)
-                                        yield files_event
-                                        result.content = "Served files to the right side of frontend for download."
-                                    except Exception:
-                                        # logger.error(f"Error parsing FilesEvent: {event_data}, error: {traceback.format_exc()}")
+                            _, result = await self._execute_tool_call(
+                                tool_call=model_result.content[i],
+                                workbench=workbench,
+                                handoff_tools=handoff_tools,
+                                agent_name=agent_name,
+                                cancellation_token=cancellation_token,
+                            )
+
+                            try:
+                                parsed = json.loads(result.content)
+                                if isinstance(parsed, dict) and parsed.get("type") == "files_event":
+                                    event_data = parsed.get("event", None)
+                                    if isinstance(event_data, str):
+                                        try:
+                                            event_data = json.loads(event_data)
+                                        except Exception:
+                                            event_data = None
+                                    if isinstance(event_data, dict):
+                                        try:
+                                            files_event = FilesEvent.model_validate(event_data)
+                                            yield files_event
+                                            result.content = "Served files to the right side of frontend for download."
+                                        except Exception:
+                                            # logger.error(f"Error parsing FilesEvent: {event_data}, error: {traceback.format_exc()}")
+                                            result.content = "Served 0 file event(s) to user."
+                                    else:
                                         result.content = "Served 0 file event(s) to user."
-                                else:
-                                    result.content = "Served 0 file event(s) to user."
-                        except Exception:
-                            # logger.error(f"Error parsing tool result content as JSON: {result.content}, error: {traceback.format_exc()}")
-                            pass
-                        
-                        result.content = f"{self._lang_prompt}\n\n{result.content}\n\n{self._lang_prompt}"
-                        pending_tool_results.append(result)
-                        img_paths = []
-                        img_paths.extend(_extract_existing_image_paths_from_content(result.content))
-                        if img_paths:
-                            for img_path in img_paths:
-                                # 把工具输出中的图片回显给用户
-                                fig_url = show_file_to_user(model_client, file_path=img_path)
-                                info2user = f"### ![image.png]({fig_url})\n\n"
-                                yield ModelClientStreamingChunkEvent(content=info2user, source=agent_name)
+                            except Exception:
+                                # logger.error(f"Error parsing tool result content as JSON: {result.content}, error: {traceback.format_exc()}")
+                                pass
 
-                                # 暂时禁用：工具调用后将图片强制回注到主模型上下文。
-                                # 当前仅回显给用户，不回注到主模型上下文。
-                        
-                    else:
-                        pending_tool_results.append(
-                            FunctionExecutionResult(
-                                content=f"Unknown tool: {model_result.content[i].name}",
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
+                            result.content = f"{self._lang_prompt}\n\n{result.content}\n\n{self._lang_prompt}"
+                            pending_tool_results.append(result)
+                            img_paths = []
+                            img_paths.extend(_extract_existing_image_paths_from_content(result.content))
+                            if img_paths:
+                                for img_path in img_paths:
+                                    # 把工具输出中的图片回显给用户
+                                    fig_url = show_file_to_user(model_client, file_path=img_path)
+                                    info2user = f"### ![image.png]({fig_url})\n\n"
+                                    yield ModelClientStreamingChunkEvent(content=info2user, source=agent_name)
+
+                                    # 暂时禁用：工具调用后将图片强制回注到主模型上下文。
+                                    # 当前仅回显给用户，不回注到主模型上下文。
+
+                        else:
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=f"Unknown tool: {model_result.content[i].name}",
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=False,
+                                )
+                            )
+
+                    if pending_tool_results:
+                        # 工具调用场景：将 tool_call 与 tool_result 作为一个原子对提交到上下文，
+                        # 避免 pause/cancel 时只写入半对消息导致顺序不一致。
+                        await model_context.add_message(
+                            AssistantMessage(
+                                content=model_result.content,
+                                source=self._name,
+                                thought=getattr(model_result, "thought", None),
                             )
                         )
-
-                if pending_tool_results:
-                    # 工具调用场景：将 tool_call 与 tool_result 作为一个原子对提交到上下文，
-                    # 避免 pause/cancel 时只写入半对消息导致顺序不一致。
-                    await model_context.add_message(
-                        AssistantMessage(
-                            content=model_result.content,
-                            source=self._name,
-                            thought=getattr(model_result, "thought", None),
+                        await model_context.add_message(
+                            FunctionExecutionResultMessage(content=pending_tool_results)
                         )
+                    continue
+
+                remaining_fallbacks = [name for name in fallback_candidates if name not in fallback_attempted]
+                fallback_errors: List[str] = []
+                switched_model: Optional[str] = None
+                unexpected_type = type(model_result.content).__name__
+                for fallback_config_name in remaining_fallbacks:
+                    fallback_attempted.add(fallback_config_name)
+                    switched_model = await self._switch_to_fallback_model(fallback_config_name)
+                    if switched_model:
+                        break
+                    fallback_errors.append(fallback_config_name)
+
+                if switched_model:
+                    yield ModelClientStreamingChunkEvent(
+                        content=f"\n[System Notice] Abnormal model output detected. Switched to fallback model: {switched_model}. Retrying.\n",
+                        source=agent_name,
                     )
-                    await model_context.add_message(
-                        FunctionExecutionResultMessage(content=pending_tool_results)
+                    logger.warning(
+                        "Recovered from unexpected model output type '{}' by switching to a fallback model. Retrying the full turn.",
+                        unexpected_type,
                     )
+                    continue
+
+                all_candidates = fallback_candidates or ["<none>"]
+                if not remaining_fallbacks:
+                    error_detail = (
+                        f"Model returned unsupported output type '{unexpected_type}'. "
+                        f"All fallback models have already been tried in this request: {all_candidates}. "
+                        "Please try again later."
+                    )
+                else:
+                    error_detail = (
+                        f"Model returned unsupported output type '{unexpected_type}'. "
+                        f"Fallback model configs tried: {sorted(fallback_attempted) or all_candidates}. "
+                        "Please try again later."
+                    )
+                if fallback_errors:
+                    error_detail += f" Failed fallback configs: {', '.join(fallback_errors)}."
+
+                logger.error(error_detail)
+                yield Response(
+                    chat_message=TextMessage(
+                        content=error_detail,
+                        source=self._agent_name,
+                        metadata={"internal": "no"},
+                    ),
+                    inner_messages=inner_messages,
+                )
+                break
 
         except asyncio.CancelledError:
             for buffered_event in last_buffered_stream_events:
@@ -1630,6 +1950,7 @@ class RongZaiAgent(DrSaiAgent):
                 # self._cleanup_all_ephemeral_images(self._model_context)
                 if self._model_context._rag_flow_manager:
                     await self._model_context.upload_conversation_to_ragflow()
+                await self._restore_default_model()
                 self._model_context._current_messages = []
             # await self.resume()
 

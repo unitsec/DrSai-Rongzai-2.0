@@ -1,29 +1,15 @@
 from pathlib import Path
-import importlib.util
-import venv
 import asyncio, os
 
 from drsai.modules.components.model_client import  HepAIChatCompletionClient, ModelFamily
 
 from drsai.modules.components.model_client.anthropic import (
     HepAIAnthropicChatCompletionClient,
-    get_info,
-    get_token_limit,
     _MODEL_INFO
 )
-from drsai.modules.components.model_context import DrSaiChatCompletionContext
 from autogen_core.models import RequestUsage
 import autogen_ext.models.openai._openai_client as _openai_client_patch_target
-from drsai.modules.agents.skills_agent import SkillAgent, DrSaiAssistant
-from drsai.modules.baseagent import (
-    LocalCommandLineCodeExecutor,
-    CodeBlock
-)
 from drsai.modules.managers.database import DatabaseManager
-from drsai.modules.managers.messages import (
-    ModelClientStreamingChunkEvent,
-    TextMessage,)
-from drsai.configs.constant import RUNS_DIR
 
 here = Path(__file__).parent.absolute()
 
@@ -68,7 +54,9 @@ _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
     "gpt 5": "openai/gpt-5",
-    "miniMax": "minimax/minimax-m2.7"
+    "miniMax": "minimax/minimax-m2.7",
+    "deepseek": "hepai/deepseek-v4-pro",
+    "gpt 4.1": "openai/gpt-4.1"
 }
 
 async def create_agent(
@@ -176,8 +164,8 @@ async def create_agent(
         # executor=local_executor,
 
         work_dir=WORKDIR,
-        only_in_workspace=False,
-        extra_work_dirs=[],
+        only_in_workspace=True,
+        extra_work_dirs=[str((here / "datasets").resolve())],
         token_limit=agent_token_limit
     )
 
@@ -189,13 +177,17 @@ if __name__ == "__main__":
             agent_name="Rongzai Agent",
             author="wanghao96@ihep.ac.cn",
             permission=PERMISSION,
-            description = "蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组",
+            description = {"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"},
             version = "0.1.0",
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
-            examples=["用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif",
-                      "用Z-Rietveld帮我把BL09的RUN0000410的groupMA的衍射谱精修好，cif文件是zeolite.cif",
-                      "用我上传的附件文件精修。如果不确定用哪个精修引擎，找我确认。",
-                      "帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"],
+            examples=[{"en":"Example: Help me refine the BL16 RUN0023568 group5 diffraction spectrum using GSAS-II, the cif file is Si.cif",
+                       "zh":"示例：用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif"},
+                      {"en":"Lithium battery materials analysis: I have uploaded the powder diffraction data of a lithium battery material, along with the instrument parameter file and an initial cif file. The chemical formula of this sample is XXX. Please help me study the Li/Ni mixing situation of this sample using refinement.",
+                       "zh":"锂电池材料分析：附件中是锂电池材料的粉末衍射数据，以及仪器参数文件和一个初始的cif文件。这个样品的化学式是XXX,你帮我用精修的方式研究这个样品的LiNi混排情况。"},
+                      {"en":"Zeolite materials analysis: I have uploaded the powder diffraction data of a zeolite material doped with XX, along with the instrument parameter file and an initial cif file. The chemical formula of this sample is XXX. Please help me study the enrichment distribution of XX at X sites, and also study which position is suitable for placing X. Note that the bond length of X-X and X-X should be within a reasonable range without too much deviation. X should also maintain an appropriate distance from surrounding atoms.",
+                        "zh":"沸石类材料分析：附件中是一个掺杂了XX的沸石材料的粉末衍射数据，以及仪器参数文件和一个初始的cif文件。这个样品的化学式是XXX,好，现在请你帮我研究XX在X个X位的富集分布，也研究一下X放在哪个位置合适。注意X-X键的键长和X-X的键长应该在合理范围内，不能有太大偏离。X也要与周围原子保持合适的距离。"},
+                      {"en":"SANS data fitting: Use the sasview tool to analyze the uploaded small-angle scattering data, use the Fit function, select the hollow cylinder model, fit the scattering curve until the chisquare is less than 10, then return the fitting results and fitting graph.",
+                       "zh":"小角中子散射拟合：帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"}],
             agent_config = llm_mode_config,
             defult_config_name = "gpt 5",
             # 智能体实体
