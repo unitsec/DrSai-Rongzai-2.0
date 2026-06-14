@@ -426,6 +426,26 @@ class RongZaiAgent(DrSaiAgent):
         ]
         return any(flag in text for flag in flags)
 
+    def _is_retryable_model_error(self, error: Exception) -> bool:
+        """判断异常是否适合切换到备用模型后重试。"""
+        text = str(error).lower()
+        flags = [
+            "insufficient_quota",
+            "rate limit",
+            "too many requests",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "timeout",
+            "timed out",
+            "connection reset",
+            "service unavailable",
+            "no resource",
+        ]
+        return any(flag in text for flag in flags)
+
     def _flatten_message_content_for_summary(self, content: Any) -> str:
         """将消息内容拍平成短文本，供总结子智能体使用。"""
         if content is None:
@@ -1541,27 +1561,53 @@ class RongZaiAgent(DrSaiAgent):
                 last_buffered_stream_events = buffered_stream_events
                 # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
                 # self._arm_ephemeral_images_for_inference()
-                async for inference_output in self._call_llm(
-                    model_client=model_client,
-                    model_client_stream=model_client_stream,
-                    system_messages=system_messages,
-                    model_context=model_context,
-                    workbench=workbench,
-                    handoff_tools=handoff_tools,
-                    manager_tools=manager_tools,
-                    agent_name=agent_name,
-                    cancellation_token=cancellation_token,
-                    output_content_type=output_content_type,
-                ):
-                    if self.is_paused:
-                        raise asyncio.CancelledError()
-                    
-                    if isinstance(inference_output, CreateResult):
-                        model_result = inference_output
-                    else:
-                        # 先缓存本轮模型流式文本，待确认本轮结果是否合法后再决定是否对用户可见。
-                        if isinstance(inference_output, ModelClientStreamingChunkEvent):
-                            buffered_stream_events.append(inference_output)
+                try:
+                    async for inference_output in self._call_llm(
+                        model_client=model_client,
+                        model_client_stream=model_client_stream,
+                        system_messages=system_messages,
+                        model_context=model_context,
+                        workbench=workbench,
+                        handoff_tools=handoff_tools,
+                        manager_tools=manager_tools,
+                        agent_name=agent_name,
+                        cancellation_token=cancellation_token,
+                        output_content_type=output_content_type,
+                    ):
+                        if self.is_paused:
+                            raise asyncio.CancelledError()
+                        
+                        if isinstance(inference_output, CreateResult):
+                            model_result = inference_output
+                        else:
+                            # 先缓存本轮模型流式文本，待确认本轮结果是否合法后再决定是否对用户可见。
+                            if isinstance(inference_output, ModelClientStreamingChunkEvent):
+                                buffered_stream_events.append(inference_output)
+                except Exception as llm_err:
+                    if not self._is_retryable_model_error(llm_err):
+                        raise
+
+                    remaining_fallbacks = [name for name in fallback_candidates if name not in fallback_attempted]
+                    switched_model: Optional[str] = None
+                    for fallback_config_name in remaining_fallbacks:
+                        fallback_attempted.add(fallback_config_name)
+                        switched_model = await self._switch_to_fallback_model(fallback_config_name)
+                        if switched_model:
+                            break
+
+                    if switched_model:
+                        yield ModelClientStreamingChunkEvent(
+                            content=f"\n[System Notice] Model call failed. Switched to fallback model: {switched_model}. Retrying.\n",
+                            source=agent_name,
+                        )
+                        logger.warning(
+                            "Retryable model error detected; switched to fallback model '{}' and retrying. error={}",
+                            switched_model,
+                            llm_err,
+                        )
+                        continue
+
+                    raise
                 # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
                 # self._cleanup_inflight_ephemeral_images(model_context)
                 
