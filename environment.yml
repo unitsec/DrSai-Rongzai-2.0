@@ -1,0 +1,7 @@
+name: rongzai-agent
+channels:
+  - conda-forge
+  - mantid
+  - defaults
+prefix: /home/dell/miniconda3/envs/rongzai-agent
+
