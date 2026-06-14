@@ -13,8 +13,12 @@ from fit_method import SasViewFit, check_para, build_default_para
 from src.core.tools.mcp_task_runner import ProcessPollingMcpToolBase
 
 
-TMP_DIR = Path(__file__).resolve().parent.parent / 'tmp'
-TMP_DIR.mkdir(parents=True, exist_ok=True)
+from dotenv import load_dotenv
+here = Path(__file__).parent.parent.parent.absolute()
+print(f"Loading environment variables from: {here / '.env'}")
+load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
+TMP_DIR = Path(os.getenv("WORKDIR", ""))
+print(f"Using WORKER_SPACE: {TMP_DIR}")
 
 def _as_1d(arr):
     a = np.asarray(arr)
@@ -288,6 +292,7 @@ def sasview_fit(
     fit_params: dict = None,
     user_id: str = None,
     mission_name: str = "",
+    session_id: str = None,
     task_id: int | str = 0,
 ) -> dict:
     """
@@ -308,6 +313,7 @@ def sasview_fit(
         model: 几何模型名称（如 单一模型: guinier_porod、sphere等；复合模型: sphere+cylinder等）。
         fit_params: 决定本轮拟合的参数开放情况。通过fit参数/bool型，决定是否开放拟合，或修改value参数，变化初始值。未出现在 fit_params 中的参数将取消拟合，你认为不需要拟合的参数可以不出现在fit_params中。
         user_id: 用户 ID，用于输出目录组织。
+        session_id: 会话 ID，用于输出目录组织（如果有的话）。
         mission_name: mission 名称（必填，建议全程保持不变）；用于标识同一个大任务。
         task_id: 任务轮次索引/标识。初始化和每次model改变时，建议设置为0；
                  使用相同model继续拟合时，按上次返回的 task_id+1。
@@ -346,7 +352,8 @@ def sasview_fit(
         # 与 GSAS 工具保持一致：按 user_id/mission_name 组织输出目录
         user_key = user_id or 'default_user'
         mission_key = mission_name or 'default_mission'
-        output_dir = TMP_DIR / user_key / mission_key
+        session_key = session_id or 'default_session'
+        output_dir = TMP_DIR / f"{user_key}_{session_key}_{mission_key}"  # 用下划线连接，避免路径过长或特殊字符问题
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if not data_path or not os.path.exists(data_path):

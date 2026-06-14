@@ -37,6 +37,11 @@ from drsai.modules.components import (
     ComponentModel,
 )
 from drsai.modules.components.model_client import ChatCompletionClient
+from drsai.modules.components.model_client import HepAIChatCompletionClient, ModelFamily
+from drsai.modules.components.model_client.anthropic import (
+    HepAIAnthropicChatCompletionClient,
+    _MODEL_INFO,
+)
 from drsai.modules.components.model_context import (
     ChatCompletionContext,
     DrSaiChatCompletionContext,
@@ -145,6 +150,7 @@ class RongZaiAgent(DrSaiAgent):
         user_id: str | None = None,
         set_model_client: Callable | None = None,
         llm_mode_config: Dict = {},
+        fallback_config_names: Optional[List[str]] = None,
         # skills and executor
         skills_dir: Optional[str | List[str]] = None,
         work_dir: str | None = None,
@@ -179,6 +185,9 @@ class RongZaiAgent(DrSaiAgent):
             set_model_client=set_model_client,
             llm_mode_config=llm_mode_config,
         )
+
+        self._fallback_config_names = fallback_config_names or []
+        self._env_fallback_config_names = self._parse_fallback_configs_from_env()
 
         self._developer_system_message = system_message
 
@@ -227,6 +236,15 @@ class RongZaiAgent(DrSaiAgent):
             )
         )
 
+        # 视觉子智能体工具：将读图任务委托给独立视觉模型，主模型无需具备视觉能力。
+        self._tools.append(
+            FunctionTool(
+                self.AnalyzeImageWithVision,
+                description=self.AnalyzeImageWithVision.__doc__ or "",
+                name="AnalyzeImageWithVision",
+            )
+        )
+
         # === model context ===
         # 对话上下文管理器
         self._model_context = DrSaiChatCompletionContext(
@@ -238,7 +256,10 @@ class RongZaiAgent(DrSaiAgent):
             token_limit=token_limit,
         )
 
-        self._download_dir = self._work_dir / "downloads"
+        self._upload_dir = self._work_dir / self._thread_id /"uploads"
+        self._upload_dir.mkdir(parents=True, exist_ok=True)
+        
+        self._download_dir = self._work_dir / self._thread_id /"downloads"
         self._download_dir.mkdir(parents=True, exist_ok=True)
 
         # === skills ===
@@ -278,51 +299,56 @@ class RongZaiAgent(DrSaiAgent):
         # key: server_id，value: 该 server 注册到 workbench 的代理工具名列表
         self._mcp_server_tool_names: Dict[str, List[str]] = {}
         self._tools_names = [tool.name for tool in self._tools]
+        self._default_model_client_component = self._model_client.dump_component()
+        self._default_model_client_name = ""
+        try:
+            self._default_model_client_name = self._model_client._create_args.get("model", "")
+        except Exception:
+            self._default_model_client_name = ""
 
-        # === Ephemeral multimodal image context (Stage A) ===
-        # pending: 新注入图片，供“下一轮”推理可见（仅本轮推理拼接到 llm_messages）
-        # inflight: 当前这轮推理正在消费，推理完成后清理
-        self._ephemeral_images_pending: List[UserMessage] = []
-        self._ephemeral_images_inflight: List[UserMessage] = []
+        # Legacy (disabled): tool 图片回注主模型上下文的状态字段。
+        # 如需回滚到旧方案，取消注释以下两行，并恢复下方 Legacy 方法与调用点。
+        # self._ephemeral_images_pending: List[UserMessage] = []
+        # self._ephemeral_images_inflight: List[UserMessage] = []
 
-    def _record_ephemeral_image_message(self, multimodal_msg: UserMessage) -> None:
-        """记录新注入的临时图片消息，供下一轮推理使用。"""
-        self._ephemeral_images_pending.append(multimodal_msg)
+    # Legacy (disabled): tool 图片回注主模型上下文管理方法。
+    # def _record_ephemeral_image_message(self, multimodal_msg: UserMessage) -> None:
+    #     """记录新注入的临时图片消息，供下一轮推理使用。"""
+    #     self._ephemeral_images_pending.append(multimodal_msg)
 
-    def _arm_ephemeral_images_for_inference(self) -> None:
-        """在每轮推理开始前装载临时图片消息。"""
-        self._ephemeral_images_inflight = self._ephemeral_images_pending
-        self._ephemeral_images_pending = []
+    # def _arm_ephemeral_images_for_inference(self) -> None:
+    #     """在每轮推理开始前装载临时图片消息。"""
+    #     self._ephemeral_images_inflight = self._ephemeral_images_pending
+    #     self._ephemeral_images_pending = []
 
-    def _cleanup_inflight_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
-        """在每轮推理结束后清理已消费的临时图片消息。"""
-        if not self._ephemeral_images_inflight:
-            return
-        if not isinstance(model_context, DrSaiChatCompletionContext):
-            # 仅 DrSai 运行时上下文支持按对象身份清理。
-            self._ephemeral_images_inflight = []
-            return
+    # def _cleanup_inflight_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
+    #     """在每轮推理结束后清理已消费的临时图片消息。"""
+    #     if not self._ephemeral_images_inflight:
+    #         return
+    #     if not isinstance(model_context, DrSaiChatCompletionContext):
+    #         self._ephemeral_images_inflight = []
+    #         return
+    #
+    #     target_ids = {id(msg) for msg in self._ephemeral_images_inflight}
+    #     if target_ids:
+    #         model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
+    #         model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
+    #     self._ephemeral_images_inflight = []
 
-        target_ids = {id(msg) for msg in self._ephemeral_images_inflight}
-        if target_ids:
-            model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
-            model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
-        self._ephemeral_images_inflight = []
-
-    def _cleanup_all_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
-        """兜底清理：移除 pending/inflight 的所有临时图片消息。"""
-        if not isinstance(model_context, DrSaiChatCompletionContext):
-            self._ephemeral_images_pending = []
-            self._ephemeral_images_inflight = []
-            return
-
-        all_ephemeral = self._ephemeral_images_pending + self._ephemeral_images_inflight
-        target_ids = {id(msg) for msg in all_ephemeral}
-        if target_ids:
-            model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
-            model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
-        self._ephemeral_images_pending = []
-        self._ephemeral_images_inflight = []
+    # def _cleanup_all_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
+    #     """兜底清理：移除 pending/inflight 的所有临时图片消息。"""
+    #     if not isinstance(model_context, DrSaiChatCompletionContext):
+    #         self._ephemeral_images_pending = []
+    #         self._ephemeral_images_inflight = []
+    #         return
+    #
+    #     all_ephemeral = self._ephemeral_images_pending + self._ephemeral_images_inflight
+    #     target_ids = {id(msg) for msg in all_ephemeral}
+    #     if target_ids:
+    #         model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
+    #         model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
+    #     self._ephemeral_images_pending = []
+    #     self._ephemeral_images_inflight = []
 
     def _file_changed(self, path: Path) -> bool:
         """判断文件或目录是否变化，并更新 mtime 缓存。"""
@@ -357,13 +383,13 @@ class RongZaiAgent(DrSaiAgent):
         """构建系统提示词：开发者提示词 + 会话 ID + Core Skill 规则区。"""
         enhanced_system_message = f"{self._lang_prompt}\n\n{self._developer_system_message}"
         if self._thread_id:
-            enhanced_system_message = f"{enhanced_system_message}\n\nCurrent Session_ID is {self._thread_id}"
+            enhanced_system_message = f"{enhanced_system_message}\n\nCurrent session_id is {self._thread_id}"
         if self._user_id:
             enhanced_system_message = (
                 f"{enhanced_system_message}\n\nCurrent user_id is {self._user_id}. ")
         if self._work_dir:
             enhanced_system_message = (
-                f"{enhanced_system_message}\n\nThe files user uploaded are in {self._work_dir}/downloads. ")
+                f"{enhanced_system_message}\n\nThe files user uploaded are in {self._work_dir}/{self._thread_id}/uploads.")
         enhanced_system_message += f"\n\n{self._core_skill_policy_prompt}"
         core_skill_prompt = self._build_core_skill_prompt()
         if core_skill_prompt:
@@ -387,6 +413,501 @@ class RongZaiAgent(DrSaiAgent):
                 parts.append(f"[SystemMessage {idx}]\n{str(content)}")
 
         logger.info("===== FULL SYSTEM PROMPT BEFORE LLM CALL =====\n{}\n===== END SYSTEM PROMPT =====", "\n\n".join(parts))
+
+    def _is_context_length_error(self, error: Exception) -> bool:
+        """判断异常是否属于上下文超长。"""
+        text = str(error).lower()
+        flags = [
+            "context_length_exceeded",
+            "input tokens exceed",
+            "maximum context length",
+            "context window",
+            "too many tokens",
+        ]
+        return any(flag in text for flag in flags)
+
+    def _is_retryable_model_error(self, error: Exception) -> bool:
+        """判断异常是否适合切换到备用模型后重试。"""
+        text = str(error).lower()
+        flags = [
+            "insufficient_quota",
+            "rate limit",
+            "too many requests",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "timeout",
+            "timed out",
+            "connection reset",
+            "service unavailable",
+            "no resource",
+        ]
+        return any(flag in text for flag in flags)
+
+    def _flatten_message_content_for_summary(self, content: Any) -> str:
+        """将消息内容拍平成短文本，供总结子智能体使用。"""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, FunctionCall):
+                    parts.append(f"[FunctionCall] name={item.name}, arguments={item.arguments}")
+                else:
+                    try:
+                        parts.append(str(item))
+                    except Exception:
+                        parts.append("[Unserializable list item]")
+            return "\n".join(parts)
+        try:
+            return str(content)
+        except Exception:
+            return "[Unserializable content]"
+
+    def _build_history_text_for_summary(self, messages: List[LLMMessage]) -> str:
+        """将历史消息序列裁剪并序列化成可总结文本。"""
+        max_chars = int(_get_env_float("RONGZAI_SUMMARY_INPUT_MAX_CHARS", 24000))
+        per_msg_max_chars = int(_get_env_float("RONGZAI_SUMMARY_PER_MESSAGE_MAX_CHARS", 1200))
+        lines: List[str] = []
+        total = 0
+        for i, msg in enumerate(messages, start=1):
+            role = msg.__class__.__name__
+            source = getattr(msg, "source", "")
+            raw = self._flatten_message_content_for_summary(getattr(msg, "content", ""))
+            snippet = raw[:per_msg_max_chars]
+            line = f"[{i}] role={role}; source={source}\n{snippet}\n"
+            line_len = len(line)
+            if total + line_len > max_chars:
+                remain = max_chars - total
+                if remain > 0:
+                    lines.append(line[:remain])
+                break
+            lines.append(line)
+            total += line_len
+        return "\n".join(lines)
+
+    def _build_fallback_history_summary(self, old_messages: List[LLMMessage], recent_messages: List[LLMMessage]) -> str:
+        """总结子智能体失败时的兜底摘要（不再额外调用模型）。"""
+        old_count = len(old_messages)
+        recent_count = len(recent_messages)
+        recent_tail: List[str] = []
+        for msg in recent_messages[-6:]:
+            role = msg.__class__.__name__
+            raw = self._flatten_message_content_for_summary(getattr(msg, "content", ""))
+            recent_tail.append(f"- {role}: {raw[:180]}")
+        bullets = "\n".join(recent_tail) if recent_tail else "- (empty)"
+        return (
+            "Auto-generated compressed history (fallback, no model summary).\n"
+            f"Older messages omitted: {old_count}. Recent messages kept: {recent_count}.\n"
+            "Recent message tail:\n"
+            f"{bullets}"
+        )
+
+    def _get_summary_model_client(self) -> ChatCompletionClient:
+        """获取总结子智能体专用模型客户端。
+
+        优先级：
+        1) 环境变量 RONGZAI_SUMMARY_MODEL_CONFIG 对应的 set_model_client 配置
+        2) 主模型客户端（回退）
+        """
+        summary_config_name = os.getenv("RONGZAI_SUMMARY_MODEL_CONFIG", "").strip()
+        if summary_config_name and self._set_model_client:
+            try:
+                summary_client = self._set_model_client(summary_config_name)
+                model_name = ""
+                try:
+                    model_name = summary_client._create_args.get("model", "")
+                except Exception:
+                    model_name = ""
+                logger.info(
+                    "History summarizer model selected by RONGZAI_SUMMARY_MODEL_CONFIG='{}'{}",
+                    summary_config_name,
+                    f" -> {model_name}" if model_name else "",
+                )
+                return summary_client
+            except Exception as e:
+                logger.warning(
+                    "Failed to create summary model client from RONGZAI_SUMMARY_MODEL_CONFIG='{}': {}. Fallback to primary model.",
+                    summary_config_name,
+                    e,
+                )
+
+        return self._model_client
+
+    def _parse_fallback_configs_from_env(self) -> List[str]:
+        """从环境变量读取备用模型列表，支持 JSON 数组或逗号分隔文本。"""
+        raw = (os.getenv("RONGZAI_LLM_FALLBACK_CONFIGS") or "").strip()
+        if not raw:
+            return []
+
+        parsed: List[str] = []
+        try:
+            value = json.loads(raw)
+            if isinstance(value, list):
+                parsed = [str(item).strip() for item in value if str(item).strip()]
+            elif isinstance(value, str) and value.strip():
+                parsed = [value.strip()]
+        except Exception:
+            parsed = [item.strip() for item in raw.split(",") if item.strip()]
+
+        # 去重并保序
+        seen: set[str] = set()
+        ordered: List[str] = []
+        for item in parsed:
+            if item not in seen:
+                ordered.append(item)
+                seen.add(item)
+        return ordered
+
+    def _get_fallback_config_names(self) -> List[str]:
+        """获取备用模型标识列表（配置传参或环境变量）。"""
+        names: List[str] = []
+        seen: set[str] = set()
+
+        for config_name in self._fallback_config_names:
+            if config_name and config_name not in seen:
+                names.append(config_name)
+                seen.add(config_name)
+
+        if not names:
+            for config_name in self._env_fallback_config_names:
+                if config_name and config_name not in seen:
+                    names.append(config_name)
+                    seen.add(config_name)
+
+        if names:
+            return names
+        return names
+
+    def _ensure_component_token_model(self, component: ComponentModel) -> ComponentModel:
+        """为模型组件补齐 token_model，避免未知模型名导致 token 计数初始化失败。"""
+        try:
+            cfg = getattr(component, "config", None)
+            if not isinstance(cfg, dict):
+                return component
+
+            model_info = cfg.get("model_info")
+            if not isinstance(model_info, dict):
+                model_info = {}
+                cfg["model_info"] = model_info
+
+            token_model = model_info.get("token_model")
+            if not token_model:
+                model_info["token_model"] = os.getenv("RONGZAI_TOKEN_MODEL_FALLBACK", "gpt-4o-2024-11-20")
+        except Exception:
+            pass
+        return component
+
+    def _build_model_client_from_model_name(self, model_name: str) -> Optional[ChatCompletionClient]:
+        """按模型名称构建客户端；claude/minimax 走 Anthropic 路径，其他走 OpenAI 兼容路径。"""
+        candidate = (model_name or "").strip()
+        if not candidate:
+            return None
+
+        try:
+            api_key = None
+            try:
+                api_key = self._model_client._client.api_key
+            except Exception:
+                api_key = os.getenv("HEPAI_API_KEY")
+
+            if not api_key:
+                return None
+
+            timeout = float(_get_env_float("RONGZAI_FALLBACK_TIMEOUT", 180.0))
+            # 与主路径保持一致：默认重试更高，避免瞬时 5xx 导致过早判定失败。
+            max_retries = int(_get_env_float("RONGZAI_FALLBACK_MAX_RETRIES", 12.0))
+            max_tokens = int(_get_env_float("RONGZAI_FALLBACK_MAX_TOKENS", 60000.0))
+            is_openai_gpt = candidate.startswith("openai/gpt-")
+
+            if ("claude" in candidate) or ("minimax" in candidate):
+                return HepAIAnthropicChatCompletionClient(
+                    model=candidate,
+                    api_key=api_key,
+                    base_url=os.getenv("RONGZAI_ANTHROPIC_BASE_URL", "https://aiapi.ihep.ac.cn/apiv2/anthropic").strip(),
+                    timeout=timeout,
+                    max_retries=max_retries,
+                    max_tokens=max_tokens,
+                    # 使用稳定已知的 Anthropic model_info，避免未知模型名触发 token 计数初始化错误。
+                    model_info=_MODEL_INFO["claude-sonnet-4-5"],
+                )
+
+            is_vision = "deepseek" not in candidate
+            token_model = os.getenv("RONGZAI_TOKEN_MODEL_FALLBACK", "gpt-4o-2024-11-20").strip()
+            client_kwargs: Dict[str, Any] = {
+                "model": candidate,
+                "api_key": api_key,
+                "base_url": os.getenv("RONGZAI_OPENAI_BASE_URL", "https://aiapi.ihep.ac.cn/apiv2").strip(),
+                "timeout": timeout,
+                "max_retries": max_retries,
+                "model_info": {
+                    "vision": is_vision,
+                    "function_calling": True,
+                    "json_output": True,
+                    "structured_output": False,
+                    "family": ModelFamily.GPT_41,
+                    "multiple_system_messages": True,
+                    "token_model": token_model,
+                },
+            }
+            if not is_openai_gpt:
+                client_kwargs["max_tokens"] = max_tokens
+            return HepAIChatCompletionClient(**client_kwargs)
+        except Exception as e:
+            logger.warning("Failed to clone model client for model '{}': {}", candidate, e)
+            return None
+
+    async def _switch_to_fallback_model(self, config_name: str) -> Optional[str]:
+        """尝试切换到一个备用模型（优先按模型名直连，不依赖 llm_mode_config）。"""
+        fallback_id = (config_name or "").strip()
+        if not fallback_id:
+            return None
+
+        new_model_client: ChatCompletionClient | None = self._build_model_client_from_model_name(fallback_id)
+
+        # 兜底：若外部注入了 set_model_client，则将标识原样透传给外部工厂。
+        if new_model_client is None and self._set_model_client:
+            try:
+                new_model_client = self._set_model_client(fallback_id)
+            except Exception as e:
+                logger.warning("Failed to create fallback model client from identifier '{}': {}", fallback_id, e)
+                return None
+
+        if new_model_client is None:
+            logger.warning("Fallback identifier '{}' did not produce a model client.", fallback_id)
+            return None
+
+        try:
+            await self.switch_model(new_model_client)
+            logger.info(
+                "Switched to fallback model '{}'.",
+                fallback_id,
+            )
+            return fallback_id
+        except Exception as e:
+            logger.warning("Failed to switch to fallback model '{}': {}", fallback_id, e)
+            return None
+
+    async def _restore_default_model(self) -> None:
+        """在一轮任务结束后恢复初始化时的默认模型。"""
+        try:
+            current_component = self._model_client.dump_component()
+        except Exception:
+            current_component = None
+
+        if current_component == self._default_model_client_component:
+            return
+
+        try:
+            default_model_client: ChatCompletionClient | None = None
+
+            # 优先按默认模型名重建，走与 fallback 一致的 provider-specific 构造路径。
+            if self._default_model_client_name:
+                default_model_client = self._build_model_client_from_model_name(self._default_model_client_name)
+
+            # 回退：使用初始化快照组件重建。
+            if default_model_client is None:
+                default_component = self._default_model_client_component.model_copy(deep=True)
+                default_component = self._ensure_component_token_model(default_component)
+                default_model_client = ChatCompletionClient.load_component(default_component)
+
+            await self.switch_model(default_model_client)
+            logger.info("Restored default model client after run.")
+        except Exception as e:
+            logger.warning("Failed to restore default model client: {}", e)
+
+    async def _summarize_history_with_subagent(
+        self,
+        model_client: ChatCompletionClient,
+        old_messages: List[LLMMessage],
+        recent_messages: List[LLMMessage],
+        cancellation_token: CancellationToken,
+    ) -> str:
+        """调用轻量总结子智能体，生成可替代长历史的压缩摘要。"""
+        history_text = self._build_history_text_for_summary(old_messages)
+        if not history_text.strip():
+            return self._build_fallback_history_summary(old_messages, recent_messages)
+
+        prompt = (
+            "Summarize prior conversation history for retry after context overflow.\n"
+            "Output must be concise and preserve only: goal, constraints, decisions, key tool outputs, "
+            "and unresolved questions.\n"
+            "Do not include chain-of-thought.\n"
+            "Return plain text with short bullet points.\n\n"
+            "History to summarize:\n"
+            f"{history_text}"
+        )
+
+        summary_messages: List[LLMMessage] = [
+            SystemMessage(content="You are a history compression sub-agent."),
+            UserMessage(content=prompt, source="user"),
+        ]
+
+        try:
+            summary_model_client = self._get_summary_model_client()
+            rsp = await summary_model_client.create(
+                summary_messages,
+                cancellation_token=cancellation_token,
+            )
+            summary = rsp.content if isinstance(rsp.content, str) else str(rsp.content)
+            summary = (summary or "").strip()
+            if summary:
+                return summary[: int(_get_env_float("RONGZAI_SUMMARY_OUTPUT_MAX_CHARS", 6000))]
+        except Exception as summary_err:
+            logger.warning("History summarizer sub-agent failed: {}", summary_err)
+
+        return self._build_fallback_history_summary(old_messages, recent_messages)
+
+    async def _build_retry_llm_messages_after_context_overflow(
+        self,
+        model_client: ChatCompletionClient,
+        system_messages: List[SystemMessage],
+        runtime_messages: List[LLMMessage],
+        cancellation_token: CancellationToken,
+    ) -> List[LLMMessage]:
+        """基于总结子智能体压缩历史，构建重试上下文。"""
+        keep_recent = int(_get_env_float("RONGZAI_CONTEXT_RETRY_KEEP_RECENT", 12))
+        keep_recent = max(4, keep_recent)
+
+        if len(runtime_messages) <= keep_recent:
+            return self._get_compatible_context(
+                model_client=model_client,
+                messages=system_messages + runtime_messages,
+            )
+
+        old_messages = runtime_messages[:-keep_recent]
+        recent_messages = runtime_messages[-keep_recent:]
+        summary = await self._summarize_history_with_subagent(
+            model_client=model_client,
+            old_messages=old_messages,
+            recent_messages=recent_messages,
+            cancellation_token=cancellation_token,
+        )
+
+        summary_msg = SystemMessage(
+            content=(
+                "Compressed prior context generated after context overflow. "
+                "Use this as authoritative historical memory for this retry only:\n"
+                f"{summary}"
+            )
+        )
+
+        return self._get_compatible_context(
+            model_client=model_client,
+            messages=system_messages + [summary_msg] + recent_messages,
+        )
+
+    def _build_missing_tool_results(self, call_ids: set[str]) -> FunctionExecutionResultMessage:
+        """为缺失的 tool call 生成占位结果，修复上下文消息链。"""
+        results: List[FunctionExecutionResult] = []
+        for call_id in sorted(call_ids):
+            results.append(
+                FunctionExecutionResult(
+                    content="Tool result missing due to context trimming. Continue with available context.",
+                    call_id=call_id,
+                    name="unknown",
+                    is_error=True,
+                )
+            )
+        return FunctionExecutionResultMessage(content=results)
+
+    def _extract_tool_call_id(self, item: Any) -> Optional[str]:
+        """兼容对象/字典两种结构，提取 tool call id。"""
+        if isinstance(item, dict):
+            value = item.get("id") or item.get("call_id")
+        else:
+            value = getattr(item, "id", None) or getattr(item, "call_id", None)
+        if value is None:
+            return None
+        return str(value)
+
+    def _is_tool_call_payload(self, content: Any) -> bool:
+        """判断 assistant content 是否是工具调用列表（宽松判定）。"""
+        if not isinstance(content, list) or not content:
+            return False
+        for item in content:
+            if isinstance(item, FunctionCall):
+                continue
+            if isinstance(item, dict) and "id" in item and "name" in item and "arguments" in item:
+                continue
+            return False
+        return True
+
+    def _repair_trimmed_runtime_messages(self, messages: List[LLMMessage]) -> List[LLMMessage]:
+        """修复 token 裁剪后可能损坏的 tool_call/tool_result 序列。"""
+        repaired: List[LLMMessage] = []
+        pending_call_ids: set[str] = set()
+        repaired_count = 0
+        orphan_result_groups_kept = 0
+        placeholder_results_inserted = 0
+        debug_enabled = os.getenv("RONGZAI_DEBUG_CONTEXT_REPAIR", "").lower() in {"1", "true", "yes", "on"}
+
+        for msg in messages:
+            if isinstance(msg, AssistantMessage) and self._is_tool_call_payload(msg.content):
+                if pending_call_ids:
+                    repaired.append(self._build_missing_tool_results(pending_call_ids))
+                    repaired_count += 1
+                    placeholder_results_inserted += len(pending_call_ids)
+                    pending_call_ids = set()
+                repaired.append(msg)
+                pending_call_ids = {
+                    call_id
+                    for item in msg.content
+                    for call_id in [self._extract_tool_call_id(item)]
+                    if call_id
+                }
+                continue
+
+            if isinstance(msg, FunctionExecutionResultMessage):
+                if not pending_call_ids:
+                    # 保守策略：孤立结果保留，避免误删有效上下文。
+                    orphan_result_groups_kept += 1
+                    repaired.append(msg)
+                    continue
+
+                matched_ids: set[str] = set()
+                for item in msg.content:
+                    item_id = self._extract_tool_call_id(item)
+                    if item_id in pending_call_ids:
+                        matched_ids.add(item_id)
+
+                missing = pending_call_ids - matched_ids
+                repaired.append(msg)
+                if missing:
+                    repaired.append(self._build_missing_tool_results(missing))
+                    repaired_count += 1
+                    placeholder_results_inserted += len(missing)
+
+                pending_call_ids = set()
+                continue
+
+            if pending_call_ids:
+                repaired.append(self._build_missing_tool_results(pending_call_ids))
+                repaired_count += 1
+                placeholder_results_inserted += len(pending_call_ids)
+                pending_call_ids = set()
+
+            repaired.append(msg)
+
+        if pending_call_ids:
+            repaired.append(self._build_missing_tool_results(pending_call_ids))
+            repaired_count += 1
+            placeholder_results_inserted += len(pending_call_ids)
+
+        if debug_enabled and repaired_count:
+            logger.debug(
+                "Context repair stats: repaired_groups={}, orphan_result_groups_kept={}, placeholder_results_inserted={}",
+                repaired_count,
+                orphan_result_groups_kept,
+                placeholder_results_inserted,
+            )
+        return repaired
 
     def _sanitize_tool_name(self, value: str) -> str:
         """将远程工具名转换为本地可用的稳定工具名片段。"""
@@ -513,6 +1034,103 @@ class RongZaiAgent(DrSaiAgent):
             )
         except Exception as e:
             return f"Failed to connect MCP server: {e}"
+
+    async def AnalyzeImageWithVision(self, image_path: str, query: str, vision_model: str = "") -> str:
+        """Delegate image understanding to a dedicated vision model.
+
+        Use this tool when you need to extract information from an image file.
+        Args:
+            image_path: local image path (.png/.jpg/.jpeg/.webp/.gif/.bmp/.tif/.tiff)
+            query: what information should be extracted from the image
+            vision_model: optional override model name; default reads env RONGZAI_VISION_MODEL
+        Returns:
+            text answer from the vision model
+        """
+        try:
+            if not image_path or not query:
+                return "Error: image_path and query are required."
+
+            p = Path(image_path).expanduser().resolve()
+            if not p.exists() or not p.is_file():
+                return f"Error: image file not found: {image_path}"
+
+            image_suffixes = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+            if p.suffix.lower() not in image_suffixes:
+                return f"Error: unsupported image type: {p.suffix}"
+
+            # 视觉模型按顺序降级：优先 gpt-5，再 gpt-4o，最后 minimax。
+            # 可通过 RONGZAI_VISION_MODEL_FALLBACKS 覆盖（逗号分隔）。
+            if (vision_model or "").strip():
+                model_candidates = [(vision_model or "").strip()]
+            else:
+                fallback_env = os.getenv("RONGZAI_VISION_MODEL_FALLBACKS", "").strip()
+                if fallback_env:
+                    model_candidates = [m.strip() for m in fallback_env.split(",") if m.strip()]
+                else:
+                    primary_env = os.getenv("RONGZAI_VISION_MODEL", "").strip()
+                    model_candidates = []
+                    if primary_env:
+                        model_candidates.append(primary_env)
+                    for m in ("openai/gpt-4o", "openai/gpt-5", "minimax/minimax-m2.7"):
+                        if m not in model_candidates:
+                            model_candidates.append(m)
+
+            base_url = os.getenv("RONGZAI_VISION_BASE_URL", "https://aiapi.ihep.ac.cn/apiv2").strip()
+
+            api_key = None
+            try:
+                api_key = self._model_client._client.api_key
+            except Exception:
+                api_key = os.getenv("HEPAI_API_KEY")
+            if not api_key:
+                return "Error: missing API key for vision model."
+
+            image_ob = Image.from_file(file_path=str(p))
+            llm_messages: List[LLMMessage] = [
+                SystemMessage(
+                    content="You are a vision sub-agent. Extract only what the user asked from the image and return concise factual text."
+                ),
+                UserMessage(content=[query, image_ob], source="user"),
+            ]
+
+            failures: List[str] = []
+            for model_name in model_candidates:
+                try:
+                    vision_client = HepAIChatCompletionClient(
+                        model=model_name,
+                        api_key=api_key,
+                        base_url=base_url,
+                        timeout=180,
+                        max_retries=1,
+                        model_info={
+                            "vision": True,
+                            "function_calling": False,
+                            "json_output": True,
+                            "structured_output": False,
+                            "family": ModelFamily.GPT_41,
+                            "multiple_system_messages": True,
+                            "token_model": "gpt-4o-2024-11-20",
+                        },
+                    )
+                    rsp = await vision_client.create(
+                        llm_messages,
+                        cancellation_token=CancellationToken(),
+                    )
+                    answer = rsp.content if isinstance(rsp.content, str) else str(rsp.content)
+                    if answer:
+                        return answer
+                    failures.append(f"{model_name}: empty output")
+                except Exception as model_err:
+                    failures.append(f"{model_name}: {model_err}")
+
+            return (
+                "Error: all vision models failed. Tried: "
+                + ", ".join(model_candidates)
+                + ". Details: "
+                + " | ".join(failures)
+            )
+        except Exception as e:
+            return f"Error in AnalyzeImageWithVision: {e}"
 
     def _get_promote_skill_tool(self) -> ToolSchema:
         """供模型调用：将某个 skill 提升为 Core Skill。"""
@@ -766,19 +1384,78 @@ class RongZaiAgent(DrSaiAgent):
         else:
             if not task:
                 raise ValueError("Task list cannot be empty.")
+
+            has_any_attached_files = any(
+                isinstance(m, BaseChatMessage)
+                and (
+                    (m.metadata or {}).get("attached_files")
+                    or (m.metadata or {}).get("files")
+                )
+                for m in task
+            )
+
             for msg in task:
                 if isinstance(msg, BaseChatMessage):
                     msg.metadata["internal"] = "yes"
-                    input_messages.append(msg)
-                    output_messages.append(msg)
                     try:
-                        attached_files_json = msg.metadata.get("attached_files")
+                        attached_files_json = msg.metadata.get("attached_files") or msg.metadata.get("files")
+
+                        # 过滤 construct_task 注入的“文件正文消息”，避免正文直接进入模型上下文。
+                        if (
+                            has_any_attached_files
+                            and not attached_files_json
+                            and isinstance(msg.content, str)
+                            and msg.content.lstrip().startswith(("Attached file:", "Attached image:"))
+                        ):
+                            continue
+
+                        # output_messages 保留原始消息（含图片对象）供前端展示；
+                        # input_messages 只放纯文本消息，因为 DrSaiChatCompletionContext
+                        # 的 LocalMesssage 不接受 list 类型 content。
+                        output_messages.append(msg)
+
                         if attached_files_json:
                             attached_files = json.loads(attached_files_json)
+                            saved_files: List[str] = []
                             for file in attached_files:
+                                save_path = f"{self._upload_dir}/{file['name']}"
                                 download_file_from_url_or_base64(
-                                    file_info = file, 
-                                    save_path = f"{self._download_dir}/{file['name']}")
+                                    file_info=file,
+                                    save_path=save_path,
+                                )
+                                saved_files.append(save_path)
+
+                            # 提取纯文本内容（多模态消息 content 是 list，取其中的字符串部分）。
+                            if isinstance(msg.content, list):
+                                text_parts = [c for c in msg.content if isinstance(c, str)]
+                                text_content = "\n".join(text_parts)
+                            else:
+                                text_content = msg.content or ""
+
+                            # 追加文件名提示，让模型自行决定是否读取。
+                            if saved_files:
+                                file_names = [Path(p).name for p in saved_files]
+                                names_block = "\n".join(f"- {name}" for name in file_names)
+                                file_hint = (
+                                    f"User uploaded files:{names_block}"
+                                )
+                                text_content = f"{text_content}\n\n{file_hint}" if text_content else file_hint
+
+                            # 若原消息是多模态，用纯文本 TextMessage 替换进入上下文的消息。
+                            if isinstance(msg.content, list):
+                                context_msg = TextMessage(
+                                    content=text_content,
+                                    source=msg.source,
+                                    metadata=msg.metadata,
+                                )
+                            else:
+                                msg.content = text_content
+                                context_msg = msg
+                        else:
+                            context_msg = msg
+
+                        input_messages.append(context_msg)
+
                         settings_config = msg.metadata.get("settings_config")
                         if settings_config:
                             settings_config = json.loads(settings_config)
@@ -825,6 +1502,9 @@ class RongZaiAgent(DrSaiAgent):
 
         inner_messages: List[BaseAgentEvent | BaseChatMessage] = []
         last_buffered_stream_events: List[ModelClientStreamingChunkEvent] = []
+        fallback_candidates: List[str] = self._get_fallback_config_names()
+        fallback_attempted: set[str] = set()
+        forced_invalid_output_once = False
         try:
             self._lang_prompt = ""
             
@@ -879,7 +1559,8 @@ class RongZaiAgent(DrSaiAgent):
                 model_result = None
                 buffered_stream_events: List[ModelClientStreamingChunkEvent] = []
                 last_buffered_stream_events = buffered_stream_events
-                self._arm_ephemeral_images_for_inference()
+                # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
+                # self._arm_ephemeral_images_for_inference()
                 try:
                     async for inference_output in self._call_llm(
                         model_client=model_client,
@@ -902,38 +1583,88 @@ class RongZaiAgent(DrSaiAgent):
                             # 先缓存本轮模型流式文本，待确认本轮结果是否合法后再决定是否对用户可见。
                             if isinstance(inference_output, ModelClientStreamingChunkEvent):
                                 buffered_stream_events.append(inference_output)
-                finally:
-                    # 临时图片只保留到“当前推理”结束。
-                    self._cleanup_inflight_ephemeral_images(model_context)
+                except Exception as llm_err:
+                    if not self._is_retryable_model_error(llm_err):
+                        raise
 
+                    remaining_fallbacks = [name for name in fallback_candidates if name not in fallback_attempted]
+                    switched_model: Optional[str] = None
+                    for fallback_config_name in remaining_fallbacks:
+                        fallback_attempted.add(fallback_config_name)
+                        switched_model = await self._switch_to_fallback_model(fallback_config_name)
+                        if switched_model:
+                            break
+
+                    if switched_model:
+                        yield ModelClientStreamingChunkEvent(
+                            content=f"\n[System Notice] Model call failed. Switched to fallback model: {switched_model}. Retrying.\n",
+                            source=agent_name,
+                        )
+                        logger.warning(
+                            "Retryable model error detected; switched to fallback model '{}' and retrying. error={}",
+                            switched_model,
+                            llm_err,
+                        )
+                        continue
+
+                    raise
+                # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
+                # self._cleanup_inflight_ephemeral_images(model_context)
+                
                 if model_result is None:
                     if self.is_paused or cancellation_token.is_cancelled():
                         raise asyncio.CancelledError()
                     raise RuntimeError("No model result was produced.")
 
+                force_invalid_output = os.getenv("RONGZAI_FORCE_INVALID_MODEL_OUTPUT", "").lower() in {"1", "true", "yes", "on"}
+                if force_invalid_output and not forced_invalid_output_once:
+                    # 测试开关：强制注入非法输出类型，验证备用模型切换与重试链路。
+                    model_result.content = {
+                        "forced_error": "invalid model output for fallback verification"
+                    }
+                    logger.warning("RONGZAI_FORCE_INVALID_MODEL_OUTPUT is enabled: forcing invalid model output type.")
+                    forced_invalid_output_once = True
+
                 if model_result.content == "":
+                    remaining_fallbacks = [name for name in fallback_candidates if name not in fallback_attempted]
+                    switched_model: Optional[str] = None
+                    for fallback_config_name in remaining_fallbacks:
+                        fallback_attempted.add(fallback_config_name)
+                        switched_model = await self._switch_to_fallback_model(fallback_config_name)
+                        if switched_model:
+                            break
+
+                    if switched_model:
+                        yield ModelClientStreamingChunkEvent(
+                            content=f"\n[System Notice] The current model returned no response. Switched to fallback model: {switched_model}. Retrying.\n",
+                            source=agent_name,
+                        )
+                        logger.warning(
+                            "No response from current model; switched to fallback model '{}' and retrying.",
+                            switched_model,
+                        )
+                        continue
+
                     yield Response(
-                    chat_message=TextMessage(
-                        content="(No response was generated by the model.) You can try change a base model.",
-                        source=self._agent_name,
-                        metadata={"internal": "no"},
+                        chat_message=TextMessage(
+                            content="(No response was generated by the model.) All fallback models are unavailable now. Please try again later.",
+                            source=self._agent_name,
+                            metadata={"internal": "no"},
                         ),
-                    inner_messages=inner_messages,
+                        inner_messages=inner_messages,
                     )
                     break
 
-                # 将 assistant 结果写回上下文（包含可选 thought）
-                await model_context.add_message(
-                    AssistantMessage(
-                        content=model_result.content,
-                        source=self._name,
-                        thought=getattr(model_result, "thought", None),
-                    )
-                )
-                
-                
                 # 纯文本响应：不调用工具，直接结束循环。
                 if isinstance(model_result.content, str):
+                    # 纯文本场景直接写回 assistant 响应。
+                    await model_context.add_message(
+                        AssistantMessage(
+                            content=model_result.content,
+                            source=self._name,
+                            thought=getattr(model_result, "thought", None),
+                        )
+                    )
                     for buffered_event in buffered_stream_events:
                         yield buffered_event
                     response = await self.handle_str_reponse(
@@ -946,192 +1677,241 @@ class RongZaiAgent(DrSaiAgent):
                     yield response
                     break
 
-                # 否则进入工具调用分支
-                assert isinstance(model_result.content, list) and all(
+                # 工具调用分支：严格要求返回 FunctionCall 列表。
+                if isinstance(model_result.content, list) and all(
                     isinstance(item, FunctionCall) for item in model_result.content
-                )
-                for buffered_event in buffered_stream_events:
-                    yield buffered_event
+                ):
+                    for buffered_event in buffered_stream_events:
+                        yield buffered_event
 
-                # 记录模型请求的工具调用
-                tool_call_msg = ToolCallRequestEvent(
-                    content=model_result.content,
-                    source=agent_name,
-                    models_usage=model_result.usage,
-                )
-                inner_messages.append(tool_call_msg)
-                logger.debug(tool_call_msg)
-                yield tool_call_msg
-
-                pending_tool_results: List[FunctionExecutionResult] = []
-                
-                # 处理模型请求的工具调用
-                for i in range(len(model_result.content)):
-                    argument = json.loads(model_result.content[i].arguments)
-                    tool_name = model_result.content[i].name
-                    call_id = model_result.content[i].id
-                    if tool_name == "Skill":
-                        if skills_loader is None:
-                            skill_content = "No system skill is loaded."
-                        else:
-                            skill_content = skills_loader.run_skill(argument["skill"])
-                        pending_tool_results.append(
-                            FunctionExecutionResult(
-                                content=f"Skill for {argument['skill']}:\n\n {skill_content}",
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
-                            )
-                        )
-                        yield AgentLogEvent(
-                            title=f"I am reading skill: {argument['skill']}.",
-                            source=agent_name, 
-                            content=str(argument), 
-                            content_type="tools")
-                    elif tool_name == "PromoteSkillToCore":
-                        promote_message = self._promote_skill_to_core(
-                            skills_loader=skills_loader,
-                            skill_name=argument["skill"],
-                            reason=argument["reason"],
-                            focus=argument.get("focus", ""),
-                        )
-                        pending_tool_results.append(
-                            FunctionExecutionResult(
-                                content=promote_message,
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
-                            )
-                        )
-                        self.update_system_prompt()
-                        system_messages = self._system_messages
-                        yield AgentLogEvent(
-                            title="I am promoting a skill to core system rules.",
-                            source=agent_name,
-                            content=str(argument),
-                            content_type="tools",
-                        )
-                    elif tool_name == "DemoteCoreSkill":
-                        demote_message = self._demote_core_skill(
-                            skill_name=argument["skill"],
-                            reason=argument.get("reason", ""),
-                        )
-                        pending_tool_results.append(
-                            FunctionExecutionResult(
-                                content=demote_message,
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
-                            )
-                        )
-                        self.update_system_prompt()
-                        system_messages = self._system_messages
-                        yield AgentLogEvent(
-                            title="I am demoting a core skill.",
-                            source=agent_name,
-                            content=str(argument),
-                            content_type="tools",
-                        )
-                    elif tool_name == "ReplaceCoreSkill":
-                        replace_message = self._replace_core_skill(
-                            skills_loader=skills_loader,
-                            old_skill=argument["old_skill"],
-                            new_skill=argument["new_skill"],
-                            reason=argument["reason"],
-                            focus=argument.get("focus", ""),
-                        )
-                        pending_tool_results.append(
-                            FunctionExecutionResult(
-                                content=replace_message,
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
-                            )
-                        )
-                        self.update_system_prompt()
-                        system_messages = self._system_messages
-                        yield AgentLogEvent(
-                            title="I am replacing a core skill.",
-                            source=agent_name,
-                            content=str(argument),
-                            content_type="tools",
-                        )
-                    elif tool_name in self._tools_names:
-                        yield AgentLogEvent(
-                            title="I am using tool: " + tool_name,
-                            source=agent_name, 
-                            content=str(model_result.content[i]), 
-                            content_type="tools")
-
-                        _, result = await self._execute_tool_call(
-                            tool_call=model_result.content[i],
-                            workbench=workbench,
-                            handoff_tools=handoff_tools,
-                            agent_name=agent_name,
-                            cancellation_token=cancellation_token,
-                        )
-
-                        try:
-                            parsed = json.loads(result.content)
-                            if isinstance(parsed, dict) and parsed.get("type") == "files_events":
-                                events = parsed.get("events", [])
-                                sent_count = 0
-                                for event_data in events:
-                                    try:
-                                        files_event = FilesEvent.model_validate(event_data)
-                                        yield files_event
-                                        sent_count += 1
-                                    except Exception:
-                                        # logger.error(f"Error parsing FilesEvent: {event_data}, error: {traceback.format_exc()}")
-                                        continue
-                                result.content = f"Served {sent_count} file event(s) to user."
-                        except Exception:
-                            # logger.error(f"Error parsing tool result content as JSON: {result.content}, error: {traceback.format_exc()}")
-                            pass
-                        
-                        result.content = f"{self._lang_prompt}\n\n{result.content}\n\n{self._lang_prompt}"
-                        pending_tool_results.append(result)
-                        img_paths = []
-                        img_paths.extend(_extract_existing_image_paths_from_content(result.content))
-                        if img_paths:
-                            for img_path in img_paths:
-                                # 把工具输出中的图片回显给用户
-                                fig_url = show_file_to_user(model_client, file_path=img_path)
-                                info2user = f"### ![image.png]({fig_url})\n\n"
-                                yield ModelClientStreamingChunkEvent(content=info2user, source=agent_name)
-
-                                # 同时把图片回注到“临时多模态上下文”，用于下一轮推理。
-                                # 这里不写入 DrSai 的持久化上下文，避免 sanitize 回写时触发字符串校验。
-                                if isinstance(model_context, DrSaiChatCompletionContext):
-                                    image_ob = Image.from_file(file_path=img_path)
-                                    multimodal_msg = UserMessage(
-                                        content=[f"the figure of {img_path}", image_ob],
-                                        source="user",
-                                    )
-                                    if self._record_ephemeral_image_message is not None:
-                                        self._record_ephemeral_image_message(multimodal_msg)
-                                else:
-                                    image_ob = Image.from_file(file_path=img_path)
-                                    multimodal_msg = UserMessage(
-                                        content=[f"the figure of {img_path}", image_ob],
-                                        source="user",
-                                    )
-                                    await model_context.add_message(multimodal_msg)      
-                        
-                    else:
-                        pending_tool_results.append(
-                            FunctionExecutionResult(
-                                content=f"Unknown tool: {model_result.content[i].name}",
-                                name=tool_name,
-                                call_id=call_id,
-                                is_error=False,
-                            )
-                        )
-
-                if pending_tool_results:
-                    await model_context.add_message(
-                        FunctionExecutionResultMessage(content=pending_tool_results)
+                    # 记录模型请求的工具调用
+                    tool_call_msg = ToolCallRequestEvent(
+                        content=model_result.content,
+                        source=agent_name,
+                        models_usage=model_result.usage,
                     )
+                    inner_messages.append(tool_call_msg)
+                    logger.debug(tool_call_msg)
+                    yield tool_call_msg
+
+                    pending_tool_results: List[FunctionExecutionResult] = []
+
+                    # 处理模型请求的工具调用
+                    for i in range(len(model_result.content)):
+                        argument = json.loads(model_result.content[i].arguments)
+                        tool_name = model_result.content[i].name
+                        call_id = model_result.content[i].id
+                        if tool_name == "Skill":
+                            if skills_loader is None:
+                                skill_content = "No system skill is loaded."
+                            else:
+                                skill_content = skills_loader.run_skill(argument["skill"])
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=f"Skill for {argument['skill']}:\n\n {skill_content}",
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=False,
+                                )
+                            )
+                            yield AgentLogEvent(
+                                title=f"I am reading skill: {argument['skill']}.",
+                                source=agent_name,
+                                content=str(argument),
+                                content_type="tools")
+                        elif tool_name == "PromoteSkillToCore":
+                            promote_message = self._promote_skill_to_core(
+                                skills_loader=skills_loader,
+                                skill_name=argument["skill"],
+                                reason=argument["reason"],
+                                focus=argument.get("focus", ""),
+                            )
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=promote_message,
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=False,
+                                )
+                            )
+                            self.update_system_prompt()
+                            system_messages = self._system_messages
+                            yield AgentLogEvent(
+                                title="I am promoting a skill to core system rules.",
+                                source=agent_name,
+                                content=str(argument),
+                                content_type="tools",
+                            )
+                        elif tool_name == "DemoteCoreSkill":
+                            demote_message = self._demote_core_skill(
+                                skill_name=argument["skill"],
+                                reason=argument.get("reason", ""),
+                            )
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=demote_message,
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=False,
+                                )
+                            )
+                            self.update_system_prompt()
+                            system_messages = self._system_messages
+                            yield AgentLogEvent(
+                                title="I am demoting a core skill.",
+                                source=agent_name,
+                                content=str(argument),
+                                content_type="tools",
+                            )
+                        elif tool_name == "ReplaceCoreSkill":
+                            replace_message = self._replace_core_skill(
+                                skills_loader=skills_loader,
+                                old_skill=argument["old_skill"],
+                                new_skill=argument["new_skill"],
+                                reason=argument["reason"],
+                                focus=argument.get("focus", ""),
+                            )
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=replace_message,
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=False,
+                                )
+                            )
+                            self.update_system_prompt()
+                            system_messages = self._system_messages
+                            yield AgentLogEvent(
+                                title="I am replacing a core skill.",
+                                source=agent_name,
+                                content=str(argument),
+                                content_type="tools",
+                            )
+                        elif tool_name in self._tools_names:
+                            yield AgentLogEvent(
+                                title="I am using tool: " + tool_name,
+                                source=agent_name,
+                                content=str(model_result.content[i]),
+                                content_type="tools")
+
+                            _, result = await self._execute_tool_call(
+                                tool_call=model_result.content[i],
+                                workbench=workbench,
+                                handoff_tools=handoff_tools,
+                                agent_name=agent_name,
+                                cancellation_token=cancellation_token,
+                            )
+
+                            try:
+                                parsed = json.loads(result.content)
+                                if isinstance(parsed, dict) and parsed.get("type") == "files_event":
+                                    event_data = parsed.get("event", None)
+                                    if isinstance(event_data, str):
+                                        try:
+                                            event_data = json.loads(event_data)
+                                        except Exception:
+                                            event_data = None
+                                    if isinstance(event_data, dict):
+                                        try:
+                                            files_event = FilesEvent.model_validate(event_data)
+                                            yield files_event
+                                            result.content = "Served files to the right side of frontend for download."
+                                        except Exception:
+                                            # logger.error(f"Error parsing FilesEvent: {event_data}, error: {traceback.format_exc()}")
+                                            result.content = "Served 0 file event(s) to user."
+                                    else:
+                                        result.content = "Served 0 file event(s) to user."
+                            except Exception:
+                                # logger.error(f"Error parsing tool result content as JSON: {result.content}, error: {traceback.format_exc()}")
+                                pass
+
+                            result.content = f"{self._lang_prompt}\n\n{result.content}\n\n{self._lang_prompt}"
+                            pending_tool_results.append(result)
+                            img_paths = []
+                            img_paths.extend(_extract_existing_image_paths_from_content(result.content))
+                            if img_paths:
+                                for img_path in img_paths:
+                                    # 把工具输出中的图片回显给用户
+                                    fig_url = show_file_to_user(model_client, file_path=img_path)
+                                    info2user = f"### ![image.png]({fig_url})\n\n"
+                                    yield ModelClientStreamingChunkEvent(content=info2user, source=agent_name)
+
+                                    # 暂时禁用：工具调用后将图片强制回注到主模型上下文。
+                                    # 当前仅回显给用户，不回注到主模型上下文。
+
+                        else:
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=f"Unknown tool: {model_result.content[i].name}",
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=False,
+                                )
+                            )
+
+                    if pending_tool_results:
+                        # 工具调用场景：将 tool_call 与 tool_result 作为一个原子对提交到上下文，
+                        # 避免 pause/cancel 时只写入半对消息导致顺序不一致。
+                        await model_context.add_message(
+                            AssistantMessage(
+                                content=model_result.content,
+                                source=self._name,
+                                thought=getattr(model_result, "thought", None),
+                            )
+                        )
+                        await model_context.add_message(
+                            FunctionExecutionResultMessage(content=pending_tool_results)
+                        )
+                    continue
+
+                remaining_fallbacks = [name for name in fallback_candidates if name not in fallback_attempted]
+                fallback_errors: List[str] = []
+                switched_model: Optional[str] = None
+                unexpected_type = type(model_result.content).__name__
+                for fallback_config_name in remaining_fallbacks:
+                    fallback_attempted.add(fallback_config_name)
+                    switched_model = await self._switch_to_fallback_model(fallback_config_name)
+                    if switched_model:
+                        break
+                    fallback_errors.append(fallback_config_name)
+
+                if switched_model:
+                    yield ModelClientStreamingChunkEvent(
+                        content=f"\n[System Notice] Abnormal model output detected. Switched to fallback model: {switched_model}. Retrying.\n",
+                        source=agent_name,
+                    )
+                    logger.warning(
+                        "Recovered from unexpected model output type '{}' by switching to a fallback model. Retrying the full turn.",
+                        unexpected_type,
+                    )
+                    continue
+
+                all_candidates = fallback_candidates or ["<none>"]
+                if not remaining_fallbacks:
+                    error_detail = (
+                        f"Model returned unsupported output type '{unexpected_type}'. "
+                        f"All fallback models have already been tried in this request: {all_candidates}. "
+                        "Please try again later."
+                    )
+                else:
+                    error_detail = (
+                        f"Model returned unsupported output type '{unexpected_type}'. "
+                        f"Fallback model configs tried: {sorted(fallback_attempted) or all_candidates}. "
+                        "Please try again later."
+                    )
+                if fallback_errors:
+                    error_detail += f" Failed fallback configs: {', '.join(fallback_errors)}."
+
+                logger.error(error_detail)
+                yield Response(
+                    chat_message=TextMessage(
+                        content=error_detail,
+                        source=self._agent_name,
+                        metadata={"internal": "no"},
+                    ),
+                    inner_messages=inner_messages,
+                )
+                break
 
         except asyncio.CancelledError:
             for buffered_event in last_buffered_stream_events:
@@ -1166,9 +1946,11 @@ class RongZaiAgent(DrSaiAgent):
         finally:
             # 收尾：上传会话到 ragflow（如启用）并清理当前消息缓存
             if isinstance(self._model_context, DrSaiChatCompletionContext):
-                self._cleanup_all_ephemeral_images(self._model_context)
+                # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
+                # self._cleanup_all_ephemeral_images(self._model_context)
                 if self._model_context._rag_flow_manager:
                     await self._model_context.upload_conversation_to_ragflow()
+                await self._restore_default_model()
                 self._model_context._current_messages = []
             # await self.resume()
 
@@ -1194,9 +1976,10 @@ class RongZaiAgent(DrSaiAgent):
             all_messages = await model_context.get_messages()
         
         runtime_messages = list(all_messages)
-        if self._ephemeral_images_inflight:
-            # 仅在本轮调用临时拼接多模态消息，不写入持久化 context。
-            runtime_messages.extend(self._ephemeral_images_inflight)
+        # Legacy (disabled): 如需恢复 tool 图片回注上下文，在此拼接 inflight 图片消息。
+        # if self._ephemeral_images_inflight:
+        #     runtime_messages.extend(self._ephemeral_images_inflight)
+        # runtime_messages = self._repair_trimmed_runtime_messages(runtime_messages)
 
         llm_messages: List[LLMMessage] = self._get_compatible_context(
             model_client=model_client,
@@ -1208,30 +1991,71 @@ class RongZaiAgent(DrSaiAgent):
             llm_messages = await self._call_memory_function(llm_messages, model_client, cancellation_token, agent_name)
 
         all_tools = (await workbench.list_tools()) + handoff_tools + manager_tools
-        if self._reply_function is not None:
-            # 自定义回复函数：允许上层接管模型调用流程
-            async for chunk in self._call_reply_function(
-                llm_messages, 
-                model_client = model_client, 
-                workbench=workbench,
-                handoff_tools=handoff_tools,
-                tools = all_tools,
-                agent_name=agent_name, 
+        try:
+            if self._reply_function is not None:
+                # 自定义回复函数：允许上层接管模型调用流程
+                async for chunk in self._call_reply_function(
+                    llm_messages,
+                    model_client=model_client,
+                    workbench=workbench,
+                    handoff_tools=handoff_tools,
+                    tools=all_tools,
+                    agent_name=agent_name,
+                    cancellation_token=cancellation_token,
+                    db_manager=self._db_manager,
+                ):
+                    yield chunk
+            else:
+                async for chunk in self.call_llm(
+                    agent_name=agent_name,
+                    model_client=model_client,
+                    llm_messages=llm_messages,
+                    tools=all_tools,
+                    model_client_stream=model_client_stream,
+                    cancellation_token=cancellation_token,
+                    output_content_type=output_content_type,
+                ):
+                    yield chunk
+            return
+        except Exception as call_err:
+            if not self._is_context_length_error(call_err):
+                raise
+
+            logger.warning(
+                "Detected context overflow, invoking history summarizer sub-agent and retrying once. error={} ",
+                call_err,
+            )
+            retry_messages = await self._build_retry_llm_messages_after_context_overflow(
+                model_client=model_client,
+                system_messages=system_messages,
+                runtime_messages=runtime_messages,
                 cancellation_token=cancellation_token,
-                db_manager=self._db_manager,
-            ):
-                yield chunk
-        else:
-           async for chunk in self.call_llm(
-                agent_name = agent_name,
-                model_client = model_client,
-                llm_messages = llm_messages, 
-                tools = all_tools, 
-                model_client_stream = model_client_stream,
-                cancellation_token = cancellation_token,
-                output_content_type = output_content_type,
-           ):
-               yield chunk
+            )
+
+            # 重试时不再注入 memory_function，避免再次膨胀上下文。
+            if self._reply_function is not None:
+                async for chunk in self._call_reply_function(
+                    retry_messages,
+                    model_client=model_client,
+                    workbench=workbench,
+                    handoff_tools=handoff_tools,
+                    tools=all_tools,
+                    agent_name=agent_name,
+                    cancellation_token=cancellation_token,
+                    db_manager=self._db_manager,
+                ):
+                    yield chunk
+            else:
+                async for chunk in self.call_llm(
+                    agent_name=agent_name,
+                    model_client=model_client,
+                    llm_messages=retry_messages,
+                    tools=all_tools,
+                    model_client_stream=model_client_stream,
+                    cancellation_token=cancellation_token,
+                    output_content_type=output_content_type,
+                ):
+                    yield chunk
 
     async def handle_str_reponse(
             self,

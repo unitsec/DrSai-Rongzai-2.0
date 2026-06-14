@@ -481,7 +481,10 @@ def plot_results(
     ax = axes[0]
     ax.errorbar(q_vec, intensity, yerr=errors, fmt="o", ms=3,
                 color="steelblue", label="Data (original)", alpha=0.7)
-    ax.plot(q_fit, fit_int, "r-", lw=1.5, label=f"Fit ({method})")
+    # 把 background_curve 重新计算/插值到与 q_fit 相同长度的数组
+    bg_on_qfit = np.interp(q_fit, q_vec, background_curve)
+    # print(len(fit_int),len(bg_on_qfit), len(background_curve))
+    ax.plot(q_fit, fit_int+bg_on_qfit, "r-", lw=1.5, label=f"Fit ({method})")
     if background_curve is not None:
         ax.plot(q_vec, background_curve, "--", color="orange", lw=1.2, label="Background (B*q^-P + flat)")
 
@@ -1313,6 +1316,7 @@ def irena_size_distribution(
     json_path: str = None,
     fit_params: dict = None,
     user_id: str = None,
+    session_id: str = None,
     mission_name: str = "",
     task_id: int | str = 0,
 ) -> dict:
@@ -1355,6 +1359,7 @@ def irena_size_distribution(
             uncertainty_runs: int = 10,          # 进行不确定度估计时的扰动拟合次数，默认 10
             }
         user_id: 用户 ID，用于输出目录组织。
+        session_id: 会话 ID，用于输出目录组织。
         mission_name: mission 名称（必填，建议全程保持不变）；用于标识同一个大任务。
         task_id: 任务轮次索引/标识。初始化和每次model改变时，建议设置为0；
                  使用相同model继续拟合时，按上次返回的 task_id+1。
@@ -1387,7 +1392,8 @@ def irena_size_distribution(
 
         user_key = user_id or "default_user"
         mission_key = mission_name or "default_mission"
-        output_dir = TMP_DIR / user_key / mission_key
+        session_key = session_id or "default_session"
+        output_dir = TMP_DIR / f"{user_key}_{session_key}_{mission_key}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if not data_path or not os.path.exists(data_path):
@@ -1596,6 +1602,8 @@ if __name__ == "__main__":
                 "d_max": 5000.0,
                 "n_points": 120,
                 "q_power": 4.0,
+                "fit_flat_background": True,
+                "estimate_uncertainties": True
             },
             user_id="test_user",
             mission_name="irena_test_local",
