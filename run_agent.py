@@ -164,7 +164,10 @@ async def create_agent(
 
         work_dir=WORKDIR,
         only_in_workspace=True,
-        extra_work_dirs=[str((here / "datasets").resolve())],
+        extra_work_dirs=[
+            str((here / "datasets").resolve()),
+            str((here / "agent_skills").resolve()),
+        ],
         token_limit=agent_token_limit
     )
 

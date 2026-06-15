@@ -66,6 +66,11 @@ pm2 start "conda run -n gsas2_py311 python tools/GSAS-II-master/GSASII/0neutron_
 
 pm2 start "conda run -n sasmodels python tools/sasview/0sasview_refine.py" --name "sasview-refine"
 
+## skill中涉及文件的权限问题
+    为了保证代码安全，限制智能体只能在agentWorkSpace, datasets, agent_skills三个文件夹下有操作权限。
+    同时，agent_skills被设为只读，防止agent修改系统级skills。
+    因此，如果skill中涉及到要求智能体去阅读特定文件，该特定文件必须放入agent_skills中，推荐放在和skill.md同级目录下
+
 pm2常用指令
 # 查看当前进程
 pm2 list
