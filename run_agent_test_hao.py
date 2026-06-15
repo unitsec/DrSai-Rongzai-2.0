@@ -96,7 +96,7 @@ async def create_agent(
         if is_vip_user:
             client_kwargs = {
                 "model": llm_model,
-                "api_key": "sk-qywwUDyCxrUQYyyxhUCNKZbasiRwAzszJSdIQXdsWdsjHOV",
+                "api_key": os.getenv("HEPAI_API_KEY"),
                 "timeout": 180,
                 "max_retries": llm_max_retries,
             }
