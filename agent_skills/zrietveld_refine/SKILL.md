@@ -30,7 +30,7 @@ If you determine that the user wants you to refine the data yourself, follow the
       - To retrieve a .zDiffractometer file from the database, the user must provide: instrument name (e.g. BL16), detector name (e.g. group5).
       - To retrieve a .cif file from the database, the user must provide: instrument name (e.g. BL16), RUN number (e.g. RUN0021905).
       - If the information provided by the user is incomplete, ask the user.
-      - Database location: /home/XXX/rongzai-agent/datasets/.XXX is the username. The file organization under the database is as follows:
+      - Database location: ~/rongzai-agent/datasets/. The file organization under the database is as follows:
          ```
          datasets/
          |--BLXXX/
@@ -112,8 +112,7 @@ The following expert knowledge items take priority over any other knowledge you 
       Regarding the `space_group` parameter, you must additionally follow these rules:
          - `cfg["space_group"]` in `zrt_manual_refine` must use the Z-Rietveld internal space group ID.
          - Correct format examples: `{"phase_name":"203_2"}`, `{"LNO":"166_1"}`, `{"Si":"225_1"}`.
-         - The "available values" for Z-Rietveld space groups are based on the source table; the authoritative source is:
-         - `tools/pyZRietveld/Z-Rietveld/lib/Wyckoff_Seed.dat`
+         - The "available values" for Z-Rietveld space groups are based on the source table; the authoritative source is the Wyckoff_Seed.dat in the directory same with this SKILL.md.
          - This table is not simply 230 international space group numbers. It expands `Origin choice`, `Unique axis / permutation`, and `Hexagonal / Rhombohedral setting` into different internal IDs. Therefore the same HM symbol may correspond to multiple available values.
          - `Wyckoff_Seed.dat` explicitly states: the first 534 entries are Z-Rietveld space group definitions expanded by unique symmetry operations and cannot be treated as a simple "one-to-one correspondence with 230 numbers".
 

@@ -164,7 +164,10 @@ async def create_agent(
 
         work_dir=WORKDIR,
         only_in_workspace=True,
-        extra_work_dirs=[str((here / "datasets").resolve())],
+        extra_work_dirs=[
+            str((here / "datasets").resolve()),
+            str((here / "agent_skills").resolve()),
+        ],
         token_limit=agent_token_limit
     )
 
@@ -176,7 +179,7 @@ if __name__ == "__main__":
             agent_name="Rongzai Agent",
             author="wanghao96@ihep.ac.cn",
             permission=PERMISSION,
-            description = {"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"},
+            description = '{"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"}',
             version = "0.1.0",
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
             examples=[{"en":"Example: Help me refine the BL16 RUN0023568 group5 diffraction spectrum using GSAS-II, the cif file is Si.cif",
