@@ -141,6 +141,35 @@ def get_refined_cif_filename(original_cif_path: str | Path) -> str:
     return f"{base_name}_pdf_refined.cif"
 
 
+def _convert_refined_structure_to_cif(
+    refined_structure_path: str | Path,
+    output_cif_path: str | Path,
+) -> bool:
+    """Convert a refined structure file (typically .rstr / pdffit) to CIF."""
+
+    src = Path(refined_structure_path)
+    dst = Path(output_cif_path)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    # Preferred path: parse pdffit structure and write CIF.
+    try:
+        parser = getParser("pdffit")
+        structure = parser.parseFile(str(src))
+        dst.write_text(structure.writeStr("cif"), encoding="utf-8")
+        return True
+    except Exception:
+        pass
+
+    # Fallback path: rely on Structure I/O auto-detection.
+    try:
+        structure = Structure()
+        structure.read(str(src))
+        dst.write_text(structure.writeStr("cif"), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 def _update_cif_with_refined_params(
     original_cif_path: str | Path,
     refined_params: Dict[str, Any],
@@ -681,16 +710,16 @@ def _configure_pdffit(
 
 
 def initialize_pdf_project(
-    data_file: str,
-    structure_files: List[str],
-    qmax: float = 25.0,
-    rmin: float = 1.0,
-    rmax: float = 20.0,
-    pdf_source: str = "N",
-    user_id: str = None,
-    session_id: str = None,
-    mission_name: str = None,
-    task_id: str = None,
+    data_file,
+    structure_files,
+    qmax = 25.0,
+    rmin = 1.0,
+    rmax = 20.0,
+    pdf_source = "N",
+    user_id = None,
+    session_id = None,
+    mission_name = None,
+    task_id = None,
 ) -> Dict[str, Any]:
     """Create the first immutable PDF refinement snapshot file.
 
@@ -1104,7 +1133,13 @@ def refine(
         pf.save_struct(phase_idx, refined_structure_path)
         output_files["refined_structures"].append(refined_structure_path)
 
-        if original_structure.lower().endswith(".cif"):
+        # Always generate CIF from the refined structure output.
+        refined_cif_path = str(Path(refined_structure_path).with_suffix(".cif"))
+        if _convert_refined_structure_to_cif(refined_structure_path, refined_cif_path):
+            output_files["refined_cif_files"].append(refined_cif_path)
+            output_files[f"refined_cif_phase{phase_idx}"] = refined_cif_path
+        elif original_structure.lower().endswith(".cif"):
+            # Legacy fallback for unusual structures where direct conversion fails.
             refined_cif_name = get_refined_cif_filename(original_structure)
             refined_cif_path = str(project_dir_path / refined_cif_name)
             if _update_cif_with_refined_params(original_structure, refined_params, refined_cif_path, phase_idx):
@@ -1170,13 +1205,11 @@ def export_cifs(
     session_id: Optional[str] = None,
     mission_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Collect the files referenced by a refinement snapshot.
+    """Collect only refined CIF files from a refinement snapshot.
 
     This export step does not recompute refinement. It reads the JSON snapshot
-    at `project_path`, resolves the output file paths recorded in that snapshot,
-    and returns the files that currently exist on disk. In the snapshot-chain
-    workflow, this is the simplest way to retrieve CIF or other refined outputs
-    after a refinement run.
+    at `project_path`, resolves CIF output paths recorded in that snapshot,
+    and returns only existing `.cif` files on disk.
 
     Args:
         project_path: Path to a refinement snapshot JSON file.
@@ -1186,12 +1219,12 @@ def export_cifs(
         mission_name: Unused in the snapshot-chain model, kept for tool shape.
 
     Returns:
-        A dictionary describing the exported files.
+        A dictionary describing the exported CIF files.
         Key fields:
         - `status`: `success` or `failed`
         - `project_path`: snapshot that was read
-        - `files`: list of existing output files
-        - `total_size_bytes`: combined size of exported files
+        - `files`: list of existing CIF files
+        - `total_size_bytes`: combined size of exported CIF files
         - `refined_params`: refined values stored in the snapshot
         - `summary`: short human-readable description
     """
@@ -1210,27 +1243,63 @@ def export_cifs(
     if not output_files:
         raise ValueError("项目尚未完成 refine，无法导出文件")
 
+    # ExportCIFs should only return CIF artifacts.
     files: List[Dict[str, Any]] = []
     total_size = 0
+
+    candidate_paths: List[str] = []
+
+    refined_cif_files = output_files.get("refined_cif_files")
+    if isinstance(refined_cif_files, list):
+        candidate_paths.extend(str(p) for p in refined_cif_files)
+
     for key, value in output_files.items():
-        if isinstance(value, list):
-            for item in value:
-                if Path(item).exists():
-                    size = calcu_byte_size(item)
-                    total_size += size
-                    files.append({
-                        "type": key,
-                        "path": item,
-                        "size_bytes": size,
-                    })
-        elif isinstance(value, str) and Path(value).exists():
-            size = calcu_byte_size(value)
+        if key.startswith("refined_cif_phase") and isinstance(value, str):
+            candidate_paths.append(value)
+
+    if not candidate_paths:
+        refined_structures = output_files.get("refined_structures")
+        if isinstance(refined_structures, list):
+            for structure_path in refined_structures:
+                if not isinstance(structure_path, str):
+                    continue
+                src = Path(structure_path)
+                if not src.exists():
+                    continue
+                generated_cif = src.with_suffix(".cif")
+                if _convert_refined_structure_to_cif(src, generated_cif):
+                    candidate_paths.append(str(generated_cif))
+
+    if not candidate_paths:
+        for value in output_files.values():
+            if isinstance(value, str) and value.lower().endswith(".cif"):
+                candidate_paths.append(value)
+            elif isinstance(value, list):
+                candidate_paths.extend(
+                    str(item) for item in value if isinstance(item, str) and item.lower().endswith(".cif")
+                )
+
+    seen: set[str] = set()
+    for item in candidate_paths:
+        path_text = str(item)
+        if path_text in seen:
+            continue
+        seen.add(path_text)
+
+        path_obj = Path(path_text)
+        if path_obj.exists() and path_obj.suffix.lower() == ".cif":
+            size = calcu_byte_size(path_obj)
             total_size += size
-            files.append({
-                "type": key,
-                "path": value,
-                "size_bytes": size,
-            })
+            files.append(
+                {
+                    "type": "cif",
+                    "path": str(path_obj),
+                    "size_bytes": size,
+                }
+            )
+
+    if not files:
+        raise ValueError("未找到可导出的 CIF 文件，请先执行 refine 并确认生成 refined_cif_files")
 
     return {
         "status": "success",
@@ -1239,7 +1308,7 @@ def export_cifs(
         "files": files,
         "total_size_bytes": total_size,
         "refined_params": refined_params,
-        "summary": "PDF outputs collected from the refinement project.",
+        "summary": f"Collected {len(files)} CIF file(s) from the refinement project.",
     }
 
 if __name__ == "__main__":
