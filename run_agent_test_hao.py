@@ -1,28 +1,15 @@
 from pathlib import Path
-import importlib.util
-import venv
 import asyncio, os
 
 from drsai.modules.components.model_client import  HepAIChatCompletionClient, ModelFamily
 
 from drsai.modules.components.model_client.anthropic import (
     HepAIAnthropicChatCompletionClient,
-    get_info,
-    get_token_limit,
     _MODEL_INFO
 )
-from drsai.modules.components.model_context import DrSaiChatCompletionContext
 from autogen_core.models import RequestUsage
 import autogen_ext.models.openai._openai_client as _openai_client_patch_target
-from drsai.modules.agents.skills_agent import SkillAgent, DrSaiAssistant
-from drsai.modules.baseagent import (
-    LocalCommandLineCodeExecutor,
-    CodeBlock
-)
 from drsai.modules.managers.database import DatabaseManager
-from drsai.modules.managers.messages import (
-    ModelClientStreamingChunkEvent,
-    TextMessage,)
 
 here = Path(__file__).parent.absolute()
 
@@ -109,7 +96,7 @@ async def create_agent(
         if is_vip_user:
             client_kwargs = {
                 "model": llm_model,
-                "api_key": "sk-qywwUDyCxrUQYyyxhUCNKZbasiRwAzszJSdIQXdsWdsjHOV",
+                "api_key": os.getenv("HEPAI_API_KEY"),
                 "timeout": 180,
                 "max_retries": llm_max_retries,
             }
@@ -158,7 +145,6 @@ async def create_agent(
     
     # Code executor and working directory
     WORKDIR=os.getenv("WORKDIR")
-    USER_UPLOAD_DIR = os.getenv("USER_UPLOAD_DIR", "")
 
 
     SYSTEM = RONGZAI_SYSTEM_PROMPT
@@ -184,8 +170,8 @@ async def create_agent(
         # executor=local_executor,
 
         work_dir=WORKDIR,
-        only_in_workspace=False,
-        extra_work_dirs=[],
+        only_in_workspace=True,
+        extra_work_dirs=[str((here / "datasets").resolve())],
         token_limit=agent_token_limit
     )
 
@@ -197,14 +183,19 @@ if __name__ == "__main__":
             agent_name="RongzaiAgentTest",
             author="wanghao96@ihep.ac.cn",
             permission=PERMISSION,
-            description = "蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组",
+            description = '["en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"}',
             version = "0.1.0",
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
-            examples=["用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif",
-                      "用Z-Rietveld帮我把BL09的RUN0000410的groupMA的衍射谱精修好，cif文件是zeolite.cif",
-                      "用我上传的附件文件精修。如果不确定用哪个精修引擎，找我确认。",
-                      "这是个电池材料的数据，你先帮我精修好这个数据，然后再做一下LiNi混排然后再精修，最后给出数据分析的结论。",
-                      "帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"],
+            examples=[{"en":"Help me refine the BL16 RUN0023568 group5 diffraction spectrum using GSAS-II, the cif file is Si.cif",
+                       "zh":"用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif"},
+                      {"en":"Help me refine the BL09 RUN0000410 groupMA diffraction spectrum using Z-Rietveld, the cif file is zeolite.cif",
+                       "zh":"用Z-Rietveld帮我把BL09的RUN0000410的groupMA的衍射谱精修好，cif文件是zeolite.cif"},
+                      {"en":"Refine the data using the uploaded attachment. If unsure which refinement engine to use, ask me.",
+                       "zh":"用我上传的附件文件精修。如果不确定用哪个精修引擎，找我确认。"},
+                      {"en":"This is battery material data, first refine this data, then do LiNi mixing and refine again, finally give the data analysis conclusion.",
+                       "zh":"这是个电池材料的数据，你先帮我精修好这个数据，然后再做一下LiNi混排然后再精修，最后给出数据分析的结论。"},
+                      {"en":"Use the sasview tool to analyze the uploaded small-angle scattering data, use the Fit function, select the hollow cylinder model, fit the scattering curve until the chisquare is less than 10, then return the fitting results and fitting graph.",
+                       "zh":"帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"}],
             agent_config = llm_mode_config,
             defult_config_name = "minimax",
             # 智能体实体

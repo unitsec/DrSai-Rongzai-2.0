@@ -1316,6 +1316,7 @@ def irena_size_distribution(
     json_path: str = None,
     fit_params: dict = None,
     user_id: str = None,
+    session_id: str = None,
     mission_name: str = "",
     task_id: int | str = 0,
 ) -> dict:
@@ -1358,6 +1359,7 @@ def irena_size_distribution(
             uncertainty_runs: int = 10,          # 进行不确定度估计时的扰动拟合次数，默认 10
             }
         user_id: 用户 ID，用于输出目录组织。
+        session_id: 会话 ID，用于输出目录组织。
         mission_name: mission 名称（必填，建议全程保持不变）；用于标识同一个大任务。
         task_id: 任务轮次索引/标识。初始化和每次model改变时，建议设置为0；
                  使用相同model继续拟合时，按上次返回的 task_id+1。
@@ -1390,7 +1392,8 @@ def irena_size_distribution(
 
         user_key = user_id or "default_user"
         mission_key = mission_name or "default_mission"
-        output_dir = TMP_DIR / user_key / mission_key
+        session_key = session_id or "default_session"
+        output_dir = TMP_DIR / f"{user_key}_{session_key}_{mission_key}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if not data_path or not os.path.exists(data_path):
