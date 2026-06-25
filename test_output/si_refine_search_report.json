@@ -1,0 +1,59 @@
+{
+  "target_rw": 0.13,
+  "final_rw": 0.9000710423269288,
+  "final_project_path": "/home/wangh/rongzai-agent/agentWorkSpace/wanghao96/si_auto_search/si_pdf_refine/init__ref_stage1_lattice_scale__20260617T160342656343__r01_c12_window_rmax_12_data_scale_lattice__20260617T160412805433.json",
+  "accepted_steps": [
+    {
+      "round": 0,
+      "candidate": "ref_stage1_lattice_scale",
+      "rw": 0.9204255325257695,
+      "project_path": "/home/wangh/rongzai-agent/agentWorkSpace/wanghao96/si_auto_search/si_pdf_refine/init__ref_stage1_lattice_scale__20260617T160342656343.json",
+      "dataScale": 1.0,
+      "qdamp": 0.001,
+      "delta2": 0.0003,
+      "lattice_parameter_1": 5.467410880732623,
+      "temperature_factor_1": 0.005,
+      "scale_1": 0.26900793855918453
+    },
+    {
+      "round": 1,
+      "candidate": "window_rmax_12+data_scale+lattice",
+      "rw": 0.9000710423269288,
+      "project_path": "/home/wangh/rongzai-agent/agentWorkSpace/wanghao96/si_auto_search/si_pdf_refine/init__ref_stage1_lattice_scale__20260617T160342656343__r01_c12_window_rmax_12_data_scale_lattice__20260617T160412805433.json",
+      "dataScale": 0.2888030044334063,
+      "qdamp": 0.001,
+      "delta2": 0.0003,
+      "lattice_parameter_1": 5.526978832923219,
+      "temperature_factor_1": 0.005,
+      "scale_1": 1.0
+    }
+  ],
+  "export_status": "success",
+  "export_files": [
+    {
+      "type": "pdf",
+      "path": "/home/wangh/rongzai-agent/agentWorkSpace/wanghao96/si_auto_search/si_pdf_refine/Gr_Hermite.fgr",
+      "size_bytes": 66913
+    },
+    {
+      "type": "results",
+      "path": "/home/wangh/rongzai-agent/agentWorkSpace/wanghao96/si_auto_search/si_pdf_refine/Gr_Hermite.res",
+      "size_bytes": 8404
+    },
+    {
+      "type": "plot",
+      "path": "/home/wangh/rongzai-agent/agentWorkSpace/wanghao96/si_auto_search/si_pdf_refine/Gr_Hermite.png",
+      "size_bytes": 422465
+    },
+    {
+      "type": "log",
+      "path": "/home/wangh/rongzai-agent/agentWorkSpace/wanghao96/si_auto_search/si_pdf_refine/Gr_Hermite_log.txt",
+      "size_bytes": 836
+    },
+    {
+      "type": "refined_structures",
+      "path": "/home/wangh/rongzai-agent/agentWorkSpace/wanghao96/si_auto_search/si_pdf_refine/Gr_Hermite_phase1.rstr",
+      "size_bytes": 6382
+    }
+  ]
+}
