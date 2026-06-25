@@ -90,22 +90,14 @@ async def create_agent(
         if is_vip_user:
             client_kwargs = {
                 "model": llm_model,
-<<<<<<< HEAD
                 "api_key": os.getenv("HEPAI_API_KEY"),
-=======
-                "api_key": api_key or os.getenv("HEPAI_API_KEY"),
->>>>>>> rescue/recover-0625-1701
                 "timeout": 180,
                 "max_retries": llm_max_retries,
             }
         else:
             client_kwargs = {
                 "model": llm_model,
-<<<<<<< HEAD
                 "api_key": os.getenv("HEPAI_API_KEY"),
-=======
-                "api_key": api_key or os.getenv("HEPAI_API_KEY"),
->>>>>>> rescue/recover-0625-1701
                 "timeout": 180,
                 "max_retries": llm_max_retries,
             }
