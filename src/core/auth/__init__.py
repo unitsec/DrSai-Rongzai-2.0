@@ -11,7 +11,7 @@ from flask import Blueprint
 auth_bp = Blueprint("auth", __name__, template_folder="templates")
 
 # 导出 REST API Blueprint
-from .api import auth_api_bp
+# from .api import auth_api_bp
 
 # 导出权限提供者
 from .permission_provider import (

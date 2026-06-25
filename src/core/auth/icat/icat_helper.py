@@ -26,7 +26,8 @@ class IcatHelper:
         """
         self._icatUri = icatUri
         # 注意：这里 cert 参数改为可配置，原代码是 True
-        self._icatService = icat.ICAT(icatUri, cert)
+        # self._icatService = icat.ICAT(icatUri, cert)
+        self._icatService = icat.ICAT(icatUri, True)
 
     def getSessionById(self, icatSessionId):
         return icat.Session(self._icatService, str(icatSessionId))
@@ -129,12 +130,13 @@ class IcatHelper:
     def getAllInstruments(self, icatSession):
         return icatSession.search("SELECT i From Instrument i")
 
-    def getProposalByRunName(self, icatSession, run_number: str):
+    def getProposalByRunName(self, icatSession, run_number: str, beamline: str = ''):
         """
         根据 run 号反查所属课题（Investigation）。
 
         CSNS Dataset 命名规则：__csns__<run_number>_<description>
         run_number 传入格式支持：'21905' 或 'RUN0021905'（自动去掉 RUN 前缀和前导零）
+        beamline 传入时（如 'BL16'）会限定谱仪，避免跨谱仪误匹配。
 
         返回第一条匹配的 Investigation dict，未找到返回 None。
         """
@@ -145,10 +147,17 @@ class IcatHelper:
         # 去掉前导零，避免 __csns__0021905 和 __csns__21905 都能命中
         normalized = normalized.lstrip('0') or '0'
 
-        results = icatSession.search(
-            "SELECT i FROM Investigation i JOIN i.datasets d "
-            "WHERE d.name LIKE '__csns__%%%s%%'" % normalized
-        )
+        if beamline:
+            results = icatSession.search(
+                "SELECT i FROM Investigation i JOIN i.datasets d "
+                "JOIN i.investigationInstruments ii JOIN ii.instrument inst "
+                "WHERE d.name LIKE '__csns__%%%s%%' AND inst.name='%s'" % (normalized, beamline.upper())
+            )
+        else:
+            results = icatSession.search(
+                "SELECT i FROM Investigation i JOIN i.datasets d "
+                "WHERE d.name LIKE '__csns__%%%s%%'" % normalized
+            )
         return results[0] if results else None
 
 

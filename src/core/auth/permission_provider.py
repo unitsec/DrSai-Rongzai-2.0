@@ -169,7 +169,7 @@ def get_permission_provider(login_type: str = 'local') -> PermissionProvider:
         logger.info('使用 DoMAS 权限提供者（SSO 登录）')
         return DomasPermissionProvider()
 
-    # ICAT
+    # ICAT：本地登录用 ldap，统一认证登录用 umt
     from .icat_permission_provider import IcatPermissionProvider
     icat_uri = os.getenv('ICAT_URI', '')
     if not icat_uri:
@@ -177,5 +177,6 @@ def get_permission_provider(login_type: str = 'local') -> PermissionProvider:
             '环境变量 ICAT_URI 未配置，无法初始化 ICAT 权限提供者',
             code='CONFIG_ERROR'
         )
-    logger.info(f'使用 ICAT 权限提供者，服务地址: {icat_uri}')
-    return IcatPermissionProvider(icat_uri)
+    icat_plugin = 'umt' if login_type == 'sso' else 'ldap'
+    logger.info(f'使用 ICAT 权限提供者，服务地址: {icat_uri}，认证插件: {icat_plugin}')
+    return IcatPermissionProvider(icat_uri, plugin=icat_plugin)
