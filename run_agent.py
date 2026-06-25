@@ -71,6 +71,8 @@ async def create_agent(
     is_openai_gpt = llm_model.startswith("openai/gpt-")
     agent_token_limit = 300000 if is_openai_gpt else 500000
 
+    print(f"api_key: {api_key}")
+
     def set_model_client(defult_config_name: str|None = "deepseek-v3.2(No image)") -> HepAIAnthropicChatCompletionClient| HepAIChatCompletionClient:
         llm_model = llm_mode_config.get(defult_config_name, "openai/gpt-4o")
         # GPT 路径在 HepAI 的 OpenAI 兼容层上更容易受到参数兼容性影响。
@@ -88,14 +90,22 @@ async def create_agent(
         if is_vip_user:
             client_kwargs = {
                 "model": llm_model,
+<<<<<<< HEAD
                 "api_key": os.getenv("HEPAI_API_KEY"),
+=======
+                "api_key": api_key or os.getenv("HEPAI_API_KEY"),
+>>>>>>> rescue/recover-0625-1701
                 "timeout": 180,
                 "max_retries": llm_max_retries,
             }
         else:
             client_kwargs = {
                 "model": llm_model,
+<<<<<<< HEAD
                 "api_key": os.getenv("HEPAI_API_KEY"),
+=======
+                "api_key": api_key or os.getenv("HEPAI_API_KEY"),
+>>>>>>> rescue/recover-0625-1701
                 "timeout": 180,
                 "max_retries": llm_max_retries,
             }
@@ -142,9 +152,8 @@ async def create_agent(
 
     SYSTEM = RONGZAI_SYSTEM_PROMPT
 
-
     return RongZaiAgent(
-        name = "RongZaiAgent",
+        name = "RongZaiAgentDev",
         model_client=set_model_client(defult_config_name),
         system_message=SYSTEM,
         reflect_on_tool_use=False,
@@ -176,12 +185,12 @@ if __name__ == "__main__":
     asyncio.run(
         run_worker(
             # 智能体注册信息
-            agent_name="Rongzai Agent",
+            agent_name="Rongzai Agent dev",
             author="wanghao96@ihep.ac.cn",
             permission=PERMISSION,
             description = '{"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"}',
             version = "0.1.0",
-            logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
+            logo="/dg_workfs/domassy/rongzai/rongzai-agent/src/configs/resized_rzera_logo.png",
             examples=[{"en":"Example: Help me refine the BL16 RUN0023568 group5 diffraction spectrum using GSAS-II, the cif file is Si.cif",
                        "zh":"示例：用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif"},
                       {"en":"Lithium battery materials analysis: I have uploaded the powder diffraction data of a lithium battery material, along with the instrument parameter file and an initial cif file. The chemical formula of this sample is XXX. Please help me study the Li/Ni mixing situation of this sample using refinement.",
@@ -195,10 +204,10 @@ if __name__ == "__main__":
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
-            port = 42812, 
+            port = 30004, 
             # 是否注册到HepAI智能体平台
             no_register=False,
-            drsai_dir = "/home/dur/rongzai-agent/tmp",
+            drsai_dir = "/dg_workfs/domassy/rongzai/rongzai-agent/tmp",
             # 是否注册为OpenWebUI的pipeline
             enable_openwebui_pipeline=False, 
             history_mode = "backend",

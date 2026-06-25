@@ -17,9 +17,10 @@ class Pipeline:
             default="https://aiapi.ihep.ac.cn/apiv2",
             description="大模型的服务商的base_url, 默认HepAI平台的base_url",
         )
+        # 测试
         DRSAI_NAME: str = Field(
-            default="RongZai Agent",
-            description="你的Dr.Sai智能体后端的名称, 默认为RongZai Agent",
+            default="Rongzai Agent dev",
+            description="你的Dr.Sai智能体后端的名称, 默认为Rongzai Agent dev",
         )
         DRSAI_URL: str = Field(
             default=f"http://localhost:{backend_port}/apiv2",

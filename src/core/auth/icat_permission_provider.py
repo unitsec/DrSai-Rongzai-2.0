@@ -41,13 +41,15 @@ class IcatPermissionProvider(PermissionProvider):
     如需缓存，由调用方（api.py / session）负责。
     """
 
-    def __init__(self, icat_uri: str):
+    def __init__(self, icat_uri: str, plugin: str = 'ldap'):
         """
         参数:
             icat_uri: ICAT 服务根地址，如 https://data.csns.ihep.ac.cn
+            plugin: ICAT 认证插件，本地登录传 'ldap'，统一认证登录传 'umt'
         """
         self._helper = IcatHelper(icat_uri, cert=False)
-        logger.info(f'IcatPermissionProvider 初始化，ICAT 地址: {icat_uri}')
+        self._plugin = plugin
+        logger.info(f'IcatPermissionProvider 初始化，ICAT 地址: {icat_uri}，认证插件: {plugin}')
 
     @property
     def provider_name(self) -> str:
@@ -78,7 +80,7 @@ class IcatPermissionProvider(PermissionProvider):
         icat_session = None
         try:
             try:
-                icat_session = self._helper.loginIcat(username, password, plugin='ldap')
+                icat_session = self._helper.loginIcat(username, password, plugin=self._plugin)
             except IcatException as ex:
                 if ex.code == 'SESSION':
                     raise PermissionProviderError(
@@ -150,7 +152,7 @@ class IcatPermissionProvider(PermissionProvider):
                 name = item.get('Instrument', {}).get('name', '')
                 if name:
                     beamlines.append(name)
-            logger.debug(f'用户模式查询到谱仪: {beamlines}')
+            logger.info(f'ICAT 用户模式查询到谱仪: {beamlines}')
             return beamlines
         except IcatException as ex:
             logger.warning(f'查询谱仪列表失败: {ex}')
@@ -165,7 +167,7 @@ class IcatPermissionProvider(PermissionProvider):
                 name = item.get('Instrument', {}).get('name', '')
                 if name:
                     beamlines.append(name)
-            logger.debug(f'科学家模式查询到谱仪: {beamlines}')
+            logger.info(f'ICAT 科学家模式查询到谱仪: {beamlines}')
             return beamlines
         except IcatException as ex:
             logger.warning(f'查询科学家谱仪列表失败: {ex}')
@@ -187,7 +189,7 @@ class IcatPermissionProvider(PermissionProvider):
             if proposal:
                 proposals.append(proposal)
 
-        logger.debug(f'用户模式：查询到课题数: {len(proposals)}')
+        logger.info(f'ICAT 用户模式：查询到课题数: {len(proposals)}')
         return proposals
 
     def _fetch_proposals_for_scientist(self, icat_session,
@@ -202,7 +204,7 @@ class IcatPermissionProvider(PermissionProvider):
         for beamline in beamlines:
             try:
                 raw_proposals = self._helper.getProposalsForInstrument(
-                    icat_session, beamlineName=beamline, proposalName='', num=500
+                    icat_session, beamlineName=beamline, proposalName='', num=5000
                 )
             except IcatException as ex:
                 logger.warning(f'查询谱仪 {beamline} 课题列表失败: {ex}')
@@ -214,7 +216,7 @@ class IcatPermissionProvider(PermissionProvider):
                     seen_ids.add(proposal.proposal_id)
                     proposals.append(proposal)
 
-        logger.debug(f'谱仪科学家模式：查询到课题数: {len(proposals)}')
+        logger.info(f'ICAT 谱仪科学家模式：查询到课题数: {len(proposals)}')
         return proposals
 
     def _parse_proposal_lightweight(self, item: dict, beamline: str) -> Optional[ProposalInfo]:

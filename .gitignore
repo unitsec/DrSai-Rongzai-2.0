@@ -87,6 +87,7 @@ tools/pdf_refinement/0test.py
 datasets/BL16/RUNdataFiles/RUN0021905/outtput/*
 .env.example
 .env
+.env_zjj
 tools/pdf_refinement/0pdf_multi_refine.py
 tools/pdf_refinement/0pdf_multi_refine20250926.py
 tools/pdf_refinement/0pdf_refine20250905.py
