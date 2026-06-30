@@ -10,7 +10,7 @@ from typing import (
     Optional, 
     Self,
     )
-import os, json
+import os, json, re
 import asyncio, traceback
 from pydantic import BaseModel
 from pathlib import Path
@@ -85,6 +85,9 @@ from .utils import (
 
 from src.utils.check_language import generate_prompt
 import traceback
+
+from src.core.auth.icat_permission_provider import IcatPermissionProvider
+from src.core.auth.domas_permission_provider import DomasPermissionProvider
 
 
 def _get_env_float(name: str, default: float) -> float:
@@ -220,10 +223,10 @@ class RongZaiAgent(DrSaiAgent):
         # self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
         for func in self._basic_funcs:
             if func.__name__ in {"run_bash", "run_read", "run_write", "run_edit"}:
-                self._tools.append(FunctionTool(func, description=func.__doc__))
+                self._tools.append(FunctionTool(func, description=func.__doc__ or ""))
 
         # 将rongzai需要的特定的函数转换为FunctionTool对象并加入self._tools列表
-        self._otherBasic_funcs: List[Callable] = get_operator_funcs_rongzai(source_name = self._name)
+        self._otherBasic_funcs: List[Callable] = get_operator_funcs_rongzai(source_name=self._name)
         for func in self._otherBasic_funcs:
             self._tools.append(FunctionTool(func, description=func.__doc__))
 
@@ -245,6 +248,15 @@ class RongZaiAgent(DrSaiAgent):
             )
         )
 
+        # domas和icat文件访问权限检查工具。
+        self._tools.append(
+            FunctionTool(
+                self.check_user_permission_for_file,
+                description=self.check_user_permission_for_file.__doc__ or "",
+                name="CheckUserPermission",
+            )
+        )
+
         # === model context ===
         # 对话上下文管理器
         self._model_context = DrSaiChatCompletionContext(
@@ -261,6 +273,11 @@ class RongZaiAgent(DrSaiAgent):
         
         self._download_dir = self._work_dir / self._thread_id /"downloads"
         self._download_dir.mkdir(parents=True, exist_ok=True)
+
+        # 浏览器 cookie 由 drsai_ui 在 WS 握手时抓白名单快照,沿
+        # body["user"]["cookies"] 流过 drsai cores 落到 UserInput.extra_requests。
+        # 这里默认空,_load_user_cookies() 在每轮消息进来时刷新。
+        self._user_cookies: Dict[str, str] = {}
 
         # === skills ===
         # 仅加载系统级 skills，禁用用户覆盖。
@@ -1136,6 +1153,145 @@ class RongZaiAgent(DrSaiAgent):
         except Exception as e:
             return f"Error in AnalyzeImageWithVision: {e}"
 
+    async def check_user_permission_for_file(self, user_id: str, beamline: str, runNumber: str):
+        """
+        如果用户要求处理某个谱仪的某个RUN号的数据，先检查用户是否有权限访问该RUN号对应的课题，并检查该课题下的reduction文件夹中是否有包含runNumber的文件夹。数据就在这些文件夹中。
+        该工具会返回检查结果，包含用户是否有权限访问该RUN号对应的课题，以及reduction文件夹中是否有包含runNumber的文件夹。
+        一旦检查通过，你会直接获得访问reduction文件夹的权限和同级目录下的analysis文件夹的权限。
+        
+        注意，一旦你调用这个工具并检查通过，你就有一个必须做的事情：在数据分析得到一个更好结果后，将数据分析结果保存到analysis文件夹中。
+            分析结果具体指：
+                1.一个你生成的md文件，用于系统描述分析结果。
+                2.这个分析产生的重要数据文件。
+            你可能在分析过程中保存多次，注意必须覆盖保存，同类文件不能保存成不同名字也不能保存到其他地方。
+            
+        
+        Args:
+            user_id: 用户ID
+            beamline: 光束线编号
+            runNumber: 数据的RUN号，必须传“RUNXXXXXXX”这种格式，RUN后面有7位数字，不足的前面补0。
+        
+        Returns:
+            dict: 包含检查结果的字典，可能包含以下键：
+                - status: "success" 或 "failed"
+                - error: 错误信息（如果有）
+                - proposal: proposal编号（如果检查成功）
+                - reduction_folder_path: reduction文件夹路径（如果检查成功）
+                - run_folders_path: reduction目录下包含runNumber的文件夹名称列表（如果检查成功）
+        """
+        
+        try:
+            results = {"status": "failed"}
+            
+            # 每轮消息开始前,从 DB 拉一次最新 cookies(WS 重连/前端刷新后下一轮就生效)。
+            self._load_user_cookies()
+            sso = self._user_cookies.get("sso-token", "")
+            auth_provider = (self._user_cookies.get("rz-auth-provider", "") or "").strip().lower()
+            ui_role = (self._user_cookies.get("rz-role", "") or "").strip().lower()
+            logger.info(
+                f"[cookie-debug] user={self._user_id} thread={self._thread_id} "
+                f"cookie_keys={list(self._user_cookies.keys())} "
+                f"sso_token={ sso if sso else 'EMPTY' }"
+            )
+            # token = _get_user_token(user_id) or "Rongzai@324"
+            if auth_provider == "domas":
+                PermissionCheckTool = DomasPermissionProvider()
+                probe = PermissionCheckTool.get_user_permissions(user_id, sso, ui_role)
+                all_proposals = [p['proposal_id'] for p in probe.to_dict()['proposals']]
+                if ui_role == "scientist":
+                    result = PermissionCheckTool.get_proposal_by_runid(sso, user_id, runNumber,beamline)
+                    found_proposal = result['proposalId']
+                    # 检查found_proposal是否在用户可访问的proposal列表中
+                    if str(found_proposal) not in all_proposals:
+                        results["error"] = f"用户 {user_id} 无权访问 {runNumber} 对应的课题 {found_proposal}"
+                        return results    
+
+                else:
+                    found_proposal = None
+                    for proposal in all_proposals:
+                        result = PermissionCheckTool._fetch_runs_for_proposal(sso,user_id,proposal)
+                        checkedRUNs = [run.to_dict()['run_number'] for run in result]
+                        if runNumber in checkedRUNs:
+                            found_proposal = proposal
+                            break
+                    if not found_proposal:
+                        results["error"] = f"用户 {user_id} 无权访问 run {runNumber} 对应的课题"
+                        return results
+            else:
+                # 根据user_id、beamline和runNumber获取proposal_name
+                from src.core.auth.icat.icat_helper import IcatHelper
+                helper = IcatHelper("https://data.csns.ihep.ac.cn", cert=False)
+                icat_session = helper.loginIcat(user_id, sso)
+                try:
+                    result = helper.getProposalByRunName(icat_session, runNumber, beamline)
+                finally:
+                    helper.logoutIcat(icat_session)
+                if not result:
+                    results["error"] = f"未找到 run {runNumber} 对应的课题"
+                    return results
+                found_proposal = result.get("Investigation").get("name")
+                print(f"Found proposal for run {runNumber}: {found_proposal}")
+
+                # 根据user_id和token获取用户可访问的所有proposal
+                from src.core.auth.icat_permission_provider import IcatPermissionProvider
+                icat_plugin = "umt" if sso else "ldap"
+                PermissionCheckTool = IcatPermissionProvider("https://data.csns.ihep.ac.cn", plugin=icat_plugin)
+
+                import logging
+                _prev_disable = logging.root.manager.disable
+                logging.disable(logging.INFO)
+                try:
+                    if ui_role == "scientist":
+                        probe = PermissionCheckTool.get_user_permissions(user_id, sso, role='scientist')
+                    else:
+                        probe = PermissionCheckTool.get_user_permissions(user_id, sso, role='user')
+                finally:
+                    logging.disable(_prev_disable)
+
+            
+
+                # print(f"P162025122900008 in probe: {any('P162025122900008' in str(p) for p in probe.to_dict()['proposals'])}")
+                all_proposals = [p['proposal_name'] for p in probe.to_dict()['proposals']]
+                
+
+                # 检查found_proposal是否在用户可访问的proposal列表中
+                if str(found_proposal) not in all_proposals:
+                    results["error"] = f"用户 {user_id} 无权访问 {runNumber} 对应的课题 {found_proposal}"
+                    return results
+
+            # 检查found_proposal下是否有reduction文件夹
+            reduction_folder_path = f"/csns_data/{beamline}/{found_proposal}/reduction"
+            if not os.path.exists(reduction_folder_path):
+                results["error"] = f"有权限，但课题 {found_proposal} 下不存在 reduction 文件夹"
+                return results
+            # 检查found_proposal下的reduction文件夹中是否有包含runNumber的文件夹（可能有多个）
+            run_folder_pattern = re.compile(rf".*{runNumber}.*")
+            run_folders = [f for f in os.listdir(reduction_folder_path) if os.path.isdir(os.path.join(reduction_folder_path, f)) and run_folder_pattern.match(f)]
+            if not run_folders:
+                results["error"] = f"有权限，但课题 {found_proposal} 下的 reduction 文件夹中不存在包含 run {runNumber} 的文件夹"
+                return results
+            
+            results["status"] = "success"
+            results["proposal"] = found_proposal
+            results["run_folders_path"] = run_folders
+            results["reduction_folder_path"] = reduction_folder_path
+            if len(run_folders) == 1:
+                results["description"] = f"用户 {user_id} 有权访问 run {runNumber} 对应的课题 {found_proposal}，并且在 {reduction_folder_path}下找到了包含 run {runNumber} 的文件夹: {run_folders[0]}。"
+            else:
+                results["description"] = f"用户 {user_id} 有权访问 run {runNumber} 对应的课题 {found_proposal}，并且在 {reduction_folder_path}下找到了多个包含 run {runNumber} 的文件夹: {run_folders}。文件夹名中有从年份具体到秒的时间信息，你需要问用户用哪个里面的数据。"
+
+            # 给予智能体操作权限，允许访问reduction文件夹和analysis文件夹
+            self._extra_work_dirs.append(reduction_folder_path)
+            os.makedirs(f"/csns_data/{beamline}/{found_proposal}/analysis", exist_ok=True)
+            self._extra_work_dirs.append(f"/csns_data/{beamline}/{found_proposal}/analysis")
+        except Exception as e:
+            import traceback
+            traceback_str = traceback.format_exc()
+            results["status"] = "failed"
+            results["error"] = f"检查用户权限时发生异常: {e}\n{traceback_str}"
+        return results
+    
+    
     def _get_promote_skill_tool(self) -> ToolSchema:
         """供模型调用：将某个 skill 提升为 Core Skill。"""
         parameters = ParametersSchema(
@@ -1487,7 +1643,34 @@ class RongZaiAgent(DrSaiAgent):
                 output_messages.append(message)
         
         await self.resume()
-                
+
+    def _load_user_cookies(self) -> None:
+        """从 UserInput.extra_requests["user"]["cookies"] 把浏览器 cookie 读回来。
+
+        drsai_ui 在 WebSocket 握手时把白名单 cookie 注入 run_info,
+        随 body["user"]["cookies"] 流到 drsai cores 的 handle_input_info,
+        落入 UserInput.extra_requests。这里按 (user_id, thread_id) 取最近一条,
+        把 cookies 缓存到 self._user_cookies 供 tools 使用。
+        """
+        if self._db_manager is None or not self._user_id or not self._thread_id:
+            return
+        try:
+            from drsai.modules.managers.datamodel.db import UserInput
+            resp = self._db_manager.get(
+                UserInput,
+                filters={"user_id": self._user_id, "thread_id": self._thread_id},
+                return_json=False,
+            )
+            if not (resp.status and resp.data):
+                return
+            extra = getattr(resp.data[0], "extra_requests", None) or {}
+            user_blob = extra.get("user") or {}
+            cookies = user_blob.get("cookies")
+            if isinstance(cookies, dict):
+                self._user_cookies = {str(k): str(v) for k, v in cookies.items()}
+        except Exception as e:
+            logger.debug(f"_load_user_cookies failed: {e}")
+
     async def on_messages_stream(
         self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken
     ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | Response, None]:

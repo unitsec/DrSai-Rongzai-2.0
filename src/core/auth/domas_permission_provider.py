@@ -88,8 +88,8 @@ class DomasPermissionProvider(PermissionProvider):
                 provider=self.provider_name,
                 role=role,
             )
-        except PermissionProviderError:
-            raise
+        except PermissionProviderError as e:
+            raise e
         except Exception as ex:
             logger.error(f'DoMAS 权限查询未预期异常 [{username}]: {ex}', exc_info=True)
             raise PermissionProviderError(
@@ -139,12 +139,16 @@ class DomasPermissionProvider(PermissionProvider):
                                 params=params, timeout=_REQUEST_TIMEOUT)
             resp.raise_for_status()
             body = resp.json()
-            # 部分服务会把响应体二次序列化为 JSON 字符串，统一解包
+            logger.info(f"body={body}")
+            import json as _json
+            # 部分服务会把响应体（或 msg 字段）二次序列化为 JSON 字符串，统一解包
             if isinstance(body, str):
-                import json as _json
                 body = _json.loads(body)
-            beamlines = body.get('msg', {}).get('beamlines', [])
-            logger.debug(f'DoMAS 查询谱仪列表 [{email}] role={role}: {beamlines}')
+            msg = body.get('msg', {})
+            if isinstance(msg, str):
+                msg = _json.loads(msg)
+            beamlines = msg.get('beamlines', [])
+            logger.info(f'DoMAS 查询谱仪列表 [{email}] role={role}: {beamlines}')
             return [str(b) for b in beamlines if b]
 
         except requests.HTTPError as ex:
@@ -186,15 +190,17 @@ class DomasPermissionProvider(PermissionProvider):
                     except Exception as ex:
                         logger.debug(f'DoMAS 查询课题 {proposal_id} run 列表失败: {ex}')
 
+                # DoMAS 字段：proposalname 对应 ICAT 的 title
+                title = str(item.get('proposalname') or item.get('title') or '')
                 proposals.append(ProposalInfo(
                     proposal_id=proposal_id,
-                    proposal_name=proposal_id,           # DoMAS 无 name 字段，用 proposalId 代替
-                    title=str(item.get('title') or ''),  # 部分接口有 title，有则取用
+                    proposal_name=proposal_id,
+                    title=title,
                     beamline=beamline,
                     runs=runs,
                 ))
 
-        logger.debug(f'DoMAS 查询课题总数 [{email}]: {len(proposals)}')
+        logger.info(f'DoMAS 查询课题总数 [{email}]: {len(proposals)}')
         return proposals
 
     def _fetch_proposals_for_beamline(self, token: str, email: str,
@@ -221,12 +227,21 @@ class DomasPermissionProvider(PermissionProvider):
             'isAdmin': role == 'scientist',
             'email': email,
             'beamline': beamline,
+            'pageNo':"1",
+            "pageSize":"50"
         }
         resp = requests.get(url, headers=self._get_headers(token),
                             params=params, timeout=_REQUEST_TIMEOUT)
         resp.raise_for_status()
         body = resp.json()
-        raw_data = body.get('msg', {}).get('data', [])
+        if isinstance(body, str):
+            import json as _json
+            body = _json.loads(body)
+        msg = body.get('msg', {})
+        if isinstance(msg, str):
+            import json as _json
+            msg = _json.loads(msg)
+        raw_data = msg.get('data', [])
 
         # DoMAS 的 data 中偶尔会出现嵌套列表，展开成平铺结构
         result = []
@@ -246,15 +261,29 @@ class DomasPermissionProvider(PermissionProvider):
         参数：proposalid, email
         """
         url = f'{self._domas_uri}/beamtimeid/runIdsByProposal'
-        params = {'proposalid': proposal_id, 'email': email}
+        params = {'proposalId': proposal_id, 'email': email}
         try:
             resp = requests.get(url, headers=self._get_headers(token),
                                 params=params, timeout=_REQUEST_TIMEOUT)
             resp.raise_for_status()
             data = resp.json()
+            logger.info(f'DoMAS runIdsByProposal [{proposal_id}] 响应: {data}')
         except requests.RequestException as ex:
             logger.debug(f'DoMAS 查询 run 列表请求异常 [proposal={proposal_id}]: {ex}')
             return []
+
+        # DoMAS runs 接口返回 {"msg": {"runIds": [...], ...}, ...}
+        if isinstance(data, dict):
+            import json as _json
+            msg = data.get('msg', {})
+            if isinstance(msg, str):
+                msg = _json.loads(msg)
+            if isinstance(msg, dict):
+                data = msg.get('runIds', [])
+            elif isinstance(msg, list):
+                data = msg
+            else:
+                data = []
 
         runs: list[RunInfo] = []
         if isinstance(data, list):
@@ -277,7 +306,7 @@ class DomasPermissionProvider(PermissionProvider):
         return runs
 
     def get_proposal_by_runid(self, token: str, email: str,
-                              run_id: str) -> Optional[dict]:
+                              run_id: str,beamline: str) -> Optional[dict]:
         """
         科学家专用：用 run 号反查所属课题。
 
@@ -285,13 +314,28 @@ class DomasPermissionProvider(PermissionProvider):
         返回格式：{"msg": {"proposalId": "xxx", "startData": "xxx", "endData": "xxx", "title": "..."}}
         """
         url = f'{self._domas_uri}/beamtimeid/adminProposalByRunid'
-        params = {'runid': run_id, 'email': email}
+        params = {'runid': run_id, 'email': email, 'beamline': beamline}
         try:
             resp = requests.get(url, headers=self._get_headers(token),
                                 params=params, timeout=_REQUEST_TIMEOUT)
+            logger.info(f'DoMAS adminProposalByRunid [{email}] runid={run_id} status={resp.status_code}')
             resp.raise_for_status()
+            import json as _json
             body = resp.json()
-            return body.get('msg')  # 返回 msg 层，字段：proposalId / startData / endData / title
+            logger.info(f'DoMAS adminProposalByRunid 响应: {body}')
+            msg = body.get('msg')
+            if isinstance(msg, str):
+                msg = _json.loads(msg)
+            # adminProposalByRunid 的数据在 msg.data[0]
+            if isinstance(msg, dict):
+                data = msg.get('data') or []
+                if data:
+                    return data[0]
+            return None
         except requests.RequestException as ex:
             logger.warning(f'DoMAS run 反查课题失败 [runid={run_id}]: {ex}')
+            return None
+        except ValueError as ex:
+            # resp.json() 解析失败（空 body 或非 JSON 响应）
+            logger.warning(f'DoMAS run 反查课题响应解析失败 [runid={run_id}]: {ex}')
             return None

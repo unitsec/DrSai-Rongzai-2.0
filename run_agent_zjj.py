@@ -198,17 +198,17 @@ if __name__ == "__main__":
             permission=PERMISSION,
             description = "蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组",
             version = "0.1.0",
-            logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
+            logo="/dg_workfs/domassy/rongzai/rongzai-agent/src/configs/resized_rzera_logo.png",
             examples=["帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择X模型，返回拟合结果和拟合图。"],
             agent_config = llm_mode_config,
             defult_config_name = "default",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
-            port = 42830, 
+            port = 30004, 
             # 是否注册到HepAI智能体平台
             no_register=False,
-            drsai_dir = "/home/dell/ZJJ/rongzai-agent/tmp",
+            drsai_dir = "/dg_workfs/domassy/rongzai/rongzai-agent/tmp",
             # 是否注册为OpenWebUI的pipeline
             enable_openwebui_pipeline=False, 
             history_mode = "backend",
