@@ -442,7 +442,11 @@ class RongZaiAgent(DrSaiAgent):
             "timed out",
             "connection reset",
             "service unavailable",
+            "serviceunavailable",
+            "currently unavailable",
             "no resource",
+            "unsupported operand type(s) for +",
+            "nonetype",
         ]
         return any(flag in text for flag in flags)
 
