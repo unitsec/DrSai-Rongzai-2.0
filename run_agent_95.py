@@ -53,9 +53,10 @@ def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
 _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
+    "deepseek-v4-pro": "hepai/deepseek-v4-pro",
+    "glm-5.2": "zhipu/glm-5.2",
     "gpt 5": "openai/gpt-5",
     "miniMax": "minimax/minimax-m2.7",
-    "deepseek": "hepai/deepseek-v4-pro",
     "gpt 4.1": "openai/gpt-4.1"
 }
 
@@ -145,7 +146,7 @@ async def create_agent(
     SYSTEM = RONGZAI_SYSTEM_PROMPT
 
     return RongZaiAgent(
-        name = "RongZaiAgentDev",
+        name = "RongZaiAgent",
         model_client=set_model_client(defult_config_name),
         system_message=SYSTEM,
         reflect_on_tool_use=False,
@@ -196,7 +197,7 @@ if __name__ == "__main__":
                       {"en":"SANS data fitting: Use the sasview tool to analyze the uploaded small-angle scattering data, use the Fit function, select the hollow cylinder model, fit the scattering curve until the chisquare is less than 10, then return the fitting results and fitting graph.",
                        "zh":"小角中子散射拟合：帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"}],
             agent_config = llm_mode_config,
-            defult_config_name = "gpt 5",
+            defult_config_name = "glm-5.2",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
