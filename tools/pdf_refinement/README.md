@@ -12,7 +12,7 @@ diffpy.pdffit2 - PDF精修工具
 2.添加conda-forge频道：
     conda config --add channels conda-forge
 3.创建并激活conda环境：
-    conda create -n diffpy.pdffit2_env diffpy.pdffit2
+    conda create -n diffpy.pdffit2_env python=3.12 conda-forge::diffpy.pdffit2
     conda activate diffpy.pdffit2_env
 4.验证安装是否成功：
     python -c "import diffpy.pdffit2; print(diffpy.pdffit2.__version__)"

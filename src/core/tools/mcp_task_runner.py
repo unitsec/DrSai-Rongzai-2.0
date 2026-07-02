@@ -161,7 +161,23 @@ class ProcessPollingMcpToolBase:
             doc: Override docstring. Defaults to target_func.__doc__.
         """
         sig = inspect.signature(self.target_func)
-        annotations = getattr(self.target_func, '__annotations__', {}).copy()
+        try:
+            # Resolve postponed string annotations in the source function module
+            # before handing them to MCP/Pydantic schema generation.
+            annotations = inspect.get_annotations(self.target_func, eval_str=True)
+        except Exception:
+            annotations = getattr(self.target_func, '__annotations__', {}).copy()
+
+        if annotations:
+            rebuilt_params = []
+            for param in sig.parameters.values():
+                rebuilt_params.append(
+                    param.replace(annotation=annotations.get(param.name, param.annotation))
+                )
+            sig = sig.replace(
+                parameters=rebuilt_params,
+                return_annotation=annotations.get("return", sig.return_annotation),
+            )
         tool_name = name or self.target_func.__name__
         tool_doc = doc if doc is not None else (self.target_func.__doc__ or "")
 

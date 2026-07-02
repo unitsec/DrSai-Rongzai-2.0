@@ -21,7 +21,7 @@ pip install -r requirements.txt
 - 3.配置diffpy运行环境
 ```shell
 # conda create -n diffpy.pdffit2_env diffpy.pdffit2
-conda create -n diffpy.pdffit2_env conda-forge::diffpy.pdffit2
+conda create -n diffpy.pdffit2_env python=3.12 conda-forge::diffpy.pdffit2
 conda activate diffpy.pdffit2_env
 pip install mcp matplotlib
 ```
