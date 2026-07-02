@@ -249,13 +249,13 @@ class RongZaiAgent(DrSaiAgent):
         )
 
         # domas和icat文件访问权限检查工具。
-        self._tools.append(
-            FunctionTool(
-                self.check_user_permission_for_file,
-                description=self.check_user_permission_for_file.__doc__ or "",
-                name="CheckUserPermission",
-            )
-        )
+        # self._tools.append(
+        #     FunctionTool(
+        #         self.check_user_permission_for_file,
+        #         description=self.check_user_permission_for_file.__doc__ or "",
+        #         name="CheckUserPermission",
+        #     )
+        # )
 
         # === model context ===
         # 对话上下文管理器
