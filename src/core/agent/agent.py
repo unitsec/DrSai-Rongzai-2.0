@@ -1092,7 +1092,7 @@ class RongZaiAgent(DrSaiAgent):
                     model_candidates = []
                     if primary_env:
                         model_candidates.append(primary_env)
-                    for m in ("openai/gpt-4o", "openai/gpt-5", "minimax/minimax-m2.7"):
+                    for m in ("openai/gpt-5","openai/gpt-4o", "minimax/minimax-m2.7"):
                         if m not in model_candidates:
                             model_candidates.append(m)
 
@@ -1520,6 +1520,14 @@ class RongZaiAgent(DrSaiAgent):
         if cancellation_token is None:
             cancellation_token = CancellationToken()
         self._cancellation_token = cancellation_token
+        self._lang_prompt = ""
+
+        def _lang_detect_text(content: Any) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return "\n".join(part for part in content if isinstance(part, str))
+            return str(content) if content is not None else ""
         
         # for msg in task:
         #     if getattr(msg, "source", None) == "user_proxy":
@@ -1531,12 +1539,15 @@ class RongZaiAgent(DrSaiAgent):
         if task is None:
             pass
         elif isinstance(task, str):
+            self._lang_prompt = generate_prompt(task)
             text_msg = TextMessage(content=task, source="user", metadata={"internal": "yes"})
             # text_msg = TextMessage(content=task, source="user")
             input_messages.append(text_msg)
             output_messages.append(text_msg)
             yield text_msg
         elif isinstance(task, BaseChatMessage):
+            if getattr(task, "source", None) in {"user", "user_proxy"}:
+                self._lang_prompt = generate_prompt(_lang_detect_text(task.content))
             task.metadata["internal"] = "yes"
             input_messages.append(task)
             output_messages.append(task)  
@@ -1568,6 +1579,9 @@ class RongZaiAgent(DrSaiAgent):
                             and msg.content.lstrip().startswith(("Attached file:", "Attached image:"))
                         ):
                             continue
+
+                        if getattr(msg, "source", None) in {"user", "user_proxy"}:
+                            self._lang_prompt = generate_prompt(_lang_detect_text(msg.content))
 
                         # output_messages 保留原始消息（含图片对象）供前端展示；
                         # input_messages 只放纯文本消息，因为 DrSaiChatCompletionContext
@@ -1693,13 +1707,15 @@ class RongZaiAgent(DrSaiAgent):
         fallback_attempted: set[str] = set()
         forced_invalid_output_once = False
         try:
-            self._lang_prompt = ""
-            
-            for msg in messages:
-                if getattr(msg, "source", None) == "user" or getattr(msg, "source", None) == "user_proxy":
-                    self._lang_prompt = generate_prompt(msg.content)
-                    # msg.content = f"{msg.content}, {self._lang_prompt}"
-                    # msg.metadata["content"] = msg.content
+            # 正常路径下语言检测已在 run_stream 的消息预处理阶段完成。
+            if not self._lang_prompt:
+                for msg in messages:
+                    if getattr(msg, "source", None) in {"user", "user_proxy"}:
+                        content = msg.content
+                        if isinstance(content, list):
+                            content = "\n".join(part for part in content if isinstance(part, str))
+                        self._lang_prompt = generate_prompt(content)
+                        break
             
             # 将用户消息写入模型上下文
             await self._add_messages_to_context(

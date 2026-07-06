@@ -3,7 +3,7 @@
 """PDF refinement tools organized like the neutron GSAS-II tool suite.
 
 This module exposes three polling MCP tools:
-- InitializeProject: validate inputs and create a project manifest
+- InitializeProject: validate inputs, run structure checks, and create a project manifest
 - Refine: run staged PDF refinement and write outputs
 - ExportCIFs: collect or regenerate refined CIF outputs from a project
 
@@ -77,6 +77,59 @@ def _detect_pdf_r_bounds(data_file: str | Path) -> tuple[float, float]:
     return rmin, safe_rmax
 
 
+def _preprocess_pdf_data_for_pdffit(
+    data_file: str | Path,
+    output_dir: Optional[str | Path] = None,
+) -> Path:
+    """Convert mixed-format PDF data into pdffit2-friendly whitespace text.
+
+    Accepted input lines may be whitespace or comma separated. Non-data rows
+    (headers/comments/single-number rows) are skipped.
+    """
+
+    src = Path(data_file)
+    if not src.exists():
+        raise FileNotFoundError(f"数据文件不存在: {src}")
+
+    dst_dir = Path(output_dir) if output_dir is not None else src.parent
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    dst = dst_dir / f"{src.stem}__pdffit_cleaned__{stamp}.dat"
+
+    cleaned_rows: List[tuple[float, float]] = []
+    with src.open("r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith(("#", "!", ";")):
+                continue
+
+            parts = [p for p in re.split(r"[\s,]+", stripped) if p]
+            if len(parts) < 2:
+                continue
+
+            try:
+                r_val = float(parts[0])
+                g_val = float(parts[1])
+            except ValueError:
+                continue
+
+            cleaned_rows.append((r_val, g_val))
+
+    if len(cleaned_rows) < 10:
+        raise ValueError(
+            f"清洗后有效数据点过少({len(cleaned_rows)}): {src}，请检查原始数据格式"
+        )
+
+    with dst.open("w", encoding="utf-8") as f:
+        f.write("# r  G(r)\n")
+        for r_val, g_val in cleaned_rows:
+            f.write(f"{r_val:.10g} {g_val:.10g}\n")
+
+    return dst
+
+
 def _safe_json_dump(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -121,6 +174,112 @@ def _normalize_project_manifest(raw_manifest: Dict[str, Any]) -> Dict[str, Any]:
         "refine_config": refine_config,
         "output_files": manifest.get("output_files") if isinstance(manifest.get("output_files"), dict) else {},
         "refined_params": manifest.get("refined_params") if isinstance(manifest.get("refined_params"), dict) else {},
+        "validation_warnings": manifest.get("validation_warnings") if isinstance(manifest.get("validation_warnings"), list) else [],
+        "structure_checks": manifest.get("structure_checks") if isinstance(manifest.get("structure_checks"), list) else [],
+    }
+
+
+def _try_parse_cif_numeric(token: str) -> Optional[float]:
+    text = str(token).strip().strip("'\"")
+    if not text or text in {"?", "."}:
+        return None
+    if "(" in text:
+        text = text.split("(", 1)[0]
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _inspect_cif_adp(cif_path: str | Path) -> Dict[str, Any]:
+    """Inspect ADP fields in CIF and report warning-level issues."""
+
+    lines = Path(cif_path).read_text(encoding="utf-8", errors="ignore").splitlines()
+    adp_prefixes = (
+        "_atom_site_u_iso_or_equiv",
+        "_atom_site_b_iso_or_equiv",
+        "_atom_site_aniso_u_",
+        "_atom_site_aniso_b_",
+    )
+
+    adp_values: List[float] = []
+    has_adp_field = False
+    idx = 0
+    while idx < len(lines):
+        stripped = lines[idx].strip()
+        if stripped.lower() != "loop_":
+            idx += 1
+            continue
+
+        headers: List[str] = []
+        j = idx + 1
+        while j < len(lines):
+            candidate = lines[j].strip()
+            if candidate.startswith("_"):
+                headers.append(candidate)
+                j += 1
+                continue
+            break
+
+        if not headers:
+            idx += 1
+            continue
+
+        adp_indices: List[int] = []
+        for pos, header in enumerate(headers):
+            lower = header.lower()
+            if any(lower.startswith(prefix) for prefix in adp_prefixes):
+                adp_indices.append(pos)
+        if adp_indices:
+            has_adp_field = True
+
+        while j < len(lines):
+            record = lines[j].strip()
+            if not record or record == "loop_" or record.startswith("_") or record.lower().startswith("data_"):
+                break
+            parts = record.split()
+            if len(parts) >= len(headers):
+                for pos in adp_indices:
+                    maybe_value = _try_parse_cif_numeric(parts[pos])
+                    if maybe_value is not None:
+                        adp_values.append(float(maybe_value))
+            j += 1
+
+        idx = j
+
+    nonzero_count = sum(1 for v in adp_values if abs(v) > 1e-12)
+    all_zero = bool(adp_values) and nonzero_count == 0
+
+    issues: List[str] = []
+    if not has_adp_field:
+        issues.append("未检测到 ADP 字段(_atom_site_Uiso/Biso 或 _atom_site_aniso_U/B_*)")
+    elif not adp_values:
+        issues.append("检测到 ADP 字段但未读到有效数值")
+    elif all_zero:
+        issues.append("检测到所有 ADP 数值均为 0，可能导致拟合退化为近似直线")
+
+    return {
+        "file": str(cif_path),
+        "format": "cif",
+        "has_adp_field": has_adp_field,
+        "adp_value_count": len(adp_values),
+        "nonzero_adp_count": nonzero_count,
+        "all_zero_adp": all_zero,
+        "issues": issues,
+        "status": "warning" if issues else "ok",
+    }
+
+
+def _inspect_structure_file(structure_file: str | Path) -> Dict[str, Any]:
+    path = Path(structure_file)
+    suffix = path.suffix.lower()
+    if suffix == ".cif":
+        return _inspect_cif_adp(path)
+    return {
+        "file": str(path),
+        "format": suffix.lstrip("."),
+        "status": "skipped",
+        "issues": ["仅对 CIF 执行 ADP 检测"],
     }
 
 
@@ -705,7 +864,6 @@ def _configure_pdffit(
     rmax: float,
     refine_config: Dict[str, Any],
 ) -> Dict[int, Dict[str, int]]:
-    pf.read_data("__pending__", "X", qmax, qdamp)  # placeholder, replaced by caller
     raise RuntimeError("_configure_pdffit must not be called directly")
 
 
@@ -728,6 +886,11 @@ def initialize_pdf_project(
     later `Refine` calls should read. Each subsequent refinement creates a new
     JSON snapshot next to this one, so the input file itself is never modified.
 
+    During initialization, structure files are validated. For CIF inputs, the
+    function checks ADP-related fields (Uiso/Biso/Uij/Bij). If ADP values are
+    missing or all zero, warning messages are included in the return payload and
+    persisted in the manifest for downstream LLM guidance.
+
     Args:
         data_file: Experimental PDF data file.
         structure_files: Initial structure files, usually CIF files.
@@ -746,6 +909,9 @@ def initialize_pdf_project(
         - `status`: `success` or `failed`
         - `project_path`: path to the created JSON snapshot
         - `manifest`: the snapshot content written to disk
+        - `has_warnings`: whether structure validation produced warnings
+        - `warnings`: warning message list for LLM/user prompts
+        - `structure_checks`: structured per-file validation details
         - `error`: error message when `status` is `failed`
         - `traceback`: debug traceback when `status` is `failed`
     """
@@ -762,6 +928,14 @@ def initialize_pdf_project(
         for i, struct_file in enumerate(structure_files, start=1):
             if not Path(struct_file).exists():
                 raise FileNotFoundError(f"结构文件 {i} 不存在: {struct_file}")
+
+        structure_checks: List[Dict[str, Any]] = []
+        validation_warnings: List[str] = []
+        for struct_file in structure_files:
+            check = _inspect_structure_file(struct_file)
+            structure_checks.append(check)
+            for issue in check.get("issues", []):
+                validation_warnings.append(f"{check.get('file')}: {issue}")
             
         project_path = str(project_dir / f"{task_id}.json")
 
@@ -778,6 +952,8 @@ def initialize_pdf_project(
             "refine_config": refineConfig,
             "output_files": {},
             "refined_params": {},
+            "validation_warnings": validation_warnings,
+            "structure_checks": structure_checks,
         }
         manifest = _normalize_project_manifest(manifest)
         _safe_json_dump(Path(project_path), manifest)
@@ -785,6 +961,9 @@ def initialize_pdf_project(
         results["status"] = "success"
         results["project_path"] = project_path
         results["manifest"] = manifest
+        results["warnings"] = list(validation_warnings)
+        results["has_warnings"] = bool(validation_warnings)
+        results["structure_checks"] = list(structure_checks)
         return results
     except Exception as e:
         results["error"] = str(e)
@@ -953,8 +1132,17 @@ def refine(
     rmax = float(params_current.get("rmax", 20.0))
     pdf_source = _normalize_pdf_source(params_current.get("pdf_source", "N"))
 
+    cleaned_data_file: Optional[Path] = None
     pf = PdfFit()
-    pf.read_data(data_file, pdf_source, qmax, qdamp)
+    try:
+        cleaned_data_file = _preprocess_pdf_data_for_pdffit(data_file, output_dir=project_dir_path)
+        pf.read_data(str(cleaned_data_file), pdf_source, qmax, qdamp)
+    finally:
+        if cleaned_data_file is not None:
+            try:
+                cleaned_data_file.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     # pf中导入相信息，兼容 CIF 和非 CIF（例如 .rstr）
     _load_structure_files(pf, list(structure_files))
@@ -1347,11 +1535,11 @@ if __name__ == "__main__":
     export_cifs_runner.register_mcp_tool(mcp, name="ExportCIFs")
     mcp.run(transport="sse")
 
-    # pdf_file = "/home/wangh/rongzai-agent/datasets/BL16/RUNdataFiles/RUN0023568/Gr_Hermite.txt"
-    # cif_files = ["/home/wangh/rongzai-agent/datasets/BL16/RUNdataFiles/RUN0023568/cifFiles/Si.cif"]
+    # pdf_file = "/home/wangh/rongzai-agent/tools/pdf_refinement/tests/run1060_RUN1060_qmax_30_Gr.dat"
+    # cif_files = ["/home/wangh/rongzai-agent/tools/pdf_refinement/tests/Bi2MoO6.cif"]
     # user_id = "wanghao96"
     # session_id = "local_pdf_refine_demo"
-    # mission_name = "si_pdf_refine"
+    # mission_name = "Bi2MoO6_pdf_refine"
 
     # init_result = initialize_pdf_project(
     #     data_file=pdf_file,
