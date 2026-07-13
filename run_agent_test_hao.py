@@ -27,20 +27,9 @@ parent_path = os.path.dirname(os.path.abspath(__file__))
 appdir = os.path.join(parent_path, "tmp/drsai")
 os.makedirs(appdir, exist_ok=True)
 
-VIP_USER_LIST = os.getenv("VIP_USER_LIST", "").split(",") if os.getenv("VIP_USER_LIST") else []
-
-
 
 def _normalize_users(users: list[str]) -> list[str]:
     return [u.strip() for u in users if u and u.strip()]
-
-
-PERMISSION_USERS = list(dict.fromkeys(_normalize_users(VIP_USER_LIST)))
-PERMISSION = (
-    f"groups: rongzai,payg,hairongzai@ihep.ac.cn; users: {','.join(PERMISSION_USERS)}; "
-    "owner: wanghao96@ihep.ac.cn"
-)
-print(f"PERMISSION: {PERMISSION}")
 
 
 def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
@@ -92,18 +81,20 @@ async def create_agent(
             omit_max_tokens = True
             llm_max_retries = 1
 
-        is_vip_user = bool(user_id and user_id in PERMISSION_USERS)
-        if is_vip_user:
+        BLACK_LIST = os.getenv("BLACK_LIST", "").split(",") if os.getenv("BLACK_LIST") else []
+        is_black_user = bool(user_id and user_id in BLACK_LIST)
+        print(f"User {user_id} is blacklisted: {is_black_user}")
+        if is_black_user:
             client_kwargs = {
                 "model": llm_model,
-                "api_key": os.getenv("HEPAI_API_KEY"),
+                "api_key": api_key,
                 "timeout": 180,
                 "max_retries": llm_max_retries,
             }
         else:
             client_kwargs = {
                 "model": llm_model,
-                "api_key": api_key,
+                "api_key": os.getenv("HEPAI_API_KEY"),
                 "timeout": 180,
                 "max_retries": llm_max_retries,
             }
@@ -182,8 +173,8 @@ if __name__ == "__main__":
             # 智能体注册信息
             agent_name="RongzaiAgentTest",
             author="wanghao96@ihep.ac.cn",
-            permission=PERMISSION,
-            description = '["en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"}',
+            permission="groups: rongzai,payg,hairongzai@ihep.ac.cn; users:admin, ddf_free; owner: wanghao96@ihep.ac.cn",
+            description = '{"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"}',
             version = "0.1.0",
             logo="/home/dur/rongzai-agent/src/configs/resized_rzera_logo.png",
             examples=[{"en":"Help me refine the BL16 RUN0023568 group5 diffraction spectrum using GSAS-II, the cif file is Si.cif",

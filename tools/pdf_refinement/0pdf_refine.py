@@ -48,6 +48,7 @@ print(f"Loading environment variables from: {here / '.env'}")
 load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
 DEFAULT_WORKDIR = Path(os.getenv("WORKDIR", ""))
 print(f"Using WORKER_SPACE: {DEFAULT_WORKDIR}")
+PDFGUI_TOLERANCY = 0.001
 
 
 def calcu_byte_size(file_path: str | Path) -> int:
@@ -353,7 +354,8 @@ def _update_cif_with_refined_params(
         temp_factor = refined_params[f"temperature_factor_{phase_index}"]
         scale_factor = refined_params.get(f"scale_{phase_index}", 1.0)
         qdamp = refined_params.get("qdamp", 0.03)
-        delta2 = refined_params.get("delta2", 0.0003)
+        delta1 = refined_params.get(f"delta1_{phase_index}", 0.0)
+        delta2 = refined_params.get(f"delta2_{phase_index}", 0.0003)
         rw = refined_params.get("rw", 0.0)
 
         output_lines: List[str] = []
@@ -376,6 +378,7 @@ def _update_cif_with_refined_params(
             f"# Refined temperature factor: {temp_factor:.6f} A^2\n",
             f"# Refined scale factor: {scale_factor:.6f}\n",
             f"# Refined Qdamp: {qdamp:.6f}\n",
+            f"# Refined Delta1: {delta1:.6f}\n",
             f"# Refined Delta2: {delta2:.6f}\n",
             f"# R-weight: {rw:.6f}\n",
             f"# Refinement date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
@@ -401,11 +404,6 @@ def _build_pdf_default_config(num_phases: int = 1) -> Dict[str, Any]:
             "dscale": 1.0,
             "qdamp": 0.001,
             "qbroad": 0.0,
-            "delta1": 0.0,
-            "delta2": 0.0003,
-        },
-        "run_control": {
-            "cycles": 1,
         },
         "parameter_controls": [],
     }
@@ -419,10 +417,6 @@ def _merge_refine_config(refine_config: Optional[Dict[str, Any]]) -> Dict[str, A
                 merged_params = dict(merged["paramsCurrentValue"])
                 merged_params.update(value)
                 merged["paramsCurrentValue"] = merged_params
-            elif key == "run_control" and isinstance(value, dict):
-                merged_run = dict(merged["run_control"])
-                merged_run.update(value)
-                merged["run_control"] = merged_run
             elif key == "parameter_controls" and isinstance(value, list):
                 merged["parameter_controls"] = list(value)
             else:
@@ -445,16 +439,11 @@ def _merge_refine_configs(
         merged_params.update(override_config["paramsCurrentValue"])
         merged["paramsCurrentValue"] = merged_params
 
-    if isinstance(override_config.get("run_control"), dict):
-        merged_run_control = dict(merged.get("run_control", {}))
-        merged_run_control.update(override_config["run_control"])
-        merged["run_control"] = merged_run_control
-
     if isinstance(override_config.get("parameter_controls"), list):
         merged["parameter_controls"] = list(override_config["parameter_controls"])
 
     for key, value in override_config.items():
-        if key not in {"paramsCurrentValue", "run_control", "parameter_controls"}:
+        if key not in {"paramsCurrentValue", "parameter_controls"}:
             merged[key] = value
 
     return merged
@@ -472,8 +461,10 @@ def _build_phase_param_indices(num_phases: int) -> Dict[int, Dict[str, int]]:
             "spdiameter": next_idx + 4,
             "stepcut": next_idx + 5,
             "rcut": next_idx + 6,
+            "delta1": next_idx + 7,
+            "delta2": next_idx + 8,
         }
-        next_idx += 7
+        next_idx += 9
     return mapping
 
 
@@ -505,9 +496,7 @@ def _resolve_pf_variable(pf: PdfFit, selector: str):
     global_vars = {
         "dscale": pf.dscale,
         "qdamp": pf.qdamp,
-        "delta2": pf.delta2,
         "qbroad": pf.qbroad,
-        "delta1": pf.delta1,
     }
     if key in global_vars:
         return global_vars[key]()
@@ -520,7 +509,7 @@ def _resolve_pf_variable(pf: PdfFit, selector: str):
     phase_key = m.group(2).strip().lower()
     pf.setphase(phase_idx)
 
-    if phase_key in {"pscale", "sratio", "spdiameter", "stepcut", "rcut"}:
+    if phase_key in {"pscale", "sratio", "spdiameter", "stepcut", "rcut", "delta1", "delta2"}:
         return getattr(pf, phase_key)()
 
     if phase_key in {"lat.a", "lat1", "lat.a1", "lata"}:
@@ -989,7 +978,7 @@ def refine(
         2. Read PDF data and structures.
         3. Create baseline constraints (baseline parameters are fixed).
         4. Apply refine_config.parameter_controls in list order.
-        5. Run pf.refine() for run_control.cycles iterations.
+        5. Run pf.refine_step(tolerancy) repeatedly until convergence.
         6. Save outputs and write a new immutable snapshot.
 
         refine_config strict schema:
@@ -1001,16 +990,14 @@ def refine(
              - rmin: float, fit lower bound.
              - rmax: float, fit upper bound.
              - pdf_source: str, "N" or "X".
-             - dscale: float, initial global data scale value.
-             - qdamp: float, initial qdamp.
-             - qbroad: float, initial qbroad.
-             - delta1: float, initial delta1.
-             - delta2: float, initial delta2.
+             - dscale: float, initial data scale factor.
+             - qdamp: float, controls PDF damping due to instrument Q-resolution.
+             - qbroad: float, quadratic peak broadening factor.
+             - delta1_i: float, phase-i 1/R peak sharpening factor (i starts at 1).
+             - delta2_i: float, phase-i (1/R^2) peak sharpening factor;
+                         phenomenological correlation constant in Debye-Waller factor.
 
-        B) run_control (dict, optional)
-             - cycles: int >= 1, number of pf.refine() calls.
-
-        C) parameter_controls (list[dict], optional)
+           B) parameter_controls (list[dict], optional)
              The only constraint-control interface.
              Each item controls one selector target:
              - selector (required): variable path.
@@ -1027,33 +1014,33 @@ def refine(
         Selector whitelist:
 
         Global selectors:
-        - dscale
-        - qdamp
-        - delta2
-        - qbroad
-        - delta1
+        - dscale: data scale factor.
+        - qdamp: PDF damping from instrument Q-resolution.
+        - qbroad: quadratic peak broadening factor.
 
         Phase selectors:
-        - phase[i].pscale
-        - phase[i].sratio
-        - phase[i].spdiameter
-        - phase[i].stepcut
-        - phase[i].rcut
-        - phase[i].lat.a (aliases: lat1, lat.a1, lata)
-        - phase[i].lat.b (aliases: lat2, lat.b2, latb)
-        - phase[i].lat.c (aliases: lat3, lat.c3, latc)
+        - phase[i].pscale: fraction of total structure represented by phase i.
+        - phase[i].delta1: 1/R peak sharpening factor of phase i.
+        - phase[i].delta2: (1/R^2) peak sharpening factor of phase i.
+        - phase[i].sratio: sigma ratio for reduction of Debye-Waller factor below rcut.
+        - phase[i].spdiameter: spherical particle correction diameter; 0 disables envelope.
+        - phase[i].stepcut: empirical step-envelope cutoff radius for amorphous-like correlation loss; non-refinable in pdffit2.
+        - phase[i].rcut: radius below which sratio-based sharpening applies; non-refinable in pdffit2.
+        - phase[i].lat.a (aliases: lat1, lat.a1, lata): lattice parameter a.
+        - phase[i].lat.b (aliases: lat2, lat.b2, latb): lattice parameter b.
+        - phase[i].lat.c (aliases: lat3, lat.c3, latc): lattice parameter c.
 
         Atom selectors:
-        - phase[i].atom[j].x
-        - phase[i].atom[j].y
-        - phase[i].atom[j].z
-        - phase[i].atom[j].occ
-        - phase[i].atom[j].u11
-        - phase[i].atom[j].u22
-        - phase[i].atom[j].u33
-        - phase[i].atom[j].u12
-        - phase[i].atom[j].u13
-        - phase[i].atom[j].u23
+        - phase[i].atom[j].x: fractional x coordinate of atom j in phase i.
+        - phase[i].atom[j].y: fractional y coordinate of atom j in phase i.
+        - phase[i].atom[j].z: fractional z coordinate of atom j in phase i.
+        - phase[i].atom[j].occ: occupancy of atom j in phase i.
+        - phase[i].atom[j].u11: U(1,1) anisotropic thermal factor tensor component.
+        - phase[i].atom[j].u22: U(2,2) anisotropic thermal factor tensor component.
+        - phase[i].atom[j].u33: U(3,3) anisotropic thermal factor tensor component.
+        - phase[i].atom[j].u12: U(1,2) anisotropic thermal factor tensor component.
+        - phase[i].atom[j].u13: U(1,3) anisotropic thermal factor tensor component.
+        - phase[i].atom[j].u23: U(2,3) anisotropic thermal factor tensor component.
 
         Precedence rules:
         - Controls are executed in list order.
@@ -1067,7 +1054,6 @@ def refine(
 
         Example 1: refine only phase-1 pscale
         {
-            "run_control": {"cycles": 1},
             "parameter_controls": [
                 {"selector": "phase[1].pscale", "bind": "ps1", "refine": true}
             ]
@@ -1075,7 +1061,6 @@ def refine(
 
         Example 2: tie a=b=c and refine lattice + pscale
         {
-            "run_control": {"cycles": 2},
             "parameter_controls": [
                 {"selector": "phase[1].lat.a", "bind": "lat1", "refine": true},
                 {"selector": "phase[1].lat.b", "bind": "lat1"},
@@ -1122,7 +1107,16 @@ def refine(
     output_dir = str(project_dir_path)
 
     params_current = merged_refine_config.get("paramsCurrentValue", {}) if isinstance(merged_refine_config.get("paramsCurrentValue"), dict) else {}
-    run_control = merged_refine_config.get("run_control", {}) if isinstance(merged_refine_config.get("run_control"), dict) else {}
+    if "delta1" in params_current or "delta2" in params_current:
+        return {
+            "status": "failed",
+            "task_id": task_id,
+            "project_path": str(project_path_obj),
+            "source_project_path": str(project_path_obj),
+            "project_dir": output_dir,
+            "error": "不支持 paramsCurrentValue.delta1 / delta2；请使用 paramsCurrentValue.delta1_i / delta2_i（i 从 1 开始）",
+            "content": results,
+        }
 
     start_time = datetime.now()
 
@@ -1156,18 +1150,12 @@ def refine(
     pf.setpar(20, float(params_current.get("dscale", params_current.get("dataScale", 1.0))))
     pf.constrain(pf.qdamp(), "@21")
     pf.setpar(21, float(params_current.get("qdamp", qdamp)))
-    pf.constrain(pf.delta2(), "@22")
-    pf.setpar(22, float(params_current.get("delta2", 0.0003)))
     pf.constrain(pf.qbroad(), "@23")
     pf.setpar(23, float(params_current.get("qbroad", 0.0)))
-    pf.constrain(pf.delta1(), "@24")
-    pf.setpar(24, float(params_current.get("delta1", 0.0)))
 
     pf.fixpar(20)
     pf.fixpar(21)
-    pf.fixpar(22)
     pf.fixpar(23)
-    pf.fixpar(24)
 
     phase_runtime_vars: Dict[int, Dict[str, Any]] = {}
 
@@ -1198,6 +1186,16 @@ def refine(
         pf.setpar(pmap["scale"], float(1.0 / max(num_phases, 1)))
         pf.fixpar(pmap["scale"])
 
+        delta1_var = pf.delta1()
+        pf.constrain(delta1_var, f"@{pmap['delta1']}")
+        pf.setpar(pmap["delta1"], float(params_current.get(f"delta1_{phase_idx}", 0.0)))
+        pf.fixpar(pmap["delta1"])
+
+        delta2_var = pf.delta2()
+        pf.constrain(delta2_var, f"@{pmap['delta2']}")
+        pf.setpar(pmap["delta2"], float(params_current.get(f"delta2_{phase_idx}", 0.0003)))
+        pf.fixpar(pmap["delta2"])
+
         phase_runtime_vars[phase_idx] = {
             "lat_a": lat_a,
             "lat_b": lat_b,
@@ -1227,14 +1225,32 @@ def refine(
             pf.fixpar(pmap["rcut"])
 
     parameter_controls = merged_refine_config.get("parameter_controls")
+    if isinstance(parameter_controls, list):
+        for control in parameter_controls:
+            if not isinstance(control, dict):
+                continue
+            selector = str(control.get("selector", "")).strip().lower()
+            if selector in {"delta1", "delta2"}:
+                return {
+                    "status": "failed",
+                    "task_id": task_id,
+                    "project_path": str(project_path_obj),
+                    "source_project_path": str(project_path_obj),
+                    "project_dir": output_dir,
+                    "error": "selector 仅支持按相形式：phase[i].delta1 或 phase[i].delta2",
+                    "content": results,
+                }
     _apply_parameter_controls(pf, parameter_controls, start_param_idx=20000)
 
     pf.pdfrange(1, rmin, rmax)
 
-    cycles = max(int(run_control.get("cycles", 1) or 1), 1)
+    step_count = 0
     try:
-        for _ in range(cycles):
-            pf.refine()
+        while True:
+            finished = bool(pf.refine_step(PDFGUI_TOLERANCY))
+            step_count += 1
+            if finished:
+                break
     except Exception as e:
         results["error"] = f"refinement failed: {e}"
         results["traceback"] = traceback.format_exc()
@@ -1251,8 +1267,9 @@ def refine(
 
     stage_results: List[Dict[str, Any]] = [
         {
-            "stage": "manual_single_step",
-            "cycles": cycles,
+            "stage": "auto_converged",
+            "steps": step_count,
+            "tolerancy": PDFGUI_TOLERANCY,
             "rw": pf.getrw(),
         }
     ]
@@ -1261,9 +1278,7 @@ def refine(
         "dataScale": pf.getpar(20),
         "pscale": pf.getpar(20) * 2,
         "qdamp": pf.getpar(21),
-        "delta2": pf.getpar(22),
         "qbroad": pf.getpar(23),
-        "delta1": pf.getpar(24),
         "rw": pf.getrw(),
         "stage_results": stage_results,
         "elapsed_sec": round((datetime.now() - start_time).total_seconds(), 3),
@@ -1290,17 +1305,20 @@ def refine(
         refined_params[f"lattice_c_{phase_idx}"] = lat_c_val
         refined_params[f"temperature_factor_{phase_idx}"] = temp_val
         refined_params[f"scale_{phase_idx}"] = scale_val
+        refined_params[f"delta1_{phase_idx}"] = _safe_getpar(pf, pmap["delta1"])
+        refined_params[f"delta2_{phase_idx}"] = _safe_getpar(pf, pmap["delta2"])
         refined_params[f"sratio_{phase_idx}"] = _safe_getpar(pf, pmap["sratio"])
         refined_params[f"spdiameter_{phase_idx}"] = _safe_getpar(pf, pmap["spdiameter"])
         refined_params[f"stepcut_{phase_idx}"] = _safe_getpar(pf, pmap["stepcut"])
         refined_params[f"rcut_{phase_idx}"] = _safe_getpar(pf, pmap["rcut"])
 
-    params_current_after = dict(params_current)
+    params_current_after = {k: v for k, v in dict(params_current).items() if k not in {"delta1", "delta2"}}
     params_current_after["dscale"] = float(refined_params["dataScale"])
     params_current_after["qdamp"] = float(refined_params["qdamp"])
-    params_current_after["delta2"] = float(refined_params["delta2"])
     params_current_after["qbroad"] = float(refined_params["qbroad"])
-    params_current_after["delta1"] = float(refined_params["delta1"])
+    for phase_idx in range(1, num_phases + 1):
+        params_current_after[f"delta1_{phase_idx}"] = float(refined_params[f"delta1_{phase_idx}"])
+        params_current_after[f"delta2_{phase_idx}"] = float(refined_params[f"delta2_{phase_idx}"])
     params_current_after["pdf_source"] = _normalize_pdf_source(params_current_after.get("pdf_source", "N"))
 
     output_prefix = Path(data_file).stem
@@ -1566,7 +1584,6 @@ if __name__ == "__main__":
     #     refine_result = refine(
     #         project_path=init_result["project_path"],
     #         refine_config={
-    #             "run_control": {"cycles": 1},
     #             "parameter_controls": [
     #                 {
     #                     "selector": "phase[1].pscale",
@@ -1599,11 +1616,10 @@ if __name__ == "__main__":
     #         if not (0.0 < scale_1 < 2.0):
     #             raise RuntimeError(f"Case1 failed: unexpected scale_1={scale_1}")
 
-    #     # Case 2: lattice tied (a=b=c) + pscale + delta2 released
+    #     # Case 2: lattice tied (a=b=c) + pscale + phase[1].delta2 released
     #     refine_result_2 = refine(
     #         project_path=source_project,
     #         refine_config={
-    #             "run_control": {"cycles": 2},
     #             "parameter_controls": [
     #                 {
     #                     "selector": "phase[1].lat.a",
@@ -1624,7 +1640,7 @@ if __name__ == "__main__":
     #                     "refine": True,
     #                 },
     #                 {
-    #                     "selector": "delta2",
+    #                     "selector": "phase[1].delta2",
     #                     "bind": "d21",
     #                     "initial": 0.0003,
     #                     "refine": True,
@@ -1637,7 +1653,7 @@ if __name__ == "__main__":
     #         task_id="refine_lattice_and_pscale",
     #     )
 
-    #     print("\n===== Refine (lattice + pscale + delta2) =====")
+    #     print("\n===== Refine (lattice + pscale + phase[1].delta2) =====")
     #     print(f"status: {refine_result_2.get('status')}")
     #     print(f"project_path: {refine_result_2.get('project_path')}")
     #     if refine_result_2.get("status") != "success":
@@ -1647,7 +1663,7 @@ if __name__ == "__main__":
     #         rp2 = refine_result_2.get("refined_params", {})
     #         print(f"rw: {rp2.get('rw')}")
     #         print(f"scale_1: {rp2.get('scale_1')}")
-    #         print(f"delta2: {rp2.get('delta2')}")
+    #         print(f"delta2_1: {rp2.get('delta2_1')}")
     #         print(f"lattice_a_1: {rp2.get('lattice_a_1')}")
     #         print(f"lattice_b_1: {rp2.get('lattice_b_1')}")
     #         print(f"lattice_c_1: {rp2.get('lattice_c_1')}")
