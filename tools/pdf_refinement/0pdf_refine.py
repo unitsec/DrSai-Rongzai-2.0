@@ -296,11 +296,6 @@ def create_output_directory(path: str | Path) -> Path:
     return output_dir
 
 
-def get_refined_cif_filename(original_cif_path: str | Path) -> str:
-    base_name = Path(original_cif_path).stem
-    return f"{base_name}_pdf_refined.cif"
-
-
 def _convert_refined_structure_to_cif(
     refined_structure_path: str | Path,
     output_cif_path: str | Path,
@@ -325,70 +320,6 @@ def _convert_refined_structure_to_cif(
         structure = Structure()
         structure.read(str(src))
         dst.write_text(structure.writeStr("cif"), encoding="utf-8")
-        return True
-    except Exception:
-        return False
-
-
-def _update_cif_with_refined_params(
-    original_cif_path: str | Path,
-    refined_params: Dict[str, Any],
-    output_cif_path: str | Path,
-    phase_index: int = 1,
-) -> bool:
-    """Update a CIF file with refined lattice/temperature information.
-
-    The original file is preserved structurally; we only patch summary values
-    and append a refinement note, which keeps the implementation robust across
-    varied CIF styles.
-    """
-
-    try:
-        original_cif_path = Path(original_cif_path)
-        output_cif_path = Path(output_cif_path)
-
-        with open(original_cif_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        lattice_param = refined_params[f"lattice_parameter_{phase_index}"]
-        temp_factor = refined_params[f"temperature_factor_{phase_index}"]
-        scale_factor = refined_params.get(f"scale_{phase_index}", 1.0)
-        qdamp = refined_params.get("qdamp", 0.03)
-        delta1 = refined_params.get(f"delta1_{phase_index}", 0.0)
-        delta2 = refined_params.get(f"delta2_{phase_index}", 0.0003)
-        rw = refined_params.get("rw", 0.0)
-
-        output_lines: List[str] = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("_cell_length_a"):
-                output_lines.append(f"_cell_length_a                   {lattice_param:.6f}\n")
-            elif stripped.startswith("_cell_length_b"):
-                output_lines.append(f"_cell_length_b                   {lattice_param:.6f}\n")
-            elif stripped.startswith("_cell_length_c"):
-                output_lines.append(f"_cell_length_c                   {lattice_param:.6f}\n")
-            elif stripped.startswith("_cell_volume"):
-                output_lines.append(f"_cell_volume                     {lattice_param ** 3:.4f}\n")
-            else:
-                output_lines.append(line)
-
-        info = [
-            f"# PDF refinement results for phase {phase_index}\n",
-            f"# Refined lattice parameter: {lattice_param:.6f} A\n",
-            f"# Refined temperature factor: {temp_factor:.6f} A^2\n",
-            f"# Refined scale factor: {scale_factor:.6f}\n",
-            f"# Refined Qdamp: {qdamp:.6f}\n",
-            f"# Refined Delta1: {delta1:.6f}\n",
-            f"# Refined Delta2: {delta2:.6f}\n",
-            f"# R-weight: {rw:.6f}\n",
-            f"# Refinement date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
-            "\n",
-        ]
-
-        output_cif_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_cif_path, "w", encoding="utf-8") as f:
-            f.writelines(info + output_lines)
-
         return True
     except Exception:
         return False
@@ -864,21 +795,10 @@ def initialize_pdf_project(
     rmax = 20.0,
     pdf_source = "N",
     user_id = None,
-    session_id = None,
     mission_name = None,
     task_id = None,
 ) -> Dict[str, Any]:
-    """Create the first immutable PDF refinement snapshot file.
-
-    This function prepares a minimal project JSON that serves as the starting
-    point for the refinement chain. The returned `project_path` is the file that
-    later `Refine` calls should read. Each subsequent refinement creates a new
-    JSON snapshot next to this one, so the input file itself is never modified.
-
-    During initialization, structure files are validated. For CIF inputs, the
-    function checks ADP-related fields (Uiso/Biso/Uij/Bij). If ADP values are
-    missing or all zero, warning messages are included in the return payload and
-    persisted in the manifest for downstream LLM guidance.
+    """Create the first immutable PDF refinement project snapshot file (.json).
 
     Args:
         data_file: Experimental PDF data file.
@@ -886,20 +806,32 @@ def initialize_pdf_project(
         qmax: Q cutoff used when reading PDF data.
         rmin: Lower r-range used for refinement.
         rmax: Upper r-range used for refinement.
-        pdf_source: PDF source type, `X` or `N`.
+        pdf_source: PDF source type, `X` or `N`. 'X'means X-ray, 'N' means neutron.
         user_id: User namespace used to build the project directory.
-        session_id: Session namespace used to build the project directory.
-        mission_name: Mission namespace used to build the project directory.
-        task_id: Sub-task identifier used to name the manifest file.
+        mission_name: Mission namespace used to build the project directory and task polling.
+        task_id: task name under mission for the purpose of naming the project file and for task polling.
 
+    the content of the project snapshot file is a JSON object with the following fields:
+        - `data_file`: path to the experimental PDF data file
+        - `structure_files`: list of paths to the initial structure files
+        - `nonRefineValue`: dictionary of global non-refinable parameters. These include qmax/rmin/rmax/pdf_source and per-phase phase[i].stepcut/phase[i].rcut.
+        - `refine_config`: dictionary of constraints, refinable parameters and their values after refinement. They are initial value in this snapshot, and will be updated after each refinement.
+            [{"constraint_label": "label1", "params": ["param1", "param2"], "value": value1}, ..., {"constraint_label": "labelN", "params": ["paramX", "paramY"], "value": valueN}]
+            Note: the parameters in the same label will be bound together and keep same in refinement, so they share one value. The same parameter can't be bound to multiple labels.
+        - `output_files`: dictionary of output files generated by the refinement process, initially empty
+        - `validation_warnings`: list of warning messages generated during structure validation
+        - `structure_checks`: list of per-file validation details, including detected issues and status
+    
+    
+    
     Returns:
-        A dictionary with the initial snapshot result.
+        A dictionary with the initial project result.
         Key fields:
         - `status`: `success` or `failed`
-        - `project_path`: path to the created JSON snapshot
-        - `manifest`: the snapshot content written to disk
+        - `project_path`: path to the created JSON project snapshot file
+        - `project_content`: the project snapshot content written to disk
         - `has_warnings`: whether structure validation produced warnings
-        - `warnings`: warning message list for LLM/user prompts
+        - `warnings`: warning message list
         - `structure_checks`: structured per-file validation details
         - `error`: error message when `status` is `failed`
         - `traceback`: debug traceback when `status` is `failed`
@@ -908,7 +840,7 @@ def initialize_pdf_project(
         "status": "failed"}
 
     try:
-        project_dir = DEFAULT_WORKDIR / user_id / session_id / mission_name
+        project_dir = DEFAULT_WORKDIR / user_id / mission_name
         path = Path(project_dir)
         path.mkdir(parents=True, exist_ok=True)
 
@@ -918,6 +850,7 @@ def initialize_pdf_project(
             if not Path(struct_file).exists():
                 raise FileNotFoundError(f"结构文件 {i} 不存在: {struct_file}")
 
+        # 检查结构文件的 ADP 字段，收集警告信息
         structure_checks: List[Dict[str, Any]] = []
         validation_warnings: List[str] = []
         for struct_file in structure_files:
@@ -926,34 +859,39 @@ def initialize_pdf_project(
             for issue in check.get("issues", []):
                 validation_warnings.append(f"{check.get('file')}: {issue}")
             
+        # 创建项目 JSON 文件并保存
         project_path = str(project_dir / f"{task_id}.json")
-
-        refineConfig = _build_pdf_default_config(num_phases=len(structure_files))
-        refineConfig["paramsCurrentValue"]["qmax"] = qmax
-        refineConfig["paramsCurrentValue"]["rmin"] = rmin
-        refineConfig["paramsCurrentValue"]["rmax"] = rmax
-        refineConfig["paramsCurrentValue"]["pdf_source"] = pdf_source
+        nonRefineValue = {
+            "qmax": qmax,
+            "rmin": rmin,
+            "rmax": rmax,
+            "pdf_source": pdf_source
+        }
+        for phase_idx, _ in enumerate(structure_files, start=1):
+            nonRefineValue[f"phase[{phase_idx}].stepcut"] = 0.0
+            nonRefineValue[f"phase[{phase_idx}].rcut"] = 0.0
         
         manifest = {
-            "manifest_version": 1,
             "data_file": data_file,
             "structure_files": structure_files,
-            "refine_config": refineConfig,
+            "nonRefineValue": nonRefineValue,
+            "refine_config": [],
             "output_files": {},
-            "refined_params": {},
             "validation_warnings": validation_warnings,
             "structure_checks": structure_checks,
         }
-        manifest = _normalize_project_manifest(manifest)
-        _safe_json_dump(Path(project_path), manifest)
+        Path(project_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(Path(project_path), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
 
         results["status"] = "success"
         results["project_path"] = project_path
-        results["manifest"] = manifest
-        results["warnings"] = list(validation_warnings)
+        results["project_content"] = manifest
         results["has_warnings"] = bool(validation_warnings)
+        results["warnings"] = list(validation_warnings)
         results["structure_checks"] = list(structure_checks)
         return results
+    
     except Exception as e:
         results["error"] = str(e)
         results["traceback"] = traceback.format_exc()
@@ -962,124 +900,173 @@ def initialize_pdf_project(
 
 def refine(
     project_path: str,
-    refine_config: Optional[Dict[str, Any]] = None,
+    deleteRefineConstraint: Optional[List[str]] = None,
+    deleteRefineParam: Optional[List[str]] = None,
+    addRefineParam: Optional[Dict[str, Any]] = None,
+    setParam: Optional[Dict[str, Any]] = None,
     user_id: Optional[str] = None,
-    session_id: Optional[str] = None,
     mission_name: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run one PDF refinement step from a snapshot and write a new snapshot.
-
-        This function is intended to be usable by a stateless model that only reads
-        this docstring.
-
-        Execution flow:
+    """
+    Args:
+        - project_path: Path to the JSON project snapshot file.
+        - deleteRefineConstraint: Optional list of constraint labels to remove from refinement.
+            ['label1','label2',...,'labelN']
+        - deleteRefineParam: Optional list of parameter selectors to remove from refinement.
+            ['param1','param2',...,'paramN']
+        - addRefineParam: Optional dictionary to add new refinement parameters.
+            {'label1': ['param1','param2',...,'paramN'],
+             'label2': ['param1','param2',...,'paramN'], ...}
+            the params with same constraint_label will be bound together and keep same in refinement.
+            the same param can't be bound to multiple constraint_label.
+        - setParam: Optional dictionary to set specific parameter values.
+            {'param1': value1, 'param2': value2, ...}
+            Note1: if a parameter in setParam is bound to any constraint, the other parameters bound to the same constraint will also be set to the same value.
+            Note2: if a parameter in setParam is not bound to any constraint, it will be set to the specified value before refine and won't change during refine.
+        - user_id: User namespace for project directory.
+        - mission_name: Mission namespace for project directory and task polling.
+        - task_id: Task identifier for naming output files and task polling.
+        
+    refine parameters white list (parameters can be refined) can be specified in deleteRefineParam,addRefineParam,.
+        - Global Parameters:
+            - dscale: data scale factor.
+            - qdamp: PDF damping from instrument Q-resolution.
+            - qbroad: quadratic peak broadening factor.
+        - Phase Parameters:
+            - phase[i].pscale: fraction of total structure represented by phase i.
+            - phase[i].delta1: 1/R peak sharpening factor of phase i.
+            - phase[i].delta2: (1/R^2) peak sharpening factor of phase i.
+            - phase[i].sratio: sigma ratio for reduction of Debye-Waller factor below rcut.
+            - phase[i].spdiameter: spherical particle correction diameter; 0 disables envelope.
+            - phase[i].lat.a (aliases: lat1, lat.a1, lata): lattice parameter a.
+            - phase[i].lat.b (aliases: lat2, lat.b2, latb): lattice parameter b.
+            - phase[i].lat.c (aliases: lat3, lat.c3, latc): lattice parameter c.
+        - Atom Parameters:
+            - phase[i].atom[j].x: fractional x coordinate of atom j in phase i
+            - phase[i].atom[j].y: fractional y coordinate of atom j in phase i
+            - phase[i].atom[j].z: fractional z coordinate of atom j in phase i
+            - phase[i].atom[j].occ: occupancy of atom j in phase i
+            - phase[i].atom[j].u11: U(1,1) anisotropic thermal factor tensor component
+            - phase[i].atom[j].u22: U(2,2) anisotropic thermal factor tensor component
+            - phase[i].atom[j].u33: U(3,3) anisotropic thermal factor tensor component
+            - phase[i].atom[j].u12: U(1,2) anisotropic thermal factor tensor component
+            - phase[i].atom[j].u13: U(1,3) anisotropic thermal factor tensor component
+            - phase[i].atom[j].u23: U(2,3) anisotropic thermal factor tensor component
+    
+    parameters can be specified in setParam.
+        - all the parameters in refine parameters white list.
+        - other parameters which can be specified in setParam are as follows. But they won't be refined.
+            - Global Parameters:
+                - qmax: float, Q cutoff in read_data.
+                - rmin: float, fit lower bound.
+                - rmax: float, fit upper bound.
+                - pdf_source: str, "N" or "X".
+            - Phase Parameters:
+                - phase[i].stepcut: empirical step-envelope cutoff radius for amorphous-like correlation loss; non-refinable in pdffit2.
+                - phase[i].rcut: radius below which sratio-based sharpening applies; non-refinable in pdffit2.
+    
+    Execution flow:
         1. Load snapshot from project_path.
         2. Read PDF data and structures.
-        3. Create baseline constraints (baseline parameters are fixed).
-        4. Apply refine_config.parameter_controls in list order.
-        5. Run pf.refine_step(tolerancy) repeatedly until convergence.
-        6. Save outputs and write a new immutable snapshot.
+        3. Read refine_config and change it. 
+            - firstly: delete the constraints according to the deleteRefineConstraint.
+            - secondly: delete the parameters according to the deleteRefineParam.
+            - thirdly: add the parameters according to the addRefineParam.
+            - fourthly: delete the constraints with empty parameters.
+        4. Apply setParam and run pf.refine_step(tolerancy) repeatedly until convergence.
+            - firstly: all parameters listed in refine_config participate in refinement.
+            - secondly: determine initial value for each refine_config constraint group with this priority:
+                setParam value on any member parameter > refine_config[group].value > fallback value.
+            - thirdly: fallback rule for missing initial value:
+                global parameters use default values; structure/atom parameters use current values from loaded structures.
+            - fourthly: set all non-refinable parameters from setParam if provided, otherwise from nonRefineValue.
+                These include qmax/rmin/rmax/pdf_source and per-phase phase[i].stepcut/phase[i].rcut.
+            - fifthly: run pf.refine_step(tolerancy) repeatedly until convergence or max iteration reached.
+            - sixthly: update refine_config values and nonRefineValue values from this run.
+        5. Save outputs and write a new immutable snapshot.
 
-        refine_config strict schema:
+    Usage examples:
+        1) Add one constraint group and set initial values:
+            refine(
+                project_path="/path/to/project_init.json",
+                addRefineParam={
+                    "@1": ["phase[1].lat.a", "phase[1].lat.b", "phase[1].lat.c"],
+                    "@2": ["phase[1].pscale"],
+                },
+                setParam={
+                    "phase[1].lat.a": 5.431,
+                    "phase[1].pscale": 0.95,
+                },
+                user_id="user123",
+                mission_name="mission456",
+                task_id="refine_lattice_scale",
+            )
+            the tool would firstly add two constraint groups, then set the initial values for the parameters, and finally run the refinement.
 
-        A) paramsCurrentValue (dict, optional)
-             Runtime numeric inputs.
-             Supported keys and meaning:
-             - qmax: float, Q cutoff in read_data.
-             - rmin: float, fit lower bound.
-             - rmax: float, fit upper bound.
-             - pdf_source: str, "N" or "X".
-             - dscale: float, initial data scale factor.
-             - qdamp: float, controls PDF damping due to instrument Q-resolution.
-             - qbroad: float, quadratic peak broadening factor.
-             - delta1_i: float, phase-i 1/R peak sharpening factor (i starts at 1).
-             - delta2_i: float, phase-i (1/R^2) peak sharpening factor;
-                         phenomenological correlation constant in Debye-Waller factor.
+        2) Change non-refinable values and run refinement:
+            refine(
+                project_path="/path/to/project_prev.json",
+                setParam={
+                    "qmax": 27.0,
+                    "rmin": 1.2,
+                    "rmax": 18.0,
+                    "pdf_source": "N",
+                    "phase[1].stepcut": 0.0,
+                    "phase[1].rcut": 0.0,
+                },
+                user_id="user123",
+                mission_name="mission456",
+                task_id="refine_range_override",
+            )
+            the tool would firstly override the non-refinable values then run the refinement by using the refine_config in the project snapshot. Finally it would update the nonRefineValue, value in refine_config, new refined structures in the new snapshot.
 
-           B) parameter_controls (list[dict], optional)
-             The only constraint-control interface.
-             Each item controls one selector target:
-             - selector (required): variable path.
-             - bind (optional):
-                 - int -> bind to that parameter index
-                 - "@123" -> bind to parameter 123
-                 - string symbol -> symbolic shared binding group
-                 - false -> force unbind (allocate unique parameter)
-             - param_id (optional): explicit int or "@int".
-             - unbind (optional): bool, force unique parameter.
-             - initial or set (optional): numeric initial value.
-             - refine / free / fixed (optional): boolean state controls.
+        3) Remove an existing constraint and parameter:
+            refine(
+                project_path="/path/to/project_prev.json",
+                deleteRefineConstraint=["@1"],
+                deleteRefineParam=["phase[1].delta2"],
+                user_id="user123",
+                mission_name="mission456",
+                task_id="refine_remove_controls"
+            )
+            the tool would firstly remove the constraint group "@1" and the parameter "phase[1].delta2" from the refine_config, then run the refinement by using the updated refine_config in the project snapshot. Finally it would update the refine_config, new refined structures in the new snapshot.
 
-        Selector whitelist:
+        4) seperate a paramter from a constraint group and set its value:
+            refine(
+                project_path="/path/to/project_prev.json",
+                deleteRefineParam=["phase[1].lat.c"],
+                addRefineParam={
+                    "@3": ["phase[1].lat.c"]
+                },
+                setParam={
+                    "phase[1].lat.c": 5.431
+                },
+                user_id="user123",
+                mission_name="mission456",
+                task_id="refine_separate_param"
+            )
+            the tool would firstly remove the parameter "phase[1].lat.c" from its original constraint group, then add a new constraint group "@3" with the parameter "phase[1].lat.c", set its initial value to 5.431, and finally run the refinement by using the updated refine_config in the project snapshot. Finally it would update the refine_config, new refined structures in the new snapshot.
+    
+    returns:
+        A dictionary with the refinement result.
+        Key fields:
+        - `status`: `success` or `failed`
+        - `project_path`: path to the updated JSON project snapshot file
+        - `project_content`: the updated project snapshot content written to disk
+        - `output_files`: dictionary of output files generated by the refinement process
+            {
+            refined_structures: [path1, path2, ...],
+            refined_plot: path,
+            refined_log_content: "log content",
+            }
+        - `error`: error message when `status` is `failed`
 
-        Global selectors:
-        - dscale: data scale factor.
-        - qdamp: PDF damping from instrument Q-resolution.
-        - qbroad: quadratic peak broadening factor.
-
-        Phase selectors:
-        - phase[i].pscale: fraction of total structure represented by phase i.
-        - phase[i].delta1: 1/R peak sharpening factor of phase i.
-        - phase[i].delta2: (1/R^2) peak sharpening factor of phase i.
-        - phase[i].sratio: sigma ratio for reduction of Debye-Waller factor below rcut.
-        - phase[i].spdiameter: spherical particle correction diameter; 0 disables envelope.
-        - phase[i].stepcut: empirical step-envelope cutoff radius for amorphous-like correlation loss; non-refinable in pdffit2.
-        - phase[i].rcut: radius below which sratio-based sharpening applies; non-refinable in pdffit2.
-        - phase[i].lat.a (aliases: lat1, lat.a1, lata): lattice parameter a.
-        - phase[i].lat.b (aliases: lat2, lat.b2, latb): lattice parameter b.
-        - phase[i].lat.c (aliases: lat3, lat.c3, latc): lattice parameter c.
-
-        Atom selectors:
-        - phase[i].atom[j].x: fractional x coordinate of atom j in phase i.
-        - phase[i].atom[j].y: fractional y coordinate of atom j in phase i.
-        - phase[i].atom[j].z: fractional z coordinate of atom j in phase i.
-        - phase[i].atom[j].occ: occupancy of atom j in phase i.
-        - phase[i].atom[j].u11: U(1,1) anisotropic thermal factor tensor component.
-        - phase[i].atom[j].u22: U(2,2) anisotropic thermal factor tensor component.
-        - phase[i].atom[j].u33: U(3,3) anisotropic thermal factor tensor component.
-        - phase[i].atom[j].u12: U(1,2) anisotropic thermal factor tensor component.
-        - phase[i].atom[j].u13: U(1,3) anisotropic thermal factor tensor component.
-        - phase[i].atom[j].u23: U(2,3) anisotropic thermal factor tensor component.
-
-        Precedence rules:
-        - Controls are executed in list order.
-        - For one control item, state fields are applied in this order:
-            refine -> free -> fixed.
-            Therefore fixed, if present, overrides free/refine in the same item.
-        - If a bound parameter has no initial/set, it is auto-initialized from
-            current variable value.
-
-        Examples:
-
-        Example 1: refine only phase-1 pscale
-        {
-            "parameter_controls": [
-                {"selector": "phase[1].pscale", "bind": "ps1", "refine": true}
-            ]
-        }
-
-        Example 2: tie a=b=c and refine lattice + pscale
-        {
-            "parameter_controls": [
-                {"selector": "phase[1].lat.a", "bind": "lat1", "refine": true},
-                {"selector": "phase[1].lat.b", "bind": "lat1"},
-                {"selector": "phase[1].lat.c", "bind": "lat1"},
-                {"selector": "phase[1].pscale", "bind": "ps1", "refine": true}
-            ]
-        }
-
-        Example 3: unbind and fix b lattice
-        {
-            "parameter_controls": [
-                {"selector": "phase[1].lat.b", "unbind": true, "initial": 5.43, "fixed": true}
-            ]
-        }
+        
+        
     """
 
-    results = {
-        "status": "failed"
-    }
+    results = {"status": "failed"}
     if task_id is None:
         results["error"] = "task_id is required"
         return results
@@ -1088,49 +1075,108 @@ def refine(
     if not project_path_obj.exists():
         results["error"] = f"project_path 不存在: {project_path}"
         return results
-    
-    # 加载精修前状态
-    with open(project_path_obj, "r", encoding="utf-8") as f:
-        manifest = _normalize_project_manifest(json.load(f))
-    
-    # 覆盖式合并 refine_config，优先级：默认配置 < 项目 manifest 中的配置 < refine() 调用参数中的配置
-    merged_refine_config = _merge_refine_configs(manifest.get("refine_config"), refine_config)
 
-    # 获取manifest中指定的data_file和structure_files路径
+    with open(project_path_obj, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    original_refine_config = manifest.get("refine_config", [])
+    if not isinstance(original_refine_config, list):
+        original_refine_config = []
+
+    def _normalize_refine_config_groups(groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        merged: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+
+        for item in groups:
+            if not isinstance(item, dict):
+                continue
+            label = item.get("constraint_label")
+            params = item.get("params")
+            if label is None or not isinstance(params, list):
+                continue
+
+            label_text = str(label)
+            if label_text not in merged:
+                merged[label_text] = {
+                    "constraint_label": label_text,
+                    "params": [],
+                }
+                order.append(label_text)
+
+            entry = merged[label_text]
+            existing = set(entry["params"])
+            for p in params:
+                p_text = str(p).strip()
+                if not p_text or p_text in existing:
+                    continue
+                entry["params"].append(p_text)
+                existing.add(p_text)
+
+            # Prefer the latest explicit value when duplicate labels are merged.
+            if "value" in item and item.get("value") is not None:
+                entry["value"] = item.get("value")
+
+        return [merged[label] for label in order if merged[label].get("params")]
+
+    refine_config: List[Dict[str, Any]] = _normalize_refine_config_groups(original_refine_config)
+
+    if deleteRefineConstraint:
+        to_delete = {str(v) for v in deleteRefineConstraint}
+        refine_config = [c for c in refine_config if c.get("constraint_label") not in to_delete]
+
+    if deleteRefineParam:
+        to_delete_params = {str(v).strip() for v in deleteRefineParam if str(v).strip()}
+        for constraint in refine_config:
+            params = constraint.get("params", [])
+            constraint["params"] = [p for p in params if p not in to_delete_params]
+
+    if addRefineParam:
+        for label, params in addRefineParam.items():
+            if not isinstance(params, list):
+                continue
+            clean_params = [str(p).strip() for p in params if str(p).strip()]
+            refine_config.append({"constraint_label": str(label), "params": clean_params})
+
+    refine_config = _normalize_refine_config_groups(refine_config)
+
+    seen_param_to_label: Dict[str, str] = {}
+    for c in refine_config:
+        label = str(c.get("constraint_label"))
+        for p in c.get("params", []):
+            if p in seen_param_to_label and seen_param_to_label[p] != label:
+                results["error"] = f"参数 {p} 同时出现在多个约束组中: {seen_param_to_label[p]} 和 {label}"
+                return results
+            seen_param_to_label[p] = label
+
     data_file = manifest.get("data_file")
     structure_files = manifest.get("structure_files")
-    if not data_file or not structure_files:
+    if not data_file or not isinstance(structure_files, list) or not structure_files:
         results["error"] = "project manifest 缺少 data_file 或 structure_files"
         return results
 
+    set_param = setParam if isinstance(setParam, dict) else {}
+    non_refine_value = manifest.get("nonRefineValue", {}) if isinstance(manifest.get("nonRefineValue"), dict) else {}
+
+    updated_non_refine_value: Dict[str, Any] = dict(non_refine_value)
+    qmax = float(set_param.get("qmax", updated_non_refine_value.get("qmax", 25.0)))
+    rmin = float(set_param.get("rmin", updated_non_refine_value.get("rmin", 1.0)))
+    rmax = float(set_param.get("rmax", updated_non_refine_value.get("rmax", 20.0)))
+    pdf_source = _normalize_pdf_source(set_param.get("pdf_source", updated_non_refine_value.get("pdf_source", "N")))
+
+    updated_non_refine_value["qmax"] = qmax
+    updated_non_refine_value["rmin"] = rmin
+    updated_non_refine_value["rmax"] = rmax
+    updated_non_refine_value["pdf_source"] = pdf_source
+
+    output_dir = str(project_path_obj.parent)
     project_dir_path = project_path_obj.parent
-    output_dir = str(project_dir_path)
-
-    params_current = merged_refine_config.get("paramsCurrentValue", {}) if isinstance(merged_refine_config.get("paramsCurrentValue"), dict) else {}
-    if "delta1" in params_current or "delta2" in params_current:
-        return {
-            "status": "failed",
-            "task_id": task_id,
-            "project_path": str(project_path_obj),
-            "source_project_path": str(project_path_obj),
-            "project_dir": output_dir,
-            "error": "不支持 paramsCurrentValue.delta1 / delta2；请使用 paramsCurrentValue.delta1_i / delta2_i（i 从 1 开始）",
-            "content": results,
-        }
-
     start_time = datetime.now()
-
-    qmax = float(params_current.get("qmax", 25.0))
-    qdamp = float(params_current.get("qdamp", 0.001))
-    rmin = float(params_current.get("rmin", 1.0))
-    rmax = float(params_current.get("rmax", 20.0))
-    pdf_source = _normalize_pdf_source(params_current.get("pdf_source", "N"))
 
     cleaned_data_file: Optional[Path] = None
     pf = PdfFit()
     try:
-        cleaned_data_file = _preprocess_pdf_data_for_pdffit(data_file, output_dir=project_dir_path)
-        pf.read_data(str(cleaned_data_file), pdf_source, qmax, qdamp)
+        cleaned_data_file = _preprocess_pdf_data_for_pdffit(data_file, output_dir=output_dir)
+        pf.read_data(str(cleaned_data_file), pdf_source, qmax, rmin, rmax)
     finally:
         if cleaned_data_file is not None:
             try:
@@ -1138,118 +1184,154 @@ def refine(
             except Exception:
                 pass
 
-    # pf中导入相信息，兼容 CIF 和非 CIF（例如 .rstr）
     _load_structure_files(pf, list(structure_files))
-
     num_phases = len(structure_files)
-    phase_indices = _build_phase_param_indices(num_phases)
 
+    def _safe_getvar(pf_obj: PdfFit, var: Any, default: float = 0.0) -> float:
+        try:
+            return float(pf_obj.getvar(var))
+        except Exception:
+            return float(default)
 
-    # 全局参数约束和初始值设置
-    pf.constrain(pf.dscale(), "@20")
-    pf.setpar(20, float(params_current.get("dscale", params_current.get("dataScale", 1.0))))
-    pf.constrain(pf.qdamp(), "@21")
-    pf.setpar(21, float(params_current.get("qdamp", qdamp)))
-    pf.constrain(pf.qbroad(), "@23")
-    pf.setpar(23, float(params_current.get("qbroad", 0.0)))
+    def _is_refine_whitelist_selector(selector: str) -> bool:
+        s = str(selector or "").strip()
+        if not s:
+            return False
+        global_allowed = {"dscale", "qdamp", "qbroad"}
+        if s.lower() in global_allowed:
+            return True
+        m = _PHASE_SELECTOR_RE.match(s)
+        if not m:
+            return False
+        phase_key = m.group(2).strip().lower()
+        phase_allowed = {
+            "pscale", "delta1", "delta2", "sratio", "spdiameter",
+            "lat.a", "lat1", "lat.a1", "lata",
+            "lat.b", "lat2", "lat.b2", "latb",
+            "lat.c", "lat3", "lat.c3", "latc",
+        }
+        if phase_key in phase_allowed:
+            return True
+        return _ATOM_SELECTOR_RE.match(phase_key) is not None
 
-    pf.fixpar(20)
-    pf.fixpar(21)
-    pf.fixpar(23)
+    def _label_to_param_idx(label: str, next_idx: int) -> tuple[int, int]:
+        text = str(label).strip()
+        if text.startswith("@") and text[1:].lstrip("+-").isdigit():
+            return int(text[1:]), next_idx
+        if text.lstrip("+-").isdigit():
+            return int(text), next_idx
+        return next_idx, next_idx + 1
 
-    phase_runtime_vars: Dict[int, Dict[str, Any]] = {}
+    label_to_params: Dict[str, List[str]] = {
+        str(c.get("constraint_label")): list(c.get("params", [])) for c in refine_config
+    }
+    param_to_label: Dict[str, str] = {}
+    for lbl, plist in label_to_params.items():
+        for p in plist:
+            param_to_label[p] = lbl
 
-    # 每相参数约束和初始值设置
+    label_param_idx: Dict[str, int] = {}
+    next_group_idx = 30000
+    for c in refine_config:
+        label = str(c.get("constraint_label"))
+        if label in label_param_idx:
+            continue
+        idx, next_group_idx = _label_to_param_idx(label, next_group_idx)
+        label_param_idx[label] = idx
+
+    default_global_init = {
+        "dscale": 1.0,
+        "qdamp": 0.001,
+        "qbroad": 0.0,
+    }
+
+    initialized_group: set[str] = set()
+    for c in refine_config:
+        label = str(c.get("constraint_label"))
+        params = list(c.get("params", []))
+        if not params:
+            continue
+
+        param_idx = label_param_idx[label]
+        group_value: Optional[float] = None
+        for p in params:
+            if p in set_param:
+                group_value = float(set_param[p])
+                break
+
+        if group_value is None and "value" in c:
+            try:
+                group_value = float(c.get("value"))
+            except (TypeError, ValueError):
+                group_value = None
+
+        first_var = None
+        for p in params:
+            try:
+                var = _resolve_pf_variable(pf, p)
+            except Exception:
+                continue
+            if first_var is None:
+                first_var = var
+            pf.constrain(var, f"@{param_idx}")
+
+        if first_var is None:
+            continue
+
+        if label not in initialized_group:
+            if group_value is None:
+                representative = str(params[0]).strip().lower()
+                if representative in default_global_init:
+                    group_value = float(default_global_init[representative])
+                else:
+                    group_value = _safe_getvar(pf, first_var, default=0.0)
+            pf.setpar(param_idx, float(group_value))
+            pf.freepar(param_idx)
+            initialized_group.add(label)
+
+    next_fixed_idx = 40000
+    for key, value in set_param.items():
+        selector = str(key).strip()
+        if not _is_refine_whitelist_selector(selector):
+            continue
+        if selector in param_to_label:
+            continue
+        try:
+            var = _resolve_pf_variable(pf, selector)
+        except Exception:
+            continue
+        pf.constrain(var, f"@{next_fixed_idx}")
+        pf.setpar(next_fixed_idx, float(value))
+        pf.fixpar(next_fixed_idx)
+        next_fixed_idx += 1
+
     for phase_idx in range(1, num_phases + 1):
         pf.setphase(phase_idx)
-        pmap = phase_indices[phase_idx]
-        lat_a = pf.lat(1)
-        lat_b = pf.lat(2)
-        lat_c = pf.lat(3)
-        pf.constrain(lat_a, f"@{pmap['lattice']}")
-        pf.constrain(lat_b, f"@{pmap['lattice']}")
-        pf.constrain(lat_c, f"@{pmap['lattice']}")
-        pf.setpar(pmap["lattice"], float(pf.getvar(lat_a)))
-        pf.fixpar(pmap["lattice"])
-
-        num_atoms = len(pf.get_structure(phase_idx))
-        for atom_idx in range(1, num_atoms + 1):
-            pf.constrain(pf.u11(atom_idx), f"@{pmap['temperature']}")
-            pf.constrain(pf.u22(atom_idx), f"@{pmap['temperature']}")
-            pf.constrain(pf.u33(atom_idx), f"@{pmap['temperature']}")
-        default_temp = float(pf.getvar(pf.u11(1))) if num_atoms >= 1 else 0.005
-        pf.setpar(pmap["temperature"], default_temp)
-        pf.fixpar(pmap["temperature"])
-
-        scale_var = pf.pscale()
-        pf.constrain(scale_var, f"@{pmap['scale']}")
-        pf.setpar(pmap["scale"], float(1.0 / max(num_phases, 1)))
-        pf.fixpar(pmap["scale"])
-
-        delta1_var = pf.delta1()
-        pf.constrain(delta1_var, f"@{pmap['delta1']}")
-        pf.setpar(pmap["delta1"], float(params_current.get(f"delta1_{phase_idx}", 0.0)))
-        pf.fixpar(pmap["delta1"])
-
-        delta2_var = pf.delta2()
-        pf.constrain(delta2_var, f"@{pmap['delta2']}")
-        pf.setpar(pmap["delta2"], float(params_current.get(f"delta2_{phase_idx}", 0.0003)))
-        pf.fixpar(pmap["delta2"])
-
-        phase_runtime_vars[phase_idx] = {
-            "lat_a": lat_a,
-            "lat_b": lat_b,
-            "lat_c": lat_c,
-            "scale": scale_var,
-            "u11_first": pf.u11(1) if num_atoms >= 1 else None,
-        }
-
-        sratio_bound = _safe_constrain(pf, pf.sratio(), f"@{pmap['sratio']}")
-        if sratio_bound:
-            pf.setpar(pmap["sratio"], 1.0)
-            pf.fixpar(pmap["sratio"])
-
-        spdiameter_bound = _safe_constrain(pf, pf.spdiameter(), f"@{pmap['spdiameter']}")
-        if spdiameter_bound:
-            pf.setpar(pmap["spdiameter"], 0.0)
-            pf.fixpar(pmap["spdiameter"])
-
-        stepcut_bound = _safe_constrain(pf, pf.stepcut(), f"@{pmap['stepcut']}")
-        if stepcut_bound:
-            pf.setpar(pmap["stepcut"], 0.0)
-            pf.fixpar(pmap["stepcut"])
-
-        rcut_bound = _safe_constrain(pf, pf.rcut(), f"@{pmap['rcut']}")
-        if rcut_bound:
-            pf.setpar(pmap["rcut"], 0.0)
-            pf.fixpar(pmap["rcut"])
-
-    parameter_controls = merged_refine_config.get("parameter_controls")
-    if isinstance(parameter_controls, list):
-        for control in parameter_controls:
-            if not isinstance(control, dict):
-                continue
-            selector = str(control.get("selector", "")).strip().lower()
-            if selector in {"delta1", "delta2"}:
-                return {
-                    "status": "failed",
-                    "task_id": task_id,
-                    "project_path": str(project_path_obj),
-                    "source_project_path": str(project_path_obj),
-                    "project_dir": output_dir,
-                    "error": "selector 仅支持按相形式：phase[i].delta1 或 phase[i].delta2",
-                    "content": results,
-                }
-    _apply_parameter_controls(pf, parameter_controls, start_param_idx=20000)
+        for param_name in ("stepcut", "rcut"):
+            selector = f"phase[{phase_idx}].{param_name}"
+            raw_val = set_param.get(selector, updated_non_refine_value.get(selector, 0.0))
+            value = float(raw_val)
+            updated_non_refine_value[selector] = value
+            try:
+                var = getattr(pf, param_name)()
+                pf.constrain(var, f"@{next_fixed_idx}")
+                pf.setpar(next_fixed_idx, value)
+                pf.fixpar(next_fixed_idx)
+                next_fixed_idx += 1
+            except Exception:
+                pass
 
     pf.pdfrange(1, rmin, rmax)
 
+    max_iterations = 200
     step_count = 0
+    converged = False
     try:
-        while True:
+        while step_count < max_iterations:
             finished = bool(pf.refine_step(PDFGUI_TOLERANCY))
             step_count += 1
             if finished:
+                converged = True
                 break
     except Exception as e:
         results["error"] = f"refinement failed: {e}"
@@ -1265,61 +1347,47 @@ def refine(
             "content": results,
         }
 
+    for c in refine_config:
+        label = str(c.get("constraint_label"))
+        pidx = label_param_idx.get(label)
+        if pidx is None:
+            continue
+        c["value"] = _safe_getpar(pf, pidx)
+
     stage_results: List[Dict[str, Any]] = [
         {
-            "stage": "auto_converged",
+            "stage": "auto_converged" if converged else "max_iteration_reached",
             "steps": step_count,
+            "max_iterations": max_iterations,
             "tolerancy": PDFGUI_TOLERANCY,
             "rw": pf.getrw(),
         }
     ]
 
     refined_params: Dict[str, Any] = {
-        "dataScale": pf.getpar(20),
-        "pscale": pf.getpar(20) * 2,
-        "qdamp": pf.getpar(21),
-        "qbroad": pf.getpar(23),
         "rw": pf.getrw(),
         "stage_results": stage_results,
         "elapsed_sec": round((datetime.now() - start_time).total_seconds(), 3),
     }
 
     for phase_idx in range(1, num_phases + 1):
-        pmap = phase_indices[phase_idx]
-        runtime = phase_runtime_vars.get(phase_idx, {})
-        lat_a_var = runtime.get("lat_a")
-        lat_b_var = runtime.get("lat_b")
-        lat_c_var = runtime.get("lat_c")
-        scale_var = runtime.get("scale")
-        temp_var = runtime.get("u11_first")
-
-        lat_a_val = float(pf.getvar(lat_a_var)) if lat_a_var is not None else float(pf.getpar(pmap["lattice"]))
-        lat_b_val = float(pf.getvar(lat_b_var)) if lat_b_var is not None else lat_a_val
-        lat_c_val = float(pf.getvar(lat_c_var)) if lat_c_var is not None else lat_a_val
-        scale_val = float(pf.getvar(scale_var)) if scale_var is not None else float(pf.getpar(pmap["scale"]))
-        temp_val = float(pf.getvar(temp_var)) if temp_var is not None else float(pf.getpar(pmap["temperature"]))
-
-        refined_params[f"lattice_parameter_{phase_idx}"] = lat_a_val
-        refined_params[f"lattice_a_{phase_idx}"] = lat_a_val
-        refined_params[f"lattice_b_{phase_idx}"] = lat_b_val
-        refined_params[f"lattice_c_{phase_idx}"] = lat_c_val
-        refined_params[f"temperature_factor_{phase_idx}"] = temp_val
-        refined_params[f"scale_{phase_idx}"] = scale_val
-        refined_params[f"delta1_{phase_idx}"] = _safe_getpar(pf, pmap["delta1"])
-        refined_params[f"delta2_{phase_idx}"] = _safe_getpar(pf, pmap["delta2"])
-        refined_params[f"sratio_{phase_idx}"] = _safe_getpar(pf, pmap["sratio"])
-        refined_params[f"spdiameter_{phase_idx}"] = _safe_getpar(pf, pmap["spdiameter"])
-        refined_params[f"stepcut_{phase_idx}"] = _safe_getpar(pf, pmap["stepcut"])
-        refined_params[f"rcut_{phase_idx}"] = _safe_getpar(pf, pmap["rcut"])
-
-    params_current_after = {k: v for k, v in dict(params_current).items() if k not in {"delta1", "delta2"}}
-    params_current_after["dscale"] = float(refined_params["dataScale"])
-    params_current_after["qdamp"] = float(refined_params["qdamp"])
-    params_current_after["qbroad"] = float(refined_params["qbroad"])
-    for phase_idx in range(1, num_phases + 1):
-        params_current_after[f"delta1_{phase_idx}"] = float(refined_params[f"delta1_{phase_idx}"])
-        params_current_after[f"delta2_{phase_idx}"] = float(refined_params[f"delta2_{phase_idx}"])
-    params_current_after["pdf_source"] = _normalize_pdf_source(params_current_after.get("pdf_source", "N"))
+        pf.setphase(phase_idx)
+        try:
+            refined_params[f"lattice_a_{phase_idx}"] = _safe_getvar(pf, pf.lat(1))
+            refined_params[f"lattice_b_{phase_idx}"] = _safe_getvar(pf, pf.lat(2))
+            refined_params[f"lattice_c_{phase_idx}"] = _safe_getvar(pf, pf.lat(3))
+            refined_params[f"lattice_parameter_{phase_idx}"] = refined_params[f"lattice_a_{phase_idx}"]
+            refined_params[f"scale_{phase_idx}"] = _safe_getvar(pf, pf.pscale(), 1.0)
+            refined_params[f"delta1_{phase_idx}"] = _safe_getvar(pf, pf.delta1(), 0.0)
+            refined_params[f"delta2_{phase_idx}"] = _safe_getvar(pf, pf.delta2(), 0.0003)
+            refined_params[f"sratio_{phase_idx}"] = _safe_getvar(pf, pf.sratio(), 1.0)
+            refined_params[f"spdiameter_{phase_idx}"] = _safe_getvar(pf, pf.spdiameter(), 0.0)
+            refined_params[f"stepcut_{phase_idx}"] = _safe_getvar(pf, pf.stepcut(), updated_non_refine_value.get(f"phase[{phase_idx}].stepcut", 0.0))
+            refined_params[f"rcut_{phase_idx}"] = _safe_getvar(pf, pf.rcut(), updated_non_refine_value.get(f"phase[{phase_idx}].rcut", 0.0))
+            n_atoms = len(pf.get_structure(phase_idx))
+            refined_params[f"temperature_factor_{phase_idx}"] = _safe_getvar(pf, pf.u11(1), 0.0) if n_atoms >= 1 else 0.0
+        except Exception:
+            continue
 
     output_prefix = Path(data_file).stem
     output_files = {
@@ -1328,29 +1396,15 @@ def refine(
         "plot": str(project_dir_path / f"{output_prefix}.png"),
         "log": str(project_dir_path / f"{output_prefix}_log.txt"),
         "refined_structures": [],
-        "refined_cif_files": [],
     }
 
     pf.save_pdf(1, output_files["pdf"])
     pf.save_res(output_files["results"])
 
-    for phase_idx, original_structure in enumerate(list(structure_files), start=1):
+    for phase_idx in range(1, num_phases + 1):
         refined_structure_path = str(project_dir_path / f"{output_prefix}_phase{phase_idx}.rstr")
         pf.save_struct(phase_idx, refined_structure_path)
         output_files["refined_structures"].append(refined_structure_path)
-
-        # Always generate CIF from the refined structure output.
-        refined_cif_path = str(Path(refined_structure_path).with_suffix(".cif"))
-        if _convert_refined_structure_to_cif(refined_structure_path, refined_cif_path):
-            output_files["refined_cif_files"].append(refined_cif_path)
-            output_files[f"refined_cif_phase{phase_idx}"] = refined_cif_path
-        elif original_structure.lower().endswith(".cif"):
-            # Legacy fallback for unusual structures where direct conversion fails.
-            refined_cif_name = get_refined_cif_filename(original_structure)
-            refined_cif_path = str(project_dir_path / refined_cif_name)
-            if _update_cif_with_refined_params(original_structure, refined_params, refined_cif_path, phase_idx):
-                output_files["refined_cif_files"].append(refined_cif_path)
-                output_files[f"refined_cif_phase{phase_idx}"] = refined_cif_path
 
     output_files["plot"] = _plot_refinement_result(
         pf,
@@ -1364,32 +1418,38 @@ def refine(
         f.write(f"data_file: {data_file}\n")
         f.write(f"pdf_source: {pdf_source}\n")
         f.write(f"qmax: {qmax}\n")
-        f.write(f"qdamp: {qdamp}\n")
         f.write(f"rmin: {rmin}\n")
         f.write(f"rmax: {rmax}\n")
         f.write(f"rw: {refined_params['rw']:.6f}\n\n")
         f.write("stage_results:\n")
         for stage in stage_results:
             f.write(json.dumps(stage, ensure_ascii=False) + "\n")
+        f.write("\nrefine_config:\n")
+        f.write(json.dumps(refine_config, ensure_ascii=False, indent=2) + "\n")
+        f.write("\nnonRefineValue:\n")
+        f.write(json.dumps(updated_non_refine_value, ensure_ascii=False, indent=2) + "\n")
         f.write("\nrefined_params:\n")
         f.write(json.dumps(refined_params, ensure_ascii=False, indent=2) + "\n")
 
     manifest_out = {
-        "manifest_version": 1,
         "data_file": data_file,
         "structure_files": list(output_files["refined_structures"] or structure_files),
-        "refine_config": merged_refine_config,
+        "nonRefineValue": updated_non_refine_value,
+        "refine_config": refine_config,
         "output_files": output_files,
         "refined_params": refined_params,
+        "validation_warnings": manifest.get("validation_warnings", []),
+        "structure_checks": manifest.get("structure_checks", []),
     }
-    manifest_out["refine_config"]["paramsCurrentValue"] = dict(params_current_after)
 
     next_manifest_path = _make_next_manifest_path(project_path_obj, task_id)
-    _safe_json_dump(next_manifest_path, _normalize_project_manifest(manifest_out))
+    _safe_json_dump(next_manifest_path, manifest_out)
 
+    results["status"] = "success"
+    results["project_path"] = str(next_manifest_path)
+    results["project_content"] = manifest_out
     results["output_files"] = output_files
     results["refined_params"] = refined_params
-    results["project_manifest"] = str(next_manifest_path)
 
     return {
         "status": "success",
@@ -1397,9 +1457,9 @@ def refine(
         "project_path": str(next_manifest_path),
         "source_project_path": str(project_path_obj),
         "project_dir": output_dir,
-        "refined_params": results["refined_params"],
-        "output_files": results["output_files"],
-        "summary": f"PDF refinement completed with Rw={results['refined_params'].get('rw', 0.0):.6f}",
+        "refined_params": refined_params,
+        "output_files": output_files,
+        "summary": f"PDF refinement completed with Rw={refined_params.get('rw', 0.0):.6f}",
         "content": results,
     }
 
