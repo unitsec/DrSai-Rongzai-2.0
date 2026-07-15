@@ -14,6 +14,7 @@ pure business functions + ProcessPollingMcpToolBase runners + MCP registration.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -53,30 +54,6 @@ PDFGUI_TOLERANCY = 0.001
 
 def calcu_byte_size(file_path: str | Path) -> int:
     return Path(file_path).stat().st_size
-    
-def _detect_pdf_r_bounds(data_file: str | Path) -> tuple[float, float]:
-    r_values: List[float] = []
-    with Path(data_file).open("r", encoding="utf-8") as f:
-        for line in f:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            parts = stripped.split()
-            try:
-                r_values.append(float(parts[0]))
-            except (ValueError, IndexError):
-                continue
-
-    if not r_values:
-        raise ValueError(f"无法从数据文件读取 r 范围: {data_file}")
-
-    rmin = min(r_values)
-    rmax = max(r_values)
-    safe_rmax = rmax - max(0.01, (rmax - rmin) * 0.001)
-    if safe_rmax <= rmin:
-        safe_rmax = rmax
-    return rmin, safe_rmax
-
 
 def _preprocess_pdf_data_for_pdffit(
     data_file: str | Path,
@@ -285,9 +262,8 @@ def _inspect_structure_file(structure_file: str | Path) -> Dict[str, Any]:
 
 
 def _make_next_manifest_path(source_path: Path, task_id: str) -> Path:
-    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
     safe_task_id = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in str(task_id))
-    return source_path.with_name(f"{source_path.stem}__{safe_task_id}__{stamp}.json")
+    return source_path.with_name(f"{safe_task_id}.json")
 
 
 def create_output_directory(path: str | Path) -> Path:
@@ -380,33 +356,6 @@ def _merge_refine_configs(
     return merged
 
 
-def _build_phase_param_indices(num_phases: int) -> Dict[int, Dict[str, int]]:
-    mapping: Dict[int, Dict[str, int]] = {}
-    next_idx = 100
-    for phase_idx in range(1, num_phases + 1):
-        mapping[phase_idx] = {
-            "lattice": next_idx,
-            "temperature": next_idx + 1,
-            "scale": next_idx + 2,
-            "sratio": next_idx + 3,
-            "spdiameter": next_idx + 4,
-            "stepcut": next_idx + 5,
-            "rcut": next_idx + 6,
-            "delta1": next_idx + 7,
-            "delta2": next_idx + 8,
-        }
-        next_idx += 9
-    return mapping
-
-
-def _safe_constrain(pf: PdfFit, variable: Any, token: str) -> bool:
-    try:
-        pf.constrain(variable, token)
-        return True
-    except Exception:
-        return False
-
-
 def _safe_getpar(pf: PdfFit, idx: int, default: Any = None) -> Any:
     try:
         return pf.getpar(idx)
@@ -414,8 +363,45 @@ def _safe_getpar(pf: PdfFit, idx: int, default: Any = None) -> Any:
         return default
 
 
+def _is_finite_number(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except Exception:
+        return False
+
+
 _PHASE_SELECTOR_RE = re.compile(r"^phase\[(\d+)\]\.(.+)$", re.IGNORECASE)
 _ATOM_SELECTOR_RE = re.compile(r"^atom\[(\d+)\]\.(x|y|z|occ|u11|u22|u33|u12|u13|u23)$", re.IGNORECASE)
+_RETAINED_GLOBAL_SELECTORS = {"dscale", "qdamp", "qbroad"}
+_RETAINED_PHASE_KEYS = {"pscale", "delta1", "delta2", "sratio", "spdiameter"}
+
+
+def _is_retained_refinable_selector(selector: str) -> bool:
+    s = str(selector or "").strip().lower()
+    if not s:
+        return False
+    if s in _RETAINED_GLOBAL_SELECTORS:
+        return True
+    m = _PHASE_SELECTOR_RE.match(s)
+    if not m:
+        return False
+    return m.group(2).strip().lower() in _RETAINED_PHASE_KEYS
+
+
+def _collect_retained_refined_values(pf: PdfFit, num_phases: int) -> Dict[str, float]:
+    values: Dict[str, float] = {
+        "dscale": float(pf.getvar(pf.dscale)),
+        "qdamp": float(pf.getvar(pf.qdamp)),
+        "qbroad": float(pf.getvar(pf.qbroad)),
+    }
+    for phase_idx in range(1, num_phases + 1):
+        pf.setphase(phase_idx)
+        values[f"phase[{phase_idx}].pscale"] = float(pf.getvar(pf.pscale()))
+        values[f"phase[{phase_idx}].delta1"] = float(pf.getvar(pf.delta1()))
+        values[f"phase[{phase_idx}].delta2"] = float(pf.getvar(pf.delta2()))
+        values[f"phase[{phase_idx}].sratio"] = float(pf.getvar(pf.sratio()))
+        values[f"phase[{phase_idx}].spdiameter"] = float(pf.getvar(pf.spdiameter()))
+    return values
 
 
 def _resolve_pf_variable(pf: PdfFit, selector: str):
@@ -457,101 +443,6 @@ def _resolve_pf_variable(pf: PdfFit, selector: str):
         return getattr(pf, atom_key)(atom_idx)
 
     raise ValueError(f"Unsupported selector: {selector}")
-
-
-def _coerce_param_index(value: Any, named_bindings: Dict[str, int], next_param_idx: int) -> tuple[Optional[int], int]:
-    if value is None:
-        return None, next_param_idx
-    if isinstance(value, bool):
-        return None, next_param_idx
-    if isinstance(value, int):
-        return int(value), next_param_idx
-
-    token = str(value).strip()
-    if not token:
-        return None, next_param_idx
-    if token.startswith("@"):
-        return int(token[1:]), next_param_idx
-    if token.lstrip("+-").isdigit():
-        return int(token), next_param_idx
-
-    if token not in named_bindings:
-        named_bindings[token] = next_param_idx
-        next_param_idx += 1
-    return named_bindings[token], next_param_idx
-
-
-def _apply_parameter_controls(pf: PdfFit, controls: Any, start_param_idx: int = 20000) -> int:
-    if not isinstance(controls, list) or not controls:
-        return start_param_idx
-
-    named_bindings: Dict[str, int] = {}
-    next_param_idx = start_param_idx
-    initialized_params: set[int] = set()
-
-    for control in controls:
-        if not isinstance(control, dict):
-            continue
-
-        selector = control.get("selector")
-        if not selector:
-            continue
-
-        var = _resolve_pf_variable(pf, str(selector))
-
-        explicit_param = control.get("param_id")
-        param_idx, next_param_idx = _coerce_param_index(explicit_param, named_bindings, next_param_idx)
-
-        bind_value = control.get("bind")
-        if bind_value is False or bool(control.get("unbind", False)):
-            param_idx = next_param_idx
-            next_param_idx += 1
-        elif bind_value is not None:
-            param_idx, next_param_idx = _coerce_param_index(bind_value, named_bindings, next_param_idx)
-
-        if param_idx is not None:
-            pf.constrain(var, f"@{param_idx}")
-
-        has_initial = ("initial" in control) or ("set" in control)
-        if has_initial:
-            initial_value = control.get("initial", control.get("set"))
-            if param_idx is None:
-                raise ValueError(f"Control {selector} sets initial value but has no bound parameter")
-            pf.setpar(param_idx, float(initial_value))
-            initialized_params.add(param_idx)
-        elif param_idx is not None and param_idx not in initialized_params:
-            pf.setpar(param_idx, float(pf.getvar(var)))
-            initialized_params.add(param_idx)
-
-        refine_flag = control.get("refine")
-        free_flag = control.get("free")
-        fixed_flag = control.get("fixed")
-
-        if isinstance(refine_flag, bool):
-            if param_idx is None:
-                raise ValueError(f"Control {selector} sets refine but has no bound parameter")
-            if refine_flag:
-                pf.freepar(param_idx)
-            else:
-                pf.fixpar(param_idx)
-
-        if isinstance(free_flag, bool):
-            if param_idx is None:
-                raise ValueError(f"Control {selector} sets free but has no bound parameter")
-            if free_flag:
-                pf.freepar(param_idx)
-            else:
-                pf.fixpar(param_idx)
-
-        if isinstance(fixed_flag, bool):
-            if param_idx is None:
-                raise ValueError(f"Control {selector} sets fixed but has no bound parameter")
-            if fixed_flag:
-                pf.fixpar(param_idx)
-            else:
-                pf.freepar(param_idx)
-
-    return next_param_idx
 
 
 def _plot_refinement_result(pf: PdfFit, output_path: Path, title: str) -> str:
@@ -775,18 +666,6 @@ def _load_structure_files(pf: PdfFit, structure_files: List[str]) -> None:
         pf.setphase(idx)
 
 
-def _configure_pdffit(
-    pf: PdfFit,
-    structure_files: List[str],
-    qmax: float,
-    qdamp: float,
-    rmin: float,
-    rmax: float,
-    refine_config: Dict[str, Any],
-) -> Dict[int, Dict[str, int]]:
-    raise RuntimeError("_configure_pdffit must not be called directly")
-
-
 def initialize_pdf_project(
     data_file,
     structure_files,
@@ -815,6 +694,8 @@ def initialize_pdf_project(
         - `data_file`: path to the experimental PDF data file
         - `structure_files`: list of paths to the initial structure files
         - `nonRefineValue`: dictionary of global non-refinable parameters. These include qmax/rmin/rmax/pdf_source and per-phase phase[i].stepcut/phase[i].rcut.
+        - `retainedRefinedValue`: dictionary of refinable but non-structural parameters that should be retained across snapshots.
+            These include dscale/qdamp/qbroad and per-phase phase[i].pscale/delta1/delta2/sratio/spdiameter.
         - `refine_config`: dictionary of constraints, refinable parameters and their values after refinement. They are initial value in this snapshot, and will be updated after each refinement.
             [{"constraint_label": "label1", "params": ["param1", "param2"], "value": value1}, ..., {"constraint_label": "labelN", "params": ["paramX", "paramY"], "value": valueN}]
             Note: the parameters in the same label will be bound together and keep same in refinement, so they share one value. The same parameter can't be bound to multiple labels.
@@ -875,6 +756,7 @@ def initialize_pdf_project(
             "data_file": data_file,
             "structure_files": structure_files,
             "nonRefineValue": nonRefineValue,
+            "retainedRefinedValue": {},
             "refine_config": [],
             "output_files": {},
             "validation_warnings": validation_warnings,
@@ -1054,12 +936,13 @@ def refine(
         - `status`: `success` or `failed`
         - `project_path`: path to the updated JSON project snapshot file
         - `project_content`: the updated project snapshot content written to disk
-        - `output_files`: dictionary of output files generated by the refinement process
+        - `refined_structures`: list of refined structure file paths (.rstr)
+        - `results_file`: dictionary with result file path and content (.res)
             {
-            refined_structures: [path1, path2, ...],
-            refined_plot: path,
-            refined_log_content: "log content",
+            "path": "/path/to/result.res",
+            "content": "...full res content..."
             }
+        - `plot_file`: plot image path (.png)
         - `error`: error message when `status` is `failed`
 
         
@@ -1156,12 +1039,18 @@ def refine(
 
     set_param = setParam if isinstance(setParam, dict) else {}
     non_refine_value = manifest.get("nonRefineValue", {}) if isinstance(manifest.get("nonRefineValue"), dict) else {}
+    retained_refined_value_raw = manifest.get("retainedRefinedValue", {}) if isinstance(manifest.get("retainedRefinedValue"), dict) else {}
+    retained_refined_value = {
+        str(k).strip().lower(): v
+        for k, v in retained_refined_value_raw.items()
+    }
 
     updated_non_refine_value: Dict[str, Any] = dict(non_refine_value)
     qmax = float(set_param.get("qmax", updated_non_refine_value.get("qmax", 25.0)))
     rmin = float(set_param.get("rmin", updated_non_refine_value.get("rmin", 1.0)))
     rmax = float(set_param.get("rmax", updated_non_refine_value.get("rmax", 20.0)))
     pdf_source = _normalize_pdf_source(set_param.get("pdf_source", updated_non_refine_value.get("pdf_source", "N")))
+    qdamp = float(set_param.get("qdamp", retained_refined_value.get("qdamp", 0.001)))
 
     updated_non_refine_value["qmax"] = qmax
     updated_non_refine_value["rmin"] = rmin
@@ -1176,7 +1065,7 @@ def refine(
     pf = PdfFit()
     try:
         cleaned_data_file = _preprocess_pdf_data_for_pdffit(data_file, output_dir=output_dir)
-        pf.read_data(str(cleaned_data_file), pdf_source, qmax, rmin, rmax)
+        pf.read_data(str(cleaned_data_file), pdf_source, qmax, qdamp)
     finally:
         if cleaned_data_file is not None:
             try:
@@ -1264,6 +1153,16 @@ def refine(
                 group_value = float(c.get("value"))
             except (TypeError, ValueError):
                 group_value = None
+
+        if group_value is None:
+            for p in params:
+                p_key = str(p).strip().lower()
+                if p_key in retained_refined_value:
+                    try:
+                        group_value = float(retained_refined_value[p_key])
+                        break
+                    except (TypeError, ValueError):
+                        continue
 
         first_var = None
         for p in params:
@@ -1354,6 +1253,16 @@ def refine(
             continue
         c["value"] = _safe_getpar(pf, pidx)
 
+    updated_retained_refined_value: Dict[str, float] = {
+        str(k).strip().lower(): float(v)
+        for k, v in retained_refined_value.items()
+        if _is_retained_refinable_selector(str(k))
+    }
+    try:
+        updated_retained_refined_value.update(_collect_retained_refined_values(pf, num_phases))
+    except Exception:
+        pass
+
     stage_results: List[Dict[str, Any]] = [
         {
             "stage": "auto_converged" if converged else "max_iteration_reached",
@@ -1389,16 +1298,32 @@ def refine(
         except Exception:
             continue
 
-    output_prefix = Path(data_file).stem
+    invalid_refined_params = {
+        key: value
+        for key, value in refined_params.items()
+        if isinstance(value, (int, float)) and not _is_finite_number(value)
+    }
+    if invalid_refined_params:
+        results["error"] = f"refinement diverged: non-finite refined parameters detected: {invalid_refined_params}"
+        results["traceback"] = "Detected non-finite refined parameters before saving outputs."
+        return {
+            "status": "failed",
+            "task_id": task_id,
+            "project_path": str(project_path_obj),
+            "source_project_path": str(project_path_obj),
+            "project_dir": output_dir,
+            "error": results["error"],
+            "traceback": results["traceback"],
+            "content": results,
+        }
+
+    output_prefix = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in str(task_id))
     output_files = {
-        "pdf": str(project_dir_path / f"{output_prefix}.fgr"),
         "results": str(project_dir_path / f"{output_prefix}.res"),
         "plot": str(project_dir_path / f"{output_prefix}.png"),
-        "log": str(project_dir_path / f"{output_prefix}_log.txt"),
         "refined_structures": [],
     }
 
-    pf.save_pdf(1, output_files["pdf"])
     pf.save_res(output_files["results"])
 
     for phase_idx in range(1, num_phases + 1):
@@ -1412,29 +1337,14 @@ def refine(
         title=f"PDF Refinement - Rw: {refined_params['rw']:.4f}",
     )
 
-    with open(output_files["log"], "w", encoding="utf-8") as f:
-        f.write("PDF refinement results\n")
-        f.write("=" * 60 + "\n")
-        f.write(f"data_file: {data_file}\n")
-        f.write(f"pdf_source: {pdf_source}\n")
-        f.write(f"qmax: {qmax}\n")
-        f.write(f"rmin: {rmin}\n")
-        f.write(f"rmax: {rmax}\n")
-        f.write(f"rw: {refined_params['rw']:.6f}\n\n")
-        f.write("stage_results:\n")
-        for stage in stage_results:
-            f.write(json.dumps(stage, ensure_ascii=False) + "\n")
-        f.write("\nrefine_config:\n")
-        f.write(json.dumps(refine_config, ensure_ascii=False, indent=2) + "\n")
-        f.write("\nnonRefineValue:\n")
-        f.write(json.dumps(updated_non_refine_value, ensure_ascii=False, indent=2) + "\n")
-        f.write("\nrefined_params:\n")
-        f.write(json.dumps(refined_params, ensure_ascii=False, indent=2) + "\n")
+    with open(output_files["results"], "r", encoding="utf-8", errors="ignore") as f:
+        results_content = f.read()
 
     manifest_out = {
         "data_file": data_file,
         "structure_files": list(output_files["refined_structures"] or structure_files),
         "nonRefineValue": updated_non_refine_value,
+        "retainedRefinedValue": updated_retained_refined_value,
         "refine_config": refine_config,
         "output_files": output_files,
         "refined_params": refined_params,
@@ -1445,22 +1355,17 @@ def refine(
     next_manifest_path = _make_next_manifest_path(project_path_obj, task_id)
     _safe_json_dump(next_manifest_path, manifest_out)
 
-    results["status"] = "success"
-    results["project_path"] = str(next_manifest_path)
-    results["project_content"] = manifest_out
-    results["output_files"] = output_files
-    results["refined_params"] = refined_params
-
     return {
         "status": "success",
         "task_id": task_id,
         "project_path": str(next_manifest_path),
-        "source_project_path": str(project_path_obj),
-        "project_dir": output_dir,
-        "refined_params": refined_params,
-        "output_files": output_files,
-        "summary": f"PDF refinement completed with Rw={refined_params.get('rw', 0.0):.6f}",
-        "content": results,
+        "project_content": manifest_out,
+        "refined_structures": list(output_files.get("refined_structures", [])),
+        "results_file": {
+            "path": output_files["results"],
+            "content": results_content,
+        },
+        "plot_file": output_files["plot"],
     }
 
 
@@ -1578,164 +1483,206 @@ def export_cifs(
     }
 
 if __name__ == "__main__":
-    initialize_runner = ProcessPollingMcpToolBase(
-        timeout_sec=60.0,
-        poll_interval=1.0,
-        target_func=initialize_pdf_project,
-    )
-
-    refine_runner = ProcessPollingMcpToolBase(
-        timeout_sec=60.0,
-        poll_interval=1.0,
-        target_func=refine,
-    )
-
-    export_cifs_runner = ProcessPollingMcpToolBase(
-        timeout_sec=60.0,
-        poll_interval=1.0,
-        target_func=export_cifs,
-    )
-
-    mcp = FastMCP(
-        name="PDFRefinementTools",
-        instructions=(
-            "Tools for PDF refinement."
-            "Use InitializeProject to create a persistent project manifest, Refine to run staged refinement, "
-            "and ExportCIFs to collect the generated outputs. "
-            "Mission/task rule: mission_name identifies one high-level mission and should stay the same across multiple tool calls; "
-            "task_id identifies a sub-task/step inside that mission."
-        ),
-        port=42502,
-    )
-
-    initialize_runner.register_mcp_tool(mcp, name="InitializeProject")
-    refine_runner.register_mcp_tool(mcp, name="Refine")
-    export_cifs_runner.register_mcp_tool(mcp, name="ExportCIFs")
-    mcp.run(transport="sse")
-
-    # pdf_file = "/home/wangh/rongzai-agent/tools/pdf_refinement/tests/run1060_RUN1060_qmax_30_Gr.dat"
-    # cif_files = ["/home/wangh/rongzai-agent/tools/pdf_refinement/tests/Bi2MoO6.cif"]
-    # user_id = "wanghao96"
-    # session_id = "local_pdf_refine_demo"
-    # mission_name = "Bi2MoO6_pdf_refine"
-
-    # init_result = initialize_pdf_project(
-    #     data_file=pdf_file,
-    #     structure_files=cif_files,
-    #     qmax=25.0,
-    #     rmin=1.0,
-    #     rmax=15.0,
-    #     pdf_source="N",
-    #     user_id=user_id,
-    #     session_id=session_id,
-    #     mission_name=mission_name,
-    #     task_id="init",
+    # initialize_runner = ProcessPollingMcpToolBase(
+    #     timeout_sec=60.0,
+    #     poll_interval=1.0,
+    #     target_func=initialize_pdf_project,
     # )
-    # print("\n===== InitializeProject =====")
-    # print(f"status: {init_result.get('status')}")
-    # print(f"project_path: {init_result.get('project_path')}")
-    # if init_result.get("status") != "success":
-    #     print(f"error: {init_result.get('error')}")
-    #     raise SystemExit(1)
-    # else:
-    #     source_project = init_result["project_path"]
 
-    #     # Case 1: pscale only
-    #     refine_result = refine(
-    #         project_path=init_result["project_path"],
-    #         refine_config={
-    #             "parameter_controls": [
-    #                 {
-    #                     "selector": "phase[1].pscale",
-    #                     "bind": "ps1",
-    #                     "refine": True,
-    #                 }
-    #             ],
-    #         },
-    #         user_id=user_id,
-    #         session_id=session_id,
-    #         mission_name=mission_name,
-    #         task_id="refine_pscale_only",
-    #     )
-    #     print("\n===== Refine (Si pscale only) =====")
-    #     print(f"status: {refine_result.get('status')}")
-    #     print(f"project_path: {refine_result.get('project_path')}")
-    #     if refine_result.get("status") != "success":
-    #         print(f"error: {refine_result.get('error')}")
-    #         raise SystemExit(1)
-    #     else:
-    #         rp = refine_result.get("refined_params", {})
-    #         print(f"rw: {rp.get('rw')}")
-    #         print(f"scale_1: {rp.get('scale_1')}")
-    #         print(f"lattice_parameter_1: {rp.get('lattice_parameter_1')}")
+    # refine_runner = ProcessPollingMcpToolBase(
+    #     timeout_sec=60.0,
+    #     poll_interval=1.0,
+    #     target_func=refine,
+    # )
 
-    #         rw = float(rp.get("rw", 9e9))
-    #         scale_1 = float(rp.get("scale_1", -1.0))
-    #         if not (0.0 < rw < 0.6):
-    #             raise RuntimeError(f"Case1 failed: unexpected rw={rw}")
-    #         if not (0.0 < scale_1 < 2.0):
-    #             raise RuntimeError(f"Case1 failed: unexpected scale_1={scale_1}")
+    # export_cifs_runner = ProcessPollingMcpToolBase(
+    #     timeout_sec=60.0,
+    #     poll_interval=1.0,
+    #     target_func=export_cifs,
+    # )
 
-    #     # Case 2: lattice tied (a=b=c) + pscale + phase[1].delta2 released
-    #     refine_result_2 = refine(
-    #         project_path=source_project,
-    #         refine_config={
-    #             "parameter_controls": [
-    #                 {
-    #                     "selector": "phase[1].lat.a",
-    #                     "bind": "lat1",
-    #                     "refine": True,
-    #                 },
-    #                 {
-    #                     "selector": "phase[1].lat.b",
-    #                     "bind": "lat1",
-    #                 },
-    #                 {
-    #                     "selector": "phase[1].lat.c",
-    #                     "bind": "lat1",
-    #                 },
-    #                 {
-    #                     "selector": "phase[1].pscale",
-    #                     "bind": "ps1",
-    #                     "refine": True,
-    #                 },
-    #                 {
-    #                     "selector": "phase[1].delta2",
-    #                     "bind": "d21",
-    #                     "initial": 0.0003,
-    #                     "refine": True,
-    #                 },
-    #             ],
-    #         },
-    #         user_id=user_id,
-    #         session_id=session_id,
-    #         mission_name=mission_name,
-    #         task_id="refine_lattice_and_pscale",
-    #     )
+    # mcp = FastMCP(
+    #     name="PDFRefinementTools",
+    #     instructions=(
+    #         "Tools for PDF refinement."
+    #         "Use InitializeProject to create a persistent project manifest, Refine to run staged refinement, "
+    #         "and ExportCIFs to collect the generated outputs. "
+    #         "Mission/task rule: mission_name identifies one high-level mission and should stay the same across multiple tool calls; "
+    #         "task_id identifies a sub-task/step inside that mission."
+    #     ),
+    #     port=42502,
+    # )
 
-    #     print("\n===== Refine (lattice + pscale + phase[1].delta2) =====")
-    #     print(f"status: {refine_result_2.get('status')}")
-    #     print(f"project_path: {refine_result_2.get('project_path')}")
-    #     if refine_result_2.get("status") != "success":
-    #         print(f"error: {refine_result_2.get('error')}")
-    #         raise SystemExit(1)
-    #     else:
-    #         rp2 = refine_result_2.get("refined_params", {})
-    #         print(f"rw: {rp2.get('rw')}")
-    #         print(f"scale_1: {rp2.get('scale_1')}")
-    #         print(f"delta2_1: {rp2.get('delta2_1')}")
-    #         print(f"lattice_a_1: {rp2.get('lattice_a_1')}")
-    #         print(f"lattice_b_1: {rp2.get('lattice_b_1')}")
-    #         print(f"lattice_c_1: {rp2.get('lattice_c_1')}")
+    # initialize_runner.register_mcp_tool(mcp, name="InitializeProject")
+    # refine_runner.register_mcp_tool(mcp, name="Refine")
+    # export_cifs_runner.register_mcp_tool(mcp, name="ExportCIFs")
+    # mcp.run(transport="sse")
 
-    #         rw2 = float(rp2.get("rw", 9e9))
-    #         la = float(rp2.get("lattice_a_1", 0.0))
-    #         lb = float(rp2.get("lattice_b_1", 0.0))
-    #         lc = float(rp2.get("lattice_c_1", 0.0))
-    #         if not (0.0 < rw2 < 0.14):
-    #             raise RuntimeError(f"Case2 failed: expected rw<0.14, got rw={rw2}")
-    #         if max(abs(la - lb), abs(lb - lc), abs(la - lc)) > 1e-6:
-    #             raise RuntimeError(f"Case2 failed: lattice not tied, a/b/c=({la}, {lb}, {lc})")
+    def _print_demo_refine_summary(tag: str, result: Dict[str, Any]) -> None:
+        if result.get("status") != "success":
+            print(f"{tag}: failed")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
 
-    #     print("\nAll inline refine tests passed.")
+        print(f"{tag}: success")
+        print(
+            json.dumps(
+                {
+                    "project_path": result.get("project_path"),
+                    "refined_structures": result.get("refined_structures", []),
+                    "results_file": result.get("results_file", {}).get("path"),
+                    "plot_file": result.get("plot_file"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+
+    def _print_demo_export_summary(tag: str, result: Dict[str, Any]) -> None:
+        if result.get("status") != "success":
+            print(f"{tag}: failed")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+
+        print(f"{tag}: success")
+        print(
+            json.dumps(
+                {
+                    "project_path": result.get("project_path"),
+                    "files": [item.get("path") for item in result.get("files", [])],
+                    "total_size_bytes": result.get("total_size_bytes"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+
+    def _is_refinable_fractional_coordinate(value: float, tol: float = 1e-8) -> bool:
+        wrapped = float(value) % 1.0
+        return min(abs(wrapped - 0.0), abs(wrapped - 0.5), abs(wrapped - 1.0)) > tol
+
+    def _build_site_coordinate_groups(site: Dict[str, Any], tol: float = 1e-8) -> List[List[str]]:
+        groups: List[List[str]] = []
+        x_val = float(site.get("x", 0.0))
+        y_val = float(site.get("y", 0.0))
+        z_val = float(site.get("z", 0.0))
+
+        x_free = _is_refinable_fractional_coordinate(x_val, tol=tol)
+        y_free = _is_refinable_fractional_coordinate(y_val, tol=tol)
+        z_free = _is_refinable_fractional_coordinate(z_val, tol=tol)
+
+        if x_free:
+            groups.append(["x"])
+        if y_free:
+            groups.append(["y"])
+
+        if z_free:
+            groups.append(["z"])
+
+        return groups
+
+    def _build_all_site_refine_steps(structure_path: str) -> List[Dict[str, Any]]:
+        parser = getParser("pdffit")
+        structure = parser.parseFile(str(structure_path))
+
+        steps: List[Dict[str, Any]] = []
+        for atom_idx, atom in enumerate(structure, start=1):
+            add_refine_param: Dict[str, List[str]] = {}
+            site = {
+                "x": float(atom.xyz[0]),
+                "y": float(atom.xyz[1]),
+                "z": float(atom.xyz[2]),
+            }
+            coordinate_groups = _build_site_coordinate_groups(site)
+            for group_idx, axes in enumerate(coordinate_groups, start=1):
+                add_refine_param[f"atom_{atom_idx:02d}_pos_{group_idx}"] = [
+                    f"phase[1].atom[{atom_idx}].{axis}" for axis in axes
+                ]
+
+            add_refine_param[f"atom_{atom_idx:02d}_uiso"] = [
+                f"phase[1].atom[{atom_idx}].u11",
+                f"phase[1].atom[{atom_idx}].u22",
+                f"phase[1].atom[{atom_idx}].u33",
+            ]
+
+            steps.append(
+                {
+                    "task_id": f"refine_atom_{atom_idx:02d}",
+                    "atom_index": atom_idx,
+                    "addRefineParam": add_refine_param,
+                }
+            )
+
+        return steps
+
+    pdf_file = "/home/wangh/rongzai-agent/tools/pdf_refinement/tests/CAT_RUN611_Gr.dat"
+    cif_files = ["/home/wangh/rongzai-agent/tools/pdf_refinement/tests/CsAgTe-RT.cif"]
+    user_id = "wanghao96"
+    mission_name = "CAT_RUN611_pdf_refine"
+
+    init_result = initialize_pdf_project(
+        data_file=pdf_file,
+        structure_files=cif_files,
+        qmax=25.0,
+        rmin=2.5,
+        rmax=21.0,
+        pdf_source="N",
+        user_id=user_id,
+        mission_name=mission_name,
+        task_id="init"
+    )
+
+    refine1_result = refine(
+        project_path=init_result["project_path"],
+        addRefineParam={
+            "@1": ["phase[1].lat.a", "phase[1].lat.b"],
+            "@2": ["phase[1].lat.c"],
+            "@3": ["phase[1].pscale"],
+        },
+        user_id=user_id,
+        mission_name=mission_name,
+        task_id="refine_lattice_scale"
+    )
+    _print_demo_refine_summary("refine1_result", refine1_result)
+    
+    refine2_result = refine(
+        project_path=refine1_result["project_path"],
+        addRefineParam={
+            "@4": ["phase[1].delta1", "phase[1].delta2"],
+        },
+        user_id=user_id,
+        mission_name=mission_name,
+        task_id="refine_sharpening"
+    )
+    _print_demo_refine_summary("refine2_result", refine2_result)
+
+    latest_result = refine2_result
+    if latest_result.get("status") == "success":
+        latest_structure_files = latest_result.get("project_content", {}).get("structure_files", [])
+        if latest_structure_files:
+            all_site_steps = _build_all_site_refine_steps(latest_structure_files[0])
+            print(f"all_site_step_count: {len(all_site_steps)}")
+        else:
+            all_site_steps = []
+        for step in all_site_steps:
+            latest_result = refine(
+                project_path=latest_result["project_path"],
+                addRefineParam=step["addRefineParam"],
+                user_id=user_id,
+                mission_name=mission_name,
+                task_id=step["task_id"],
+            )
+            _print_demo_refine_summary(step["task_id"], latest_result)
+            if latest_result.get("status") != "success":
+                break
+
+        if latest_result.get("status") == "success":
+            export_result = export_cifs(
+                project_path=latest_result["project_path"],
+                task_id="export_cifs_final",
+                user_id=user_id,
+                mission_name=mission_name,
+            )
+            _print_demo_export_summary("export_cifs_result", export_result)
+
     
