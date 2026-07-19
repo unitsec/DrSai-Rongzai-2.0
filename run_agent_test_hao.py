@@ -28,9 +28,6 @@ appdir = os.path.join(parent_path, "tmp/drsai")
 os.makedirs(appdir, exist_ok=True)
 
 
-def _normalize_users(users: list[str]) -> list[str]:
-    return [u.strip() for u in users if u and u.strip()]
-
 
 def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
     """兼容部分服务端在流式 chunk usage 中返回 None 的情况。"""

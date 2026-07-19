@@ -26,20 +26,6 @@ parent_path = os.path.dirname(os.path.abspath(__file__))
 appdir = os.path.join(parent_path, "tmp/drsai")
 os.makedirs(appdir, exist_ok=True)
 
-VIP_USER_LIST = os.getenv("VIP_USER_LIST", "").split(",") if os.getenv("VIP_USER_LIST") else []
-
-
-def _normalize_users(users: list[str]) -> list[str]:
-    return [u.strip() for u in users if u and u.strip()]
-
-
-PERMISSION_USERS = list(dict.fromkeys(_normalize_users(VIP_USER_LIST)))
-PERMISSION = (
-    f"groups: rongzai,payg,hairongzai@ihep.ac.cn; users: {','.join(PERMISSION_USERS)}; "
-    "owner: wanghao96@ihep.ac.cn"
-)
-print(f"PERMISSION: {PERMISSION}")
-
 
 def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
     """兼容部分服务端在流式 chunk usage 中返回 None 的情况。"""
@@ -87,11 +73,13 @@ async def create_agent(
             omit_max_tokens = True
             llm_max_retries = 1
 
-        is_vip_user = bool(user_id and user_id in PERMISSION_USERS)
-        if is_vip_user:
+        BLACK_LIST = os.getenv("BLACK_LIST", "").split(",") if os.getenv("BLACK_LIST") else []
+        is_black_user = bool(user_id and user_id in BLACK_LIST)
+        print(f"User {user_id} is blacklisted: {is_black_user}")
+        if is_black_user:
             client_kwargs = {
                 "model": llm_model,
-                "api_key": os.getenv("HEPAI_API_KEY"),
+                "api_key": api_key,
                 "timeout": 180,
                 "max_retries": llm_max_retries,
             }
@@ -140,7 +128,6 @@ async def create_agent(
     
     # Code executor and working directory
     WORKDIR=os.getenv("WORKDIR")
-    USER_UPLOAD_DIR = os.getenv("USER_UPLOAD_DIR", "")
 
 
     SYSTEM = RONGZAI_SYSTEM_PROMPT
@@ -180,7 +167,7 @@ if __name__ == "__main__":
             # 智能体注册信息
             agent_name="Rongzai Agent",
             author="wanghao96@ihep.ac.cn",
-            permission=PERMISSION,
+            permission="groups: rongzai,payg,hairongzai@ihep.ac.cn; users:admin, ddf_free; owner: wanghao96@ihep.ac.cn",
             description = '{"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"}',
             version = "0.1.0",
             logo="/dg_workfs/domassy/rongzai/rongzai-agent/src/configs/resized_rzera_logo.png",
@@ -197,7 +184,7 @@ if __name__ == "__main__":
                       {"en":"SANS data fitting: Use the sasview tool to analyze the uploaded small-angle scattering data, use the Fit function, select the hollow cylinder model, fit the scattering curve until the chisquare is less than 10, then return the fitting results and fitting graph.",
                        "zh":"小角中子散射拟合：帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"}],
             agent_config = llm_mode_config,
-            defult_config_name = "glm-5.2",
+            defult_config_name = "gpt 5",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
