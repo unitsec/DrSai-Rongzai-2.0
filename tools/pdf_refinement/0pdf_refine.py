@@ -1483,206 +1483,206 @@ def export_cifs(
     }
 
 if __name__ == "__main__":
-    # initialize_runner = ProcessPollingMcpToolBase(
-    #     timeout_sec=60.0,
-    #     poll_interval=1.0,
-    #     target_func=initialize_pdf_project,
-    # )
-
-    # refine_runner = ProcessPollingMcpToolBase(
-    #     timeout_sec=60.0,
-    #     poll_interval=1.0,
-    #     target_func=refine,
-    # )
-
-    # export_cifs_runner = ProcessPollingMcpToolBase(
-    #     timeout_sec=60.0,
-    #     poll_interval=1.0,
-    #     target_func=export_cifs,
-    # )
-
-    # mcp = FastMCP(
-    #     name="PDFRefinementTools",
-    #     instructions=(
-    #         "Tools for PDF refinement."
-    #         "Use InitializeProject to create a persistent project manifest, Refine to run staged refinement, "
-    #         "and ExportCIFs to collect the generated outputs. "
-    #         "Mission/task rule: mission_name identifies one high-level mission and should stay the same across multiple tool calls; "
-    #         "task_id identifies a sub-task/step inside that mission."
-    #     ),
-    #     port=42502,
-    # )
-
-    # initialize_runner.register_mcp_tool(mcp, name="InitializeProject")
-    # refine_runner.register_mcp_tool(mcp, name="Refine")
-    # export_cifs_runner.register_mcp_tool(mcp, name="ExportCIFs")
-    # mcp.run(transport="sse")
-
-    def _print_demo_refine_summary(tag: str, result: Dict[str, Any]) -> None:
-        if result.get("status") != "success":
-            print(f"{tag}: failed")
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return
-
-        print(f"{tag}: success")
-        print(
-            json.dumps(
-                {
-                    "project_path": result.get("project_path"),
-                    "refined_structures": result.get("refined_structures", []),
-                    "results_file": result.get("results_file", {}).get("path"),
-                    "plot_file": result.get("plot_file"),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-
-    def _print_demo_export_summary(tag: str, result: Dict[str, Any]) -> None:
-        if result.get("status") != "success":
-            print(f"{tag}: failed")
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return
-
-        print(f"{tag}: success")
-        print(
-            json.dumps(
-                {
-                    "project_path": result.get("project_path"),
-                    "files": [item.get("path") for item in result.get("files", [])],
-                    "total_size_bytes": result.get("total_size_bytes"),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-
-    def _is_refinable_fractional_coordinate(value: float, tol: float = 1e-8) -> bool:
-        wrapped = float(value) % 1.0
-        return min(abs(wrapped - 0.0), abs(wrapped - 0.5), abs(wrapped - 1.0)) > tol
-
-    def _build_site_coordinate_groups(site: Dict[str, Any], tol: float = 1e-8) -> List[List[str]]:
-        groups: List[List[str]] = []
-        x_val = float(site.get("x", 0.0))
-        y_val = float(site.get("y", 0.0))
-        z_val = float(site.get("z", 0.0))
-
-        x_free = _is_refinable_fractional_coordinate(x_val, tol=tol)
-        y_free = _is_refinable_fractional_coordinate(y_val, tol=tol)
-        z_free = _is_refinable_fractional_coordinate(z_val, tol=tol)
-
-        if x_free:
-            groups.append(["x"])
-        if y_free:
-            groups.append(["y"])
-
-        if z_free:
-            groups.append(["z"])
-
-        return groups
-
-    def _build_all_site_refine_steps(structure_path: str) -> List[Dict[str, Any]]:
-        parser = getParser("pdffit")
-        structure = parser.parseFile(str(structure_path))
-
-        steps: List[Dict[str, Any]] = []
-        for atom_idx, atom in enumerate(structure, start=1):
-            add_refine_param: Dict[str, List[str]] = {}
-            site = {
-                "x": float(atom.xyz[0]),
-                "y": float(atom.xyz[1]),
-                "z": float(atom.xyz[2]),
-            }
-            coordinate_groups = _build_site_coordinate_groups(site)
-            for group_idx, axes in enumerate(coordinate_groups, start=1):
-                add_refine_param[f"atom_{atom_idx:02d}_pos_{group_idx}"] = [
-                    f"phase[1].atom[{atom_idx}].{axis}" for axis in axes
-                ]
-
-            add_refine_param[f"atom_{atom_idx:02d}_uiso"] = [
-                f"phase[1].atom[{atom_idx}].u11",
-                f"phase[1].atom[{atom_idx}].u22",
-                f"phase[1].atom[{atom_idx}].u33",
-            ]
-
-            steps.append(
-                {
-                    "task_id": f"refine_atom_{atom_idx:02d}",
-                    "atom_index": atom_idx,
-                    "addRefineParam": add_refine_param,
-                }
-            )
-
-        return steps
-
-    pdf_file = "/home/wangh/rongzai-agent/tools/pdf_refinement/tests/CAT_RUN611_Gr.dat"
-    cif_files = ["/home/wangh/rongzai-agent/tools/pdf_refinement/tests/CsAgTe-RT.cif"]
-    user_id = "wanghao96"
-    mission_name = "CAT_RUN611_pdf_refine"
-
-    init_result = initialize_pdf_project(
-        data_file=pdf_file,
-        structure_files=cif_files,
-        qmax=25.0,
-        rmin=2.5,
-        rmax=21.0,
-        pdf_source="N",
-        user_id=user_id,
-        mission_name=mission_name,
-        task_id="init"
+    initialize_runner = ProcessPollingMcpToolBase(
+        timeout_sec=60.0,
+        poll_interval=1.0,
+        target_func=initialize_pdf_project,
     )
 
-    refine1_result = refine(
-        project_path=init_result["project_path"],
-        addRefineParam={
-            "@1": ["phase[1].lat.a", "phase[1].lat.b"],
-            "@2": ["phase[1].lat.c"],
-            "@3": ["phase[1].pscale"],
-        },
-        user_id=user_id,
-        mission_name=mission_name,
-        task_id="refine_lattice_scale"
+    refine_runner = ProcessPollingMcpToolBase(
+        timeout_sec=60.0,
+        poll_interval=1.0,
+        target_func=refine,
     )
-    _print_demo_refine_summary("refine1_result", refine1_result)
+
+    export_cifs_runner = ProcessPollingMcpToolBase(
+        timeout_sec=60.0,
+        poll_interval=1.0,
+        target_func=export_cifs,
+    )
+
+    mcp = FastMCP(
+        name="PDFRefinementTools",
+        instructions=(
+            "Tools for PDF refinement."
+            "Use InitializeProject to create a persistent project manifest, Refine to run staged refinement, "
+            "and ExportCIFs to collect the generated outputs. "
+            "Mission/task rule: mission_name identifies one high-level mission and should stay the same across multiple tool calls; "
+            "task_id identifies a sub-task/step inside that mission."
+        ),
+        port=42502,
+    )
+
+    initialize_runner.register_mcp_tool(mcp, name="InitializeProject")
+    refine_runner.register_mcp_tool(mcp, name="Refine")
+    export_cifs_runner.register_mcp_tool(mcp, name="ExportCIFs")
+    mcp.run(transport="sse")
+
+    # def _print_demo_refine_summary(tag: str, result: Dict[str, Any]) -> None:
+    #     if result.get("status") != "success":
+    #         print(f"{tag}: failed")
+    #         print(json.dumps(result, ensure_ascii=False, indent=2))
+    #         return
+
+    #     print(f"{tag}: success")
+    #     print(
+    #         json.dumps(
+    #             {
+    #                 "project_path": result.get("project_path"),
+    #                 "refined_structures": result.get("refined_structures", []),
+    #                 "results_file": result.get("results_file", {}).get("path"),
+    #                 "plot_file": result.get("plot_file"),
+    #             },
+    #             ensure_ascii=False,
+    #             indent=2,
+    #         )
+    #     )
+
+    # def _print_demo_export_summary(tag: str, result: Dict[str, Any]) -> None:
+    #     if result.get("status") != "success":
+    #         print(f"{tag}: failed")
+    #         print(json.dumps(result, ensure_ascii=False, indent=2))
+    #         return
+
+    #     print(f"{tag}: success")
+    #     print(
+    #         json.dumps(
+    #             {
+    #                 "project_path": result.get("project_path"),
+    #                 "files": [item.get("path") for item in result.get("files", [])],
+    #                 "total_size_bytes": result.get("total_size_bytes"),
+    #             },
+    #             ensure_ascii=False,
+    #             indent=2,
+    #         )
+    #     )
+
+    # def _is_refinable_fractional_coordinate(value: float, tol: float = 1e-8) -> bool:
+    #     wrapped = float(value) % 1.0
+    #     return min(abs(wrapped - 0.0), abs(wrapped - 0.5), abs(wrapped - 1.0)) > tol
+
+    # def _build_site_coordinate_groups(site: Dict[str, Any], tol: float = 1e-8) -> List[List[str]]:
+    #     groups: List[List[str]] = []
+    #     x_val = float(site.get("x", 0.0))
+    #     y_val = float(site.get("y", 0.0))
+    #     z_val = float(site.get("z", 0.0))
+
+    #     x_free = _is_refinable_fractional_coordinate(x_val, tol=tol)
+    #     y_free = _is_refinable_fractional_coordinate(y_val, tol=tol)
+    #     z_free = _is_refinable_fractional_coordinate(z_val, tol=tol)
+
+    #     if x_free:
+    #         groups.append(["x"])
+    #     if y_free:
+    #         groups.append(["y"])
+
+    #     if z_free:
+    #         groups.append(["z"])
+
+    #     return groups
+
+    # def _build_all_site_refine_steps(structure_path: str) -> List[Dict[str, Any]]:
+    #     parser = getParser("pdffit")
+    #     structure = parser.parseFile(str(structure_path))
+
+    #     steps: List[Dict[str, Any]] = []
+    #     for atom_idx, atom in enumerate(structure, start=1):
+    #         add_refine_param: Dict[str, List[str]] = {}
+    #         site = {
+    #             "x": float(atom.xyz[0]),
+    #             "y": float(atom.xyz[1]),
+    #             "z": float(atom.xyz[2]),
+    #         }
+    #         coordinate_groups = _build_site_coordinate_groups(site)
+    #         for group_idx, axes in enumerate(coordinate_groups, start=1):
+    #             add_refine_param[f"atom_{atom_idx:02d}_pos_{group_idx}"] = [
+    #                 f"phase[1].atom[{atom_idx}].{axis}" for axis in axes
+    #             ]
+
+    #         add_refine_param[f"atom_{atom_idx:02d}_uiso"] = [
+    #             f"phase[1].atom[{atom_idx}].u11",
+    #             f"phase[1].atom[{atom_idx}].u22",
+    #             f"phase[1].atom[{atom_idx}].u33",
+    #         ]
+
+    #         steps.append(
+    #             {
+    #                 "task_id": f"refine_atom_{atom_idx:02d}",
+    #                 "atom_index": atom_idx,
+    #                 "addRefineParam": add_refine_param,
+    #             }
+    #         )
+
+    #     return steps
+
+    # pdf_file = "/home/wangh/rongzai-agent/tools/pdf_refinement/tests/CAT_RUN611_Gr.dat"
+    # cif_files = ["/home/wangh/rongzai-agent/tools/pdf_refinement/tests/CsAgTe-RT.cif"]
+    # user_id = "wanghao96"
+    # mission_name = "CAT_RUN611_pdf_refine"
+
+    # init_result = initialize_pdf_project(
+    #     data_file=pdf_file,
+    #     structure_files=cif_files,
+    #     qmax=25.0,
+    #     rmin=2.5,
+    #     rmax=21.0,
+    #     pdf_source="N",
+    #     user_id=user_id,
+    #     mission_name=mission_name,
+    #     task_id="init"
+    # )
+
+    # refine1_result = refine(
+    #     project_path=init_result["project_path"],
+    #     addRefineParam={
+    #         "@1": ["phase[1].lat.a", "phase[1].lat.b"],
+    #         "@2": ["phase[1].lat.c"],
+    #         "@3": ["phase[1].pscale"],
+    #     },
+    #     user_id=user_id,
+    #     mission_name=mission_name,
+    #     task_id="refine_lattice_scale"
+    # )
+    # _print_demo_refine_summary("refine1_result", refine1_result)
     
-    refine2_result = refine(
-        project_path=refine1_result["project_path"],
-        addRefineParam={
-            "@4": ["phase[1].delta1", "phase[1].delta2"],
-        },
-        user_id=user_id,
-        mission_name=mission_name,
-        task_id="refine_sharpening"
-    )
-    _print_demo_refine_summary("refine2_result", refine2_result)
+    # refine2_result = refine(
+    #     project_path=refine1_result["project_path"],
+    #     addRefineParam={
+    #         "@4": ["phase[1].delta1", "phase[1].delta2"],
+    #     },
+    #     user_id=user_id,
+    #     mission_name=mission_name,
+    #     task_id="refine_sharpening"
+    # )
+    # _print_demo_refine_summary("refine2_result", refine2_result)
 
-    latest_result = refine2_result
-    if latest_result.get("status") == "success":
-        latest_structure_files = latest_result.get("project_content", {}).get("structure_files", [])
-        if latest_structure_files:
-            all_site_steps = _build_all_site_refine_steps(latest_structure_files[0])
-            print(f"all_site_step_count: {len(all_site_steps)}")
-        else:
-            all_site_steps = []
-        for step in all_site_steps:
-            latest_result = refine(
-                project_path=latest_result["project_path"],
-                addRefineParam=step["addRefineParam"],
-                user_id=user_id,
-                mission_name=mission_name,
-                task_id=step["task_id"],
-            )
-            _print_demo_refine_summary(step["task_id"], latest_result)
-            if latest_result.get("status") != "success":
-                break
+    # latest_result = refine2_result
+    # if latest_result.get("status") == "success":
+    #     latest_structure_files = latest_result.get("project_content", {}).get("structure_files", [])
+    #     if latest_structure_files:
+    #         all_site_steps = _build_all_site_refine_steps(latest_structure_files[0])
+    #         print(f"all_site_step_count: {len(all_site_steps)}")
+    #     else:
+    #         all_site_steps = []
+    #     for step in all_site_steps:
+    #         latest_result = refine(
+    #             project_path=latest_result["project_path"],
+    #             addRefineParam=step["addRefineParam"],
+    #             user_id=user_id,
+    #             mission_name=mission_name,
+    #             task_id=step["task_id"],
+    #         )
+    #         _print_demo_refine_summary(step["task_id"], latest_result)
+    #         if latest_result.get("status") != "success":
+    #             break
 
-        if latest_result.get("status") == "success":
-            export_result = export_cifs(
-                project_path=latest_result["project_path"],
-                task_id="export_cifs_final",
-                user_id=user_id,
-                mission_name=mission_name,
-            )
-            _print_demo_export_summary("export_cifs_result", export_result)
+    #     if latest_result.get("status") == "success":
+    #         export_result = export_cifs(
+    #             project_path=latest_result["project_path"],
+    #             task_id="export_cifs_final",
+    #             user_id=user_id,
+    #             mission_name=mission_name,
+    #         )
+    #         _print_demo_export_summary("export_cifs_result", export_result)
 
     

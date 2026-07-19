@@ -605,6 +605,7 @@ def flexible_neutron_refinement(gpx, hist, phases, user_id, session_id, mission_
         'refine_instrument_x': False,
         'refine_instrument_y': False,
         'refine_instrument_z': False,
+        'initial_absorption': None,
         'initial_instrument_params': None,
 
         # 原子参数
@@ -928,6 +929,69 @@ def flexible_neutron_refinement(gpx, hist, phases, user_id, session_id, mission_
         if lim:
             hist.data['Limits'][1][0], hist.data['Limits'][1][1] = float(lim[0]), float(lim[1])
             logger.info(f"设置初始TOF范围: {hist.data['Limits'][1][0]} - {hist.data['Limits'][1][1]}")
+
+    # 如果用户提供吸收参数初始值(initial_absorption)，在执行精修前写入当前直方图
+    # 支持格式：
+    # 1) 单值：0.12
+    # 2) 字典：{'all': 0.12} / {'default': 0.12} / {'PWDR xxx': 0.12}
+    # 3) 带 histograms 子字典：{'histograms': {'PWDR xxx': 0.12}, 'all': 0.1}
+    if refine_config.get('initial_absorption') is not None:
+        logger.info('检测到 initial_absorption 配置，尝试写入当前直方图的吸收参数')
+        init_absorption = refine_config.get('initial_absorption')
+        resolved_absorption = init_absorption
+
+        if isinstance(init_absorption, dict):
+            resolved_absorption = None
+            hist_name = getattr(hist, 'name', None)
+
+            if hist_name:
+                histograms_cfg = init_absorption.get('histograms')
+                if isinstance(histograms_cfg, dict) and hist_name in histograms_cfg:
+                    resolved_absorption = histograms_cfg.get(hist_name)
+                elif hist_name in init_absorption and not isinstance(init_absorption.get(hist_name), dict):
+                    resolved_absorption = init_absorption.get(hist_name)
+
+            if resolved_absorption is None:
+                if 'all' in init_absorption:
+                    resolved_absorption = init_absorption.get('all')
+                elif 'default' in init_absorption:
+                    resolved_absorption = init_absorption.get('default')
+
+        if resolved_absorption is None:
+            logger.warning('initial_absorption 未匹配到当前直方图或全局值，已跳过')
+        else:
+            try:
+                abs_value = float(resolved_absorption)
+            except (TypeError, ValueError):
+                logger.warning(f"initial_absorption 的值无法转为数值，已跳过: {resolved_absorption}")
+            else:
+                try:
+                    sample_params = hist.data.get('Sample Parameters')
+                except Exception as e:
+                    sample_params = None
+                    logger.warning(f"无法获取 Sample Parameters，已跳过初值写入: {e}")
+
+                if isinstance(sample_params, dict):
+                    abs_entry = sample_params.get('Absorption', None)
+                    if isinstance(abs_entry, list):
+                        if len(abs_entry) >= 1:
+                            abs_entry[0] = abs_value
+                        else:
+                            sample_params['Absorption'] = [abs_value, False]
+                    elif isinstance(abs_entry, tuple):
+                        abs_list = list(abs_entry)
+                        if len(abs_list) >= 1:
+                            abs_list[0] = abs_value
+                        else:
+                            abs_list = [abs_value, False]
+                        sample_params['Absorption'] = abs_list
+                    elif abs_entry is None:
+                        sample_params['Absorption'] = [abs_value, False]
+                    else:
+                        sample_params['Absorption'] = [abs_value, False]
+                    logger.info(f"设置吸收参数初值: Absorption = {abs_value}")
+                else:
+                    logger.warning('Sample Parameters 数据格式异常，已跳过 initial_absorption 写入')
 
     # 如果用户提供仪器参数初始值(initial_instrument_params)，在执行精修前写入当前直方图
     if refine_config.get('initial_instrument_params') is not None:
@@ -3115,6 +3179,7 @@ def refine(
         | `refine_cell` | bool | False | 晶胞参数 (a, b, c, α, β, γ)，启用则在精修中调整晶胞 |
         | `initial_cell` | dict/list | None | 在精修前设置晶胞初始值（见下文详细说明） |
         | `refine_absorption` | bool | False | 吸收，用于修正由吸收导致的衍射峰强度系统性偏差 |
+        | `initial_absorption` | float/dict | None | 在精修前设置吸收参数初始值；支持单值、`all/default` 或按 histogram 名称设置 |
         | `refine_instrument_alpha` | bool | False | 仪器参数alpha(仪器参数中影响最大的一个) | 
         | `refine_instrument_beta` | bool | False | 仪器参数beta-0, beta-1, beta-q |
         | `refine_instrument_sig` | bool | False | 仪器参数sig-0, sig-1, sig-2, sig-q |
@@ -3148,6 +3213,16 @@ def refine(
                 `[refine_flag, a, b, c, alpha, beta, gamma, volume]`。
                 其中 `refine_flag` 保留原先的布尔值（或设为 False），`volume` 会自动计算并写入（若能计算）。
             - 同时，如果 `refine_cell` 为 True，脚本会尝试调用 `phase.set_refinements({"Cell": True})` 来开启晶胞精修标志（若该方法可用）。
+
+        参数 `initial_absorption`用途与使用方法：
+            - 目的：在执行任何吸收相关精修前，为当前直方图写入吸收参数初始值。
+            - 支持格式：
+                1. 单个数值：例如 `0.12`，应用到当前直方图。
+                2. 字典（全局）：例如 `{'all': 0.12}` 或 `{'default': 0.12}`。
+                3. 字典（按 histogram 名）：例如 `{'PWDR xxx': 0.15}`。
+                4. 带 `histograms` 子字典：例如 `{'histograms': {'PWDR xxx': 0.15}, 'all': 0.12}`。
+            - 行为：如果 `initial_absorption` 存在，代码会在精修前把值写入 `hist.data['Sample Parameters']['Absorption']` 的第一个位置，并保留原有精修标志位；若不存在该键则自动创建为 `[value, False]`。
+            - 与 `refine_absorption` 的关系：`initial_absorption` 仅设置初值；是否参与精修由 `refine_absorption` 决定。
 
         参数 `initial_mustrain`用途与使用方法：
             - 目的：在执行微应变精修之前设置相（phase）的初始微应变数值。当拟合的衍射峰明显比实验数据宽，且无论如何精修都无法解决时，可将此值设为0来消除微应变的影响。
