@@ -49,7 +49,7 @@ USER_SOURCES = {"user", "user_proxy"}
 # 建议只改这里：邮箱配置、检测窗口、循环周期、输出路径等。
 APP_CONFIG: dict[str, Any] = {
     # 数据源与扫描范围
-    "db_path": "tmp/drsai_ui/drsai_ui.db",
+    "db_path": "../.drsai_ui/drsai_ui.db",
     "window_days": 2,
     "output": "tmp/monitor/non_neutron_sessions.jsonl",
     "max_samples": 2,
@@ -510,8 +510,6 @@ cd /home/wangh/rongzai-agent && python monitor_non_neutron_chats.py
 3) 常驻每2天执行一次（使用 APP_CONFIG）
 cd /home/wangh/rongzai-agent && nohup python monitor_non_neutron_chats.py --loop >> tmp/monitor/runner.log 2>&1 &
 
-4) 用 crontab 每2天执行一次（推荐生产）
-0 3 */2 * * cd /home/wangh/rongzai-agent && /usr/bin/python monitor_non_neutron_chats.py >> /home/wangh/rongzai-agent/tmp/monitor/cron.log 2>&1
 """
 
 if __name__ == "__main__":
