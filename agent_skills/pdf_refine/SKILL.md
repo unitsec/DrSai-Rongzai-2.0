@@ -23,7 +23,7 @@ description: PDF refinement skill for pair distribution function fitting using t
       - 去数据库获取 PDF 数据文件，需要用户提供：谱仪名称（如 BL16）、RUN 号（如 RUN0023568），以及可用于定位数据文件的名称信息（如 Gr_Hermite）。
       - 去数据库获取 .cif 文件，需要用户提供：谱仪名称（如 BL16）、RUN 号（如 RUN0023568）。
       - 如果用户给的信息不完整，询问用户。
-      - 数据库的位置：~/rongzai-agent/datasets/，XXX 是用户名。数据库下常见结构如下：
+      - 数据库的位置：~/rongzai-agent/datasets/，数据库下常见结构如下：
          datasets/
          |--BLXXX/
          |   |--RUNdataFiles/
@@ -33,7 +33,7 @@ description: PDF refinement skill for pair distribution function fitting using t
          |         |--XXX.txt
          |         |--XXX.dat
          |--BLYYY/
-        其中 XXX、YYY 代表不同谱仪号和 RUN 号，你需要根据用户提供的信息自行寻找。
+        其中 XXX、YYY 代表不同谱仪号、RUN 号或者其他文件名，你需要根据用户提供的信息自行寻找。
    - 如果缺失任何关键文件，明确告知用户并结束本轮。
    - 这一步的目的是：你要明确获取到所需文件的文件路径，并且这些文件必须是绝对路径。
 

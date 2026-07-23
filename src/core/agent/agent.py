@@ -12,6 +12,7 @@ from typing import (
     )
 import os, json, re
 import asyncio, traceback
+import types
 from pydantic import BaseModel
 from pathlib import Path
 from loguru import logger
@@ -267,6 +268,7 @@ class RongZaiAgent(DrSaiAgent):
             work_dir=self._work_dir,
             token_limit=token_limit,
         )
+        self._ensure_model_context_replace_messages()
 
         self._upload_dir = self._work_dir / self._thread_id /"uploads"
         self._upload_dir.mkdir(parents=True, exist_ok=True)
@@ -327,6 +329,24 @@ class RongZaiAgent(DrSaiAgent):
         # 如需回滚到旧方案，取消注释以下两行，并恢复下方 Legacy 方法与调用点。
         # self._ephemeral_images_pending: List[UserMessage] = []
         # self._ephemeral_images_inflight: List[UserMessage] = []
+
+    def _ensure_model_context_replace_messages(self) -> None:
+        """为不支持 replace_messages 的上下文补充原地替换能力。
+
+        目的：让 _sanitize_api_messages 走 replace_messages 分支，避免回退到
+        clear()+add_message() 导致 _current_messages/_history_messages 重复追加。
+        """
+        ctx = self._model_context
+        if hasattr(ctx, "replace_messages"):
+            return
+
+        def _replace_messages(this: Any, messages: List[LLMMessage]) -> None:
+            this._messages = list(messages)
+            surviving_ids = {id(m) for m in messages}
+            current_messages = getattr(this, "_current_messages", [])
+            this._current_messages = [m for m in current_messages if id(m) in surviving_ids]
+
+        setattr(ctx, "replace_messages", types.MethodType(_replace_messages, ctx))
 
     # Legacy (disabled): tool 图片回注主模型上下文管理方法。
     # def _record_ephemeral_image_message(self, multimodal_msg: UserMessage) -> None:
@@ -1092,7 +1112,7 @@ class RongZaiAgent(DrSaiAgent):
                     model_candidates = []
                     if primary_env:
                         model_candidates.append(primary_env)
-                    for m in ("openai/gpt-5","openai/gpt-4o", "minimax/minimax-m2.7"):
+                    for m in ("openai/gpt-5.4","openai/gpt-5","openai/gpt-4o", "minimax/minimax-m2.7"):
                         if m not in model_candidates:
                             model_candidates.append(m)
 
@@ -1828,7 +1848,7 @@ class RongZaiAgent(DrSaiAgent):
                     logger.warning("RONGZAI_FORCE_INVALID_MODEL_OUTPUT is enabled: forcing invalid model output type.")
                     forced_invalid_output_once = True
 
-                if model_result.content == "":
+                if isinstance(model_result.content, str) and model_result.content.strip() == "":
                     remaining_fallbacks = [name for name in fallback_candidates if name not in fallback_attempted]
                     switched_model: Optional[str] = None
                     for fallback_config_name in remaining_fallbacks:
