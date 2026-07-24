@@ -1921,9 +1921,35 @@ class RongZaiAgent(DrSaiAgent):
 
                     # 处理模型请求的工具调用
                     for i in range(len(model_result.content)):
-                        argument = json.loads(model_result.content[i].arguments)
                         tool_name = model_result.content[i].name
                         call_id = model_result.content[i].id
+                        raw_arguments = model_result.content[i].arguments
+                        try:
+                            if isinstance(raw_arguments, str):
+                                argument = json.loads(raw_arguments or "{}")
+                            elif raw_arguments is None:
+                                argument = {}
+                            else:
+                                argument = raw_arguments
+                        except json.JSONDecodeError as e:
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content=(
+                                        f"Error: invalid tool arguments for {tool_name}: {e}. "
+                                        f"Raw arguments: {raw_arguments!r}"
+                                    ),
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=True,
+                                )
+                            )
+                            yield AgentLogEvent(
+                                title=f"Tool arguments JSON parse failed for {tool_name}.",
+                                source=agent_name,
+                                content=str(raw_arguments),
+                                content_type="tools",
+                            )
+                            continue
                         if tool_name == "Skill":
                             if skills_loader is None:
                                 skill_content = "No system skill is loaded."
