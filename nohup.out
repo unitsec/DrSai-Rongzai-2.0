@@ -1,0 +1,255 @@
+/home/wangh/software/anaconda3/envs/rongzai_agent/lib/python3.12/site-packages/pydub/utils.py:170: RuntimeWarning: Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work
+  warn("Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work", RuntimeWarning)
+Starting Dr.Sai-UI
+There is example agent_config file: /home/wangh/drsai/apps/webui/backend/src/drsai_ui/configs/agent_config.yaml
+Launching Web Application...
+Config file not provided. Using default settings.
+INFO:     Loading environment from '/home/wangh/rongzai-agent/tmp/drsai_ui/temp_env_vars.env'
+INFO:     Started server process [3260672]
+INFO:     Waiting for application startup.
+2026-07-27 14:04:27.477 | INFO     | drsai_ui.ui_backend.backend.web.initialization:__init__:39 - Initializing application data folder: /home/wangh/rongzai-agent/tmp/drsai_ui 
+2026-07-27 14:04:27.555 | INFO     | drsai_ui.ui_backend.backend.web.app:lifespan:121 - Application startup complete. Navigate to http://0.0.0.0:8081/
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8081 (Press CTRL+C to quit)
+INFO:     10.1.173.51:5174 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:14185 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:13725 - "WebSocket /api/ws/runs/477" [accepted]
+INFO:     connection open
+2026-07-27 14:06:07.887 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:103 - WebSocket connection established for run 477
+2026-07-27 14:06:07.961 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:209 - Received pause request for run 477
+INFO:     10.1.173.51:4302 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:5941 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:2345 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:12891 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:12891 - "POST /api/sessions/ HTTP/1.1" 200 OK
+INFO:     10.1.173.51:12891 - "GET /api/sessions/478/runs?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3146 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3146 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:12891 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:12891 - "GET /api/settings/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3146 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3042 - "WebSocket /api/ws/runs/478" [accepted]
+INFO:     connection open
+2026-07-27 14:06:53.653 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:103 - WebSocket connection established for run 478
+2026-07-27 14:06:53.946 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:112 - Received start request for run 478
+2026-07-27 14:06:54.246 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:prepare_run_paths:113 - Creating run dirs: /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/478/478 and /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/478/478
+2026-07-27 14:06:54.436 | INFO     | drsai.modules.agents.drsai_worker_agent:lazy_init:212 - Lazy init RemoteAgent successfully.
+INFO:     10.1.173.51:3146 - "PUT /api/sessions/478?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7556 - "GET /api/sessions/477?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7556 - "GET /api/agentmode/config/?user_id=wanghao96&mode=remote HTTP/1.1" 307 Temporary Redirect
+INFO:     10.1.173.51:13146 - "GET /api/sessions/477/runs?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7556 - "GET /api/agentmode/config?user_id=wanghao96&mode=remote HTTP/1.1" 200 OK
+INFO:     10.1.173.51:13146 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3179 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+2026-07-27 14:09:31.317 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:209 - Received pause request for run 477
+INFO:     10.1.173.51:6612 - "GET /api/sessions/478?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:6612 - "GET /api/agentmode/config/?user_id=wanghao96&mode=remote HTTP/1.1" 307 Temporary Redirect
+INFO:     10.1.173.51:6612 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4845 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:10599 - "GET /api/sessions/478/runs?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:10599 - "GET /api/agentmode/config?user_id=wanghao96&mode=remote HTTP/1.1" 200 OK
+2026-07-27 14:10:11.258 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:209 - Received pause request for run 478
+2026-07-27 14:10:12.694 | INFO     | drsai.modules.agents.drsai_worker_agent:pause:336 - Paused RemoteAgent...
+2026-07-27 14:10:13.002 | INFO     | drsai.modules.agents.drsai_worker_agent:sync_consumer:457 - [trace=d4987747-888c-416d-8a63-bdd5f7b17b9e] Stream detected pause signal, stopping consumer
+2026-07-27 14:10:13.076 | INFO     | drsai.modules.agents.drsai_worker_agent:pause:362 - Paused RemoteAgent successfully.
+2026-07-27 14:10:16.757 | INFO     | drsai.modules.agents.drsai_worker_agent:resume:412 - Resumed RemoteAgent successfully.
+INFO:     10.1.173.51:11810 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:13616 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3276 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7399 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:2203 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:2203 - "POST /api/sessions/ HTTP/1.1" 200 OK
+INFO:     10.1.173.51:2203 - "GET /api/sessions/479/runs?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4240 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4240 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:2203 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:2203 - "GET /api/settings/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4240 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:14216 - "WebSocket /api/ws/runs/479" [accepted]
+INFO:     connection open
+2026-07-27 14:17:02.858 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:103 - WebSocket connection established for run 479
+2026-07-27 14:17:03.131 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:112 - Received start request for run 479
+2026-07-27 14:17:03.430 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:prepare_run_paths:113 - Creating run dirs: /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/479/479 and /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/479/479
+2026-07-27 14:17:03.642 | INFO     | drsai.modules.agents.drsai_worker_agent:lazy_init:212 - Lazy init RemoteAgent successfully.
+INFO:     10.1.173.51:4240 - "PUT /api/sessions/479?user_id=wanghao96 HTTP/1.1" 200 OK
+Input response timeout for run 478
+reason=Dr.Sai-UI timed out while waiting for your input. To resume, please enter a follow-up message in the input box or you can simply type 'continue'.
+2026-07-27 14:20:53.410 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:454 - Closing team
+2026-07-27 14:20:53.517 | INFO     | drsai.modules.agents.drsai_worker_agent:close:425 - Closing RemoteAgent...
+2026-07-27 14:20:53.608 | INFO     | drsai.modules.agents.drsai_worker_agent:close:446 - Closed RemoteAgent successfully.
+2026-07-27 14:20:53.694 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:457 - Team closed
+Error stopping run 478: 'WebSocketManager' object has no attribute '_streaming_buffers'
+Error handling input for run 478: 
+2026-07-27 14:20:53.864 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:226 - WebSocket disconnected for run 478
+INFO:     connection closed
+2026-07-27 14:21:01.468 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:209 - Received pause request for run 479
+2026-07-27 14:21:02.444 | INFO     | drsai.modules.agents.drsai_worker_agent:pause:336 - Paused RemoteAgent...
+2026-07-27 14:21:02.527 | INFO     | drsai.modules.agents.drsai_worker_agent:sync_consumer:457 - [trace=2254b70d-d851-4a94-9ba0-ef611dd273e5] Stream detected pause signal, stopping consumer
+2026-07-27 14:21:02.808 | INFO     | drsai.modules.agents.drsai_worker_agent:pause:362 - Paused RemoteAgent successfully.
+2026-07-27 14:21:02.830 | INFO     | drsai.modules.agents.drsai_worker_agent:resume:412 - Resumed RemoteAgent successfully.
+INFO:     10.1.173.51:3068 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:14245 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4257 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:6735 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:2036 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7501 - "POST /api/sessions/ HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7501 - "GET /api/sessions/480/runs?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:8763 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:8763 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7501 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:10760 - "GET /api/settings/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7501 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4542 - "WebSocket /api/ws/runs/480" [accepted]
+INFO:     connection open
+2026-07-27 14:25:48.315 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:103 - WebSocket connection established for run 480
+2026-07-27 14:25:48.689 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:112 - Received start request for run 480
+2026-07-27 14:25:48.983 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:prepare_run_paths:113 - Creating run dirs: /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/480/480 and /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/480/480
+2026-07-27 14:25:49.195 | INFO     | drsai.modules.agents.drsai_worker_agent:lazy_init:212 - Lazy init RemoteAgent successfully.
+INFO:     10.1.173.51:7501 - "PUT /api/sessions/480?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3848 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+Input response timeout for run 479
+reason=Dr.Sai-UI timed out while waiting for your input. To resume, please enter a follow-up message in the input box or you can simply type 'continue'.
+2026-07-27 14:31:03.399 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:454 - Closing team
+2026-07-27 14:31:03.400 | INFO     | drsai.modules.agents.drsai_worker_agent:close:425 - Closing RemoteAgent...
+2026-07-27 14:31:03.410 | INFO     | drsai.modules.agents.drsai_worker_agent:close:446 - Closed RemoteAgent successfully.
+2026-07-27 14:31:03.410 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:457 - Team closed
+Error stopping run 479: 'WebSocketManager' object has no attribute '_streaming_buffers'
+Error handling input for run 479: 
+INFO:     10.1.173.51:7357 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:11032 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:6253 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:5520 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:14231 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4579 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:5023 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:5023 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4231 - "GET /api/sessions/480?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:6645 - "GET /api/agentmode/config/?user_id=wanghao96&mode=remote HTTP/1.1" 307 Temporary Redirect
+INFO:     10.1.173.51:6645 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:1079 - "GET /api/sessions/480/runs?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:1079 - "GET /api/agentmode/config?user_id=wanghao96&mode=remote HTTP/1.1" 200 OK
+INFO:     10.1.173.51:1079 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:6645 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:9901 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3103 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4215 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4215 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4215 - "POST /api/sessions/ HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4215 - "GET /api/sessions/481/runs?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:9367 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4215 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:9367 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:8739 - "GET /api/settings/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4215 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:14624 - "WebSocket /api/ws/runs/481" [accepted]
+INFO:     connection open
+2026-07-27 14:44:31.920 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:103 - WebSocket connection established for run 481
+2026-07-27 14:44:32.202 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:112 - Received start request for run 481
+2026-07-27 14:44:32.496 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:prepare_run_paths:113 - Creating run dirs: /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/481/481 and /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/481/481
+2026-07-27 14:44:32.708 | INFO     | drsai.modules.agents.drsai_worker_agent:lazy_init:212 - Lazy init RemoteAgent successfully.
+INFO:     10.1.173.51:4215 - "PUT /api/sessions/481?user_id=wanghao96 HTTP/1.1" 200 OK
+2026-07-27 14:48:07.737 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:209 - Received pause request for run 481
+2026-07-27 14:48:07.840 | INFO     | drsai.modules.agents.drsai_worker_agent:pause:336 - Paused RemoteAgent...
+2026-07-27 14:48:07.952 | INFO     | drsai.modules.agents.drsai_worker_agent:sync_consumer:457 - [trace=4582f170-9f4b-4ee5-b369-8f7c078082f8] Stream detected pause signal, stopping consumer
+2026-07-27 14:48:07.953 | INFO     | drsai.modules.agents.drsai_worker_agent:pause:362 - Paused RemoteAgent successfully.
+2026-07-27 14:48:08.190 | INFO     | drsai.modules.agents.drsai_worker_agent:resume:412 - Resumed RemoteAgent successfully.
+INFO:     10.1.173.51:5649 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:9116 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:10762 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:10762 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:10762 - "POST /api/sessions/ HTTP/1.1" 200 OK
+INFO:     10.1.173.51:10762 - "GET /api/sessions/482/runs?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7145 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:10762 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7145 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:11322 - "GET /api/settings/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:7145 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:4438 - "WebSocket /api/ws/runs/482" [accepted]
+INFO:     connection open
+2026-07-27 14:49:34.520 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:103 - WebSocket connection established for run 482
+2026-07-27 14:49:34.844 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:112 - Received start request for run 482
+2026-07-27 14:49:35.142 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:prepare_run_paths:113 - Creating run dirs: /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/482/482 and /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/482/482
+2026-07-27 14:49:35.355 | INFO     | drsai.modules.agents.drsai_worker_agent:lazy_init:212 - Lazy init RemoteAgent successfully.
+INFO:     10.1.173.51:7145 - "PUT /api/sessions/482?user_id=wanghao96 HTTP/1.1" 200 OK
+Input response timeout for run 480
+reason=Dr.Sai-UI timed out while waiting for your input. To resume, please enter a follow-up message in the input box or you can simply type 'continue'.
+2026-07-27 14:49:38.711 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:454 - Closing team
+2026-07-27 14:49:38.712 | INFO     | drsai.modules.agents.drsai_worker_agent:close:425 - Closing RemoteAgent...
+2026-07-27 14:49:38.722 | INFO     | drsai.modules.agents.drsai_worker_agent:close:446 - Closed RemoteAgent successfully.
+2026-07-27 14:49:38.722 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:457 - Team closed
+Error stopping run 480: 'WebSocketManager' object has no attribute '_streaming_buffers'
+Error handling input for run 480: 
+INFO:     10.1.173.51:2005 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+2026-07-27 14:51:49.717 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:209 - Received pause request for run 482
+2026-07-27 14:51:49.830 | INFO     | drsai.modules.agents.drsai_worker_agent:pause:336 - Paused RemoteAgent...
+2026-07-27 14:51:49.938 | INFO     | drsai.modules.agents.drsai_worker_agent:pause:362 - Paused RemoteAgent successfully.
+2026-07-27 14:51:49.939 | INFO     | drsai.modules.agents.drsai_worker_agent:sync_consumer:457 - [trace=a8f48e2c-6adf-46d7-a931-b3198fd2ef41] Stream detected pause signal, stopping consumer
+2026-07-27 14:51:50.180 | INFO     | drsai.modules.agents.drsai_worker_agent:resume:412 - Resumed RemoteAgent successfully.
+INFO:     10.1.173.51:9877 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+Input response timeout for run 481
+reason=Dr.Sai-UI timed out while waiting for your input. To resume, please enter a follow-up message in the input box or you can simply type 'continue'.
+2026-07-27 14:58:08.964 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:454 - Closing team
+2026-07-27 14:58:08.965 | INFO     | drsai.modules.agents.drsai_worker_agent:close:425 - Closing RemoteAgent...
+2026-07-27 14:58:08.975 | INFO     | drsai.modules.agents.drsai_worker_agent:close:446 - Closed RemoteAgent successfully.
+2026-07-27 14:58:08.975 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:457 - Team closed
+Error stopping run 481: 'WebSocketManager' object has no attribute '_streaming_buffers'
+Error handling input for run 481: 
+INFO:     10.1.173.51:5297 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:5759 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:6212 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3613 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3964 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:6649 - "POST /api/files/?user_id=wanghao96&session_id=-1 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:6649 - "POST /api/sessions/ HTTP/1.1" 200 OK
+INFO:     10.1.173.51:6649 - "GET /api/sessions/483/runs?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:9496 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:9496 - "GET /api/agentworker/user_agents/edf80f12?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:6649 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:3072 - "GET /api/settings/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:6649 - "GET /api/plans/?user_id=wanghao96 HTTP/1.1" 200 OK
+INFO:     10.1.173.51:5018 - "WebSocket /api/ws/runs/483" [accepted]
+INFO:     connection open
+2026-07-27 15:17:33.204 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:103 - WebSocket connection established for run 483
+2026-07-27 15:17:33.547 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:112 - Received start request for run 483
+2026-07-27 15:17:33.842 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:prepare_run_paths:113 - Creating run dirs: /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/483/483 and /home/wangh/rongzai-agent/tmp/drsai_ui/files/user/wanghao96/483/483
+2026-07-27 15:17:34.056 | INFO     | drsai.modules.agents.drsai_worker_agent:lazy_init:212 - Lazy init RemoteAgent successfully.
+INFO:     10.1.173.51:6649 - "PUT /api/sessions/483?user_id=wanghao96 HTTP/1.1" 200 OK
+Input response timeout for run 482
+reason=Dr.Sai-UI timed out while waiting for your input. To resume, please enter a follow-up message in the input box or you can simply type 'continue'.
+2026-07-27 15:17:48.645 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:454 - Closing team
+2026-07-27 15:17:48.645 | INFO     | drsai.modules.agents.drsai_worker_agent:close:425 - Closing RemoteAgent...
+2026-07-27 15:17:48.662 | INFO     | drsai.modules.agents.drsai_worker_agent:close:446 - Closed RemoteAgent successfully.
+2026-07-27 15:17:48.662 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:457 - Team closed
+Error stopping run 482: 'WebSocketManager' object has no attribute '_streaming_buffers'
+Error handling input for run 482: 
+INFO:     10.1.173.51:2731 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:8244 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:3084 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:4922 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:3088 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:8430 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:11852 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+Input response timeout for run 483
+reason=Dr.Sai-UI timed out while waiting for your input. To resume, please enter a follow-up message in the input box or you can simply type 'continue'.
+2026-07-27 15:54:31.031 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:454 - Closing team
+2026-07-27 15:54:31.031 | INFO     | drsai.modules.agents.drsai_worker_agent:close:425 - Closing RemoteAgent...
+2026-07-27 15:54:31.054 | INFO     | drsai.modules.agents.drsai_worker_agent:close:446 - Closed RemoteAgent successfully.
+2026-07-27 15:54:31.054 | INFO     | drsai_ui.ui_backend.backend.teammanager.teammanager:close:457 - Team closed
+Error stopping run 483: 'WebSocketManager' object has no attribute '_streaming_buffers'
+Error handling input for run 483: 
+2026-07-27 16:09:41.506 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:226 - WebSocket disconnected for run 483
+INFO:     connection closed
+2026-07-27 16:09:41.513 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:226 - WebSocket disconnected for run 482
+INFO:     connection closed
+2026-07-27 16:09:41.514 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:226 - WebSocket disconnected for run 481
+INFO:     connection closed
+2026-07-27 16:09:41.515 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:226 - WebSocket disconnected for run 480
+INFO:     connection closed
+2026-07-27 16:09:41.516 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:226 - WebSocket disconnected for run 479
+INFO:     connection closed
+2026-07-27 16:09:41.517 | INFO     | drsai_ui.ui_backend.backend.web.routes.ws:run_websocket:226 - WebSocket disconnected for run 477
+INFO:     connection closed
+INFO:     10.1.173.51:1538 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:10328 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:14488 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized
+INFO:     10.1.173.51:6406 - "POST /api/auth/refresh HTTP/1.1" 401 Unauthorized

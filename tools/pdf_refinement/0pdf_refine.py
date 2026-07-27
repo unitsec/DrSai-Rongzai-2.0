@@ -225,11 +225,11 @@ def _inspect_cif_adp(cif_path: str | Path) -> Dict[str, Any]:
 
     issues: List[str] = []
     if not has_adp_field:
-        issues.append("未检测到 ADP 字段(_atom_site_Uiso/Biso 或 _atom_site_aniso_U/B_*)")
+        issues.append("未检测到 ADP 字段(_atom_site_Uiso/Biso 或 _atom_site_aniso_U/B_*)！会导致拟合不收敛或 rw 异常！请立即解决！")
     elif not adp_values:
-        issues.append("检测到 ADP 字段但未读到有效数值")
+        issues.append("检测到 ADP 字段但未读到有效数值！会导致拟合不收敛或 rw 异常！请立即解决！")
     elif all_zero:
-        issues.append("检测到所有 ADP 数值均为 0，可能导致拟合退化为近似直线")
+        issues.append("检测到所有 ADP 数值均为 0!会导致拟合不收敛或 rw 异常！请立即解决！")
 
     return {
         "file": str(cif_path),
@@ -933,6 +933,18 @@ def _plot_refinement_result(pf: PdfFit, output_path: Path, title: str) -> str:
     return str(output_path)
 
 
+def _infer_pdf_export_base_from_rstr(rstr_files: List[str]) -> Optional[Path]:
+    if not isinstance(rstr_files, list) or not rstr_files:
+        return None
+
+    first_path = Path(str(rstr_files[0])).expanduser()
+    stem = first_path.stem
+    match = re.match(r"^(?P<base>.+)_phase\d+$", stem)
+    if match:
+        return first_path.with_name(match.group("base"))
+    return first_path.with_suffix("")
+
+
 def _parse_cif_number(token: str) -> float:
     text = str(token).strip()
     if not text:
@@ -1405,8 +1417,8 @@ def initialize_pdf_project(
 
 def update_nonRefineValue_and_constraintSet(
     project_path: str,
-    mergeConstraintSet: ConstraintSetSchema,
-    deleteConstraintSet: ConstraintSetSchema,
+    mergeConstraintSet: Optional[ConstraintSetSchema] = None,
+    deleteConstraintSet: Optional[ConstraintSetSchema] = None,
     nonRefineValue: Optional[Dict[str, Any]] = None,
     user_id: Optional[str] = None,
     mission_name: Optional[str] = None,
@@ -1417,7 +1429,8 @@ def update_nonRefineValue_and_constraintSet(
     behavior:
         - 'nonRefineValue' is a dictionary of non-refinable parameters and their initial values.
         - if 'nonRefineValue' is provided, it updates the snapshot's non-refinable parameters.
-        - `mergeConstraintSet` and `deleteConstraintSet` must be dictionaries with two parallel lists: `params` and `constraints`.
+        - `mergeConstraintSet` and `deleteConstraintSet` are optional dictionaries with two parallel lists: `params` and `constraints`.
+        - If either one is omitted (or null), it is treated as an empty constraint set.
         - The two lists must have identical length.
         - Each `params[i]` is a physical-quantity selector and each `constraints[i]` is its linear expression.
         - Expressions may use the free-parameter syntax `@n`, `A@n+B`, `@n-B`, or `-@n`.
@@ -1620,11 +1633,11 @@ def update_nonRefineValue_and_constraintSet(
             raise ValueError("project manifest 缺少 structure_files")
 
         normalized_merge_constraint_set = _normalize_constraint_set(
-            mergeConstraintSet,
+            mergeConstraintSet if mergeConstraintSet is not None else {"params": [], "constraints": []},
             "mergeConstraintSet",
         )
         normalized_delete_constraint_set = _normalize_constraint_set(
-            deleteConstraintSet,
+            deleteConstraintSet if deleteConstraintSet is not None else {"params": [], "constraints": []},
             "deleteConstraintSet",
         )
         existing_constraint_set = _normalize_manifest_constraint_set(manifest.get("constraintSet"))
@@ -2352,10 +2365,12 @@ def refine(
 
         output_files = {
             "results": str(project_dir / f"{output_prefix}.res"),
+            "fgr": str(project_dir / f"{output_prefix}.fgr"),
             "plot": str(project_dir / f"{output_prefix}.png"),
             "refined_structures": [],
         }
         pf.save_res(output_files["results"])
+        pf.save_pdf(1, output_files["fgr"])
 
         for phase_idx in range(1, num_phases + 1):
             refined_structure_path = str(project_dir / f"{output_prefix}_phase{phase_idx}.rstr")
@@ -2411,6 +2426,7 @@ def refine(
 
 def export_cifs(
     rstr_files: List[str],
+    project_path: Optional[str] = None,
     user_id: Optional[str] = None,
     mission_name: Optional[str] = None,
     task_id: Optional[str] = None,
@@ -2419,6 +2435,8 @@ def export_cifs(
 
     Args:
         rstr_files: Paths to refined structure files.
+        project_path: Optional project snapshot path. When provided and .fgr is
+            missing on disk, it will be regenerated from the snapshot.
         user_id: User namespace used to build CIF output directory.
         mission_name: Mission namespace used to build CIF output directory.
         task_id: Task identifier used to build CIF file name.
@@ -2428,6 +2446,7 @@ def export_cifs(
         Key fields:
         - `status`: `success` or `failed`
         - `cif_files`: generated CIF paths
+        - `fgr_file`: fitted PDF file path when available
     """
     results = {"status": "failed"}
 
@@ -2462,8 +2481,53 @@ def export_cifs(
                 raise ValueError(f"无法将结构文件转换为 CIF: {src}")
             cif_files.append(str(dst))
 
+        fgr_path: Optional[Path] = None
+        export_base = _infer_pdf_export_base_from_rstr(rstr_files)
+        if export_base is not None:
+            candidate_fgr = export_base.with_suffix(".fgr")
+            if candidate_fgr.exists():
+                fgr_path = candidate_fgr
+
+        if fgr_path is None and project_path:
+            project_path_obj = Path(project_path)
+            if not project_path_obj.exists():
+                raise FileNotFoundError(f"project_path 不存在: {project_path}")
+
+            manifest = _safe_json_load(project_path_obj)
+            data_file = manifest.get("data_file")
+            structure_files_raw = manifest.get("structure_files")
+            non_refine_value = manifest.get("nonRefineValue")
+            if not isinstance(data_file, str) or not data_file.strip():
+                raise ValueError("project manifest 缺少有效 data_file")
+            if not isinstance(structure_files_raw, list) or not structure_files_raw:
+                raise ValueError("project manifest 缺少有效 structure_files")
+            if not isinstance(non_refine_value, dict):
+                raise ValueError("project manifest 缺少 nonRefineValue")
+
+            qmax = float(non_refine_value.get("qmax", 25.0))
+            pdf_source = _normalize_pdf_source(non_refine_value.get("pdf_source", "N"))
+            read_data_qdamp = 0.001
+
+            pf = PdfFit()
+            cleaned_data_file: Optional[Path] = None
+            try:
+                cleaned_data_file = _preprocess_pdf_data_for_pdffit(data_file, output_dir=output_dir)
+                pf.read_data(str(cleaned_data_file), pdf_source, qmax, read_data_qdamp)
+            finally:
+                if cleaned_data_file is not None:
+                    try:
+                        cleaned_data_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+            _load_structure_files(pf, [str(p) for p in structure_files_raw])
+            fgr_path = output_dir / f"{safe_task_id}.fgr"
+            pf.save_pdf(1, str(fgr_path))
+
         results["status"] = "success"
         results["cif_files"] = cif_files
+        if fgr_path is not None and fgr_path.exists():
+            results["fgr_file"] = str(fgr_path)
         return results
 
     except Exception as e:
