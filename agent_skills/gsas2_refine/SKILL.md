@@ -101,5 +101,5 @@ description: Rietveld refinement skill for neutron powder diffraction using the 
    14. 如果是多相精修，建议先精修相分数，再精修其他参数。
    15. 当出现相同位置有多种元素的时候，占位率之和必须等于1。如果占位在修的时候总是变成小于0，或大于零，直接去掉约束并手动设值。例如，有个位点一致小于0，那可能意味着这里就是0.
    16. 注意约束打开就意味着相关的参数都打开了，你要固定参数的话要关闭约束并且手动设值，不参与精修的话，还要手动关闭这些参数的refine开关。
-   17. 处理空间群时，你必须先阅读本目录下的 SPACEGROUP_REFERENCE.md，然后再决定 spacegroup 参数。
+   17. 处理空间群时，你必须先阅读~/agent_skills/gsas2_refine/下的 SPACEGROUP_REFERENCE.md，然后再决定 spacegroup 参数。
    18. 当用户明确要求“用差值傅里叶找离子位置”“推荐位点”“找缺位原子”时，优先使用 RecommendIonPositions，而不是直接让模型凭经验生成坐标；只有在 Fourier map 无法给出稳定候选点时，才退回到人工判断或后续精修。
