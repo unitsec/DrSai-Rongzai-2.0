@@ -40,6 +40,36 @@ cp .env.example .env
 
  - WORKER_SPACE="..." # 用于指定工作目录，指储存RUN数据总目录
 
+## 2.1 切换drsai_ui来源（external/internal）
+
+在不改代码的情况下，可通过环境变量切换是使用外部安装的drsai_ui，还是使用仓内源码drsai_ui。
+
+- 默认模式（external）：使用当前Python环境里安装的drsai_ui包
+- 内置模式（internal）：优先从本仓源码路径加载drsai_ui
+
+建议在.env中增加：
+
+```shell
+# external | internal
+DRSAI_UI_MODE=external
+
+# 仅internal模式使用，默认就是 /home/wangh/rongzai-agent/src
+DRSAI_UI_INTERNAL_SRC=/home/wangh/rongzai-agent/src
+
+# 可选：手动指定前端静态资源同步目标
+# DRSAI_UI_STATIC_DIR=/path/to/site-packages/drsai_ui/ui_backend/backend/web/ui
+# DRSAI_UI_INTERNAL_STATIC_DIR=/home/wangh/rongzai-agent/src/drsai_ui/ui_backend/backend/web/ui
+```
+
+切换后，对应执行：
+
+```shell
+cd webui/frontend
+yarn build:sync
+cd ../..
+python run_ui.py
+```
+
 ## 3.运行RONGZAI Agent 后端
 
 ```shell

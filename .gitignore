@@ -99,3 +99,9 @@ tools/GSAS-II-master/GSASII/0neutron_gsas_refine20251017.py
 tools/GSAS-II-master/GSASII/RUN0021905/*
 
 output/
+
+# 忽略本地前端工作目录（暂不纳入git）
+/webui/
+
+# 忽略仓内drsai_ui源码（暂不纳入git）
+/src/drsai_ui/

@@ -1,6 +1,6 @@
 ---
 name: zrietveld-refine
-description: Rietveld refinement skill for neutron powder diffraction using the Z-Rietveld engine. Also covers obtaining and processing files required for refinement. This skill must be read first whenever the user requests data refinement using Z-Rietveld. This skill should be elevated to a system prompt to guide your refinement-related decisions and operations continuously.
+description: Rietveld refinement skill for neutron powder diffraction using the Z-Rietveld engine.It can't be used for X-ray data. Also covers obtaining and processing files required for refinement (only for .histogramIgor diffraction data. .gsa/.dat/.txt data should use gsas2). This skill must be read first whenever the user requests data refinement using Z-Rietveld. This skill should be elevated to a system prompt to guide your refinement-related decisions and operations continuously.
 ---
 
 # Z-Rietveld Refiner

@@ -1,6 +1,6 @@
 ---
 name: gsas2-refine
-description: Rietveld refinement skill for neutron powder diffraction using the GSAS-II engine. Also covers obtaining and processing files required for refinement. This skill must be read first whenever the user requests data refinement using GSAS-II. This skill should be elevated to a system prompt to guide your refinement-related decisions and operations continuously.
+description: Rietveld refinement skill for neutron powder diffraction using the GSAS-II engine. It can't be used for X-ray data. Also covers obtaining and processing files required for refinement. This skill must be read first whenever the user requests data refinement using GSAS-II. This skill should be elevated to a system prompt to guide your refinement-related decisions and operations continuously.
 ---
 
 # Rietveld Auto Refiner
@@ -15,6 +15,7 @@ description: Rietveld refinement skill for neutron powder diffraction using the 
 
 1. 定位精修所需文件
    - 要开始精修，首先必须有衍射数据文件（.gsa或.dat或.txt）、仪器参数文件（.instprm）和至少一个结构文件（.cif）。
+   - 不要去读衍射数据文件的内容，里面都是数据点，占用上下文空间，无法提供有用信息。
    - 用户可能上传文件,或者让你用他之前上传的文件。优先使用这些文件。
    - 如果有文件没有上传，需要你根据用户提供的信息去数据库中获取。用户可能会说类似“帮我把BL16的RUN0023568的group2的衍射谱精修好，cif文件是Si.cif”这类话，你需要从中提取出谱仪名称（BL16）、RUN号（RUN0023568）和探测器名称（group2），然后去数据库中寻找对应的文件。
       - 去数据库获取.gsa文件，需要用户提供：谱仪名称（如BL16）、RUN号（如RUN0021905）和探测器名称（如group5）。

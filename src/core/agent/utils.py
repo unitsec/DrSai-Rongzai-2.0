@@ -129,6 +129,53 @@ def get_operator_funcs_rongzai(source_name: str) -> list[callable]:
         except Exception as e:
             print(f"读取文件时出错: {e}")
             return None
+
+    def run_read(
+        path: str,
+        start_line: int = 1,
+        end_line: int | None = None,
+        encoding: str = "utf-8",
+    ) -> str:
+        """
+        Read a text file by line range. Suggest using this function to read files in chunks instead of reading the entire file at once.
+
+        Args:
+            path: Local file path.
+            start_line: 1-based start line, inclusive.
+            end_line: 1-based end line, inclusive. None means read to EOF.
+            encoding: File encoding, default utf-8.
+
+        Returns:
+            File content for the requested line window.
+        """
+        try:
+            file_path = Path(path).expanduser()
+            if not file_path.exists():
+                return f"Error: File not found: {path}"
+            if not file_path.is_file():
+                return f"Error: Not a file: {path}"
+
+            start_line = int(start_line)
+            if start_line < 1:
+                return "Error: start_line must be >= 1"
+
+            if end_line is not None:
+                end_line = int(end_line)
+                if end_line < start_line:
+                    return "Error: end_line must be >= start_line"
+
+            selected: list[str] = []
+            with open(file_path, "r", encoding=encoding, errors="ignore") as f:
+                for current_line, line in enumerate(f, start=1):
+                    if current_line < start_line:
+                        continue
+                    if end_line is not None and current_line > end_line:
+                        break
+                    selected.append(line.rstrip("\n"))
+
+            return "\n".join(selected)
+        except Exception as e:
+            return f"Error: {e}"
     
     def serve_files_for_user(files_list: list[str], descriptions_list: list[str]):
         """
@@ -176,7 +223,7 @@ def get_operator_funcs_rongzai(source_name: str) -> list[callable]:
             return f"Error in serve_files_for_user: {e}"
     
     
-    return [serve_files_for_user]
+    return [run_read, serve_files_for_user]
 
 
 if __name__ == "__main__":

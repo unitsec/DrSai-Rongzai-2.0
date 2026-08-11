@@ -99,6 +99,7 @@ description: PDF refinement skill for pair distribution function fitting using t
    - 一个 PDF 数据文件（.txt 或 .dat，第一列通常为 r）
    - 至少一个结构文件（通常是 .cif）
 - 优先使用用户当前提供或之前已提供的文件。
+- 不要去读PDF数据文件的内容，里面都是数据点，占用上下文空间，无法提供有用信息。
 - 若文件未上传，需要根据用户提供的信息去数据库寻找。
 - 数据库位置通常在：/home/wangh/rongzai-agent/datasets/
 - 常见结构：
@@ -147,9 +148,9 @@ description: PDF refinement skill for pair distribution function fitting using t
    - rmax
    - pdf_source（默认 N，除非用户明确要求 X）
 - r 区间选择原则：
-   - 过宽容易引入噪声。
+   - 过宽容易导致最初的拟合失败。
    - 过窄可能丢掉结构信息。
-   - 优先选择峰形清晰、对拟合敏感的主要区间。
+   - 优先选择峰形清晰、对拟合敏感的主要区间，如果用户没有明确要求，先选择 1.5~20 Å。
 
 ### 5. 峰位和尺度预对齐
 
@@ -160,6 +161,7 @@ description: PDF refinement skill for pair distribution function fitting using t
 - 做法：
    - 用 UpdateNonRefineValueAndConstraintSet 的 mergeConstraintSet 增加这些物理量与自由参数的映射。
    - 再用 UpdateRefineState 控制哪些 @n 在当前步真正放开。
+   - 注意, phase[i].lat.a / lat.b / lat.c的绑定必须遵循对称性约束，例如：立方晶系下 a=b=c，六方晶系下 a=b≠c。
 - 一次最多新增一个参数组。
 - 如果出现发散、奇异矩阵、rw 明显变差，立即回退到上一个稳定 project_path。
 

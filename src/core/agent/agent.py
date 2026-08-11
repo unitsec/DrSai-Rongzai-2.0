@@ -9,7 +9,9 @@ from typing import (
     Union, 
     Optional, 
     Self,
+    Set,
     )
+import ast
 import os, json, re
 import asyncio, traceback
 import types
@@ -61,7 +63,9 @@ from drsai.modules.managers.messages import (
     ModelClientStreamingChunkEvent,
     TextMessage,
     ToolCallRequestEvent,
+    ToolCallExecutionEvent,
     AgentLogEvent,
+    Send_level,
     FilesEvent,
     StructuredMessage,
     StructuredMessageFactory,
@@ -77,7 +81,11 @@ from drsai.modules.components.skills import SkillLoader
 from drsai.utils.utils import download_file_from_url_or_base64
 from drsai.modules.agents.skills_agent.managers.get_managers_tools import (
     get_agent_skills_tool,
+    get_subagent_tools,
 )
+from drsai.modules.agents import HepAIWorkerAgent
+from .todo_manager import StructuredTodoManager, get_todo_write_tool
+from .memo_manager import StructuredMemoManager, get_memo_write_tool
 from .utils import (
     _extract_existing_image_paths_from_content,
     show_file_to_user,
@@ -101,6 +109,219 @@ def _get_env_float(name: str, default: float) -> float:
     except ValueError:
         return float(default)
 
+
+def _build_tool_arguments_parse_error(
+    *,
+    tool_name: str,
+    raw_arguments: Any,
+    exception: Exception,
+    stage: str,
+) -> str:
+    """构建结构化的参数解析错误，帮助模型基于反馈自动修正并重试。"""
+    payload = {
+        "type": "tool_arguments_parse_error",
+        "tool_name": tool_name,
+        "stage": stage,
+        "error_type": type(exception).__name__,
+        "error_message": str(exception),
+        "raw_arguments": raw_arguments,
+        "retry_suggestion": (
+            "Please fix the JSON argument format and call the same tool again. "
+            "The tool call envelope must be valid JSON object; if the tool expects arguments_json, "
+            "its value must be a valid JSON object string."
+        ),
+        "examples": {
+            "tool_call_arguments": {"arguments_json": "{\"key\": \"value\"}"},
+            "arguments_json_value": "{\"key\": \"value\"}",
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _parse_json_object_with_fallback(raw_value: Any) -> Dict[str, Any]:
+    """解析工具参数为 JSON 对象，支持常见非标准格式兜底。"""
+    if raw_value is None:
+        return {}
+    if isinstance(raw_value, dict):
+        return raw_value
+    if not isinstance(raw_value, str):
+        raise TypeError(f"tool arguments must be dict or JSON string, got {type(raw_value).__name__}")
+
+    text = raw_value.strip()
+    if not text:
+        return {}
+
+    candidates = [text]
+    left_brace = text.find("{")
+    right_brace = text.rfind("}")
+    if left_brace != -1 and right_brace > left_brace:
+        sliced = text[left_brace : right_brace + 1]
+        if sliced != text:
+            candidates.append(sliced)
+
+    parse_errors: List[str] = []
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+            raise TypeError("decoded value is not a JSON object")
+        except Exception as e:
+            parse_errors.append(f"json.loads: {e}")
+
+    for candidate in candidates:
+        try:
+            parsed = ast.literal_eval(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+            raise TypeError("literal value is not a dict")
+        except Exception as e:
+            parse_errors.append(f"ast.literal_eval: {e}")
+
+    raise ValueError("; ".join(parse_errors))
+
+
+def _extract_candidate_local_paths(text: str) -> List[str]:
+    """Extract possible local file paths from free text."""
+    if not text:
+        return []
+
+    quoted = re.findall(r"[\"']([^\"']+)[\"']", text)
+    unquoted = re.findall(r"((?:/|\.{1,2}/)[^\s\"'<>]+)", text)
+    raw_candidates = quoted + unquoted
+
+    # Keep order and deduplicate.
+    seen: Set[str] = set()
+    out: List[str] = []
+    for candidate in raw_candidates:
+        normalized = candidate.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def _extract_candidate_filenames(text: str) -> List[str]:
+    """Extract possible bare filenames from free text (without directory)."""
+    if not text:
+        return []
+
+    # Match names like a.txt, 1W2B_Mythen_New.instprm, Si.cif.
+    filename_pattern = re.compile(r"\b([A-Za-z0-9_@+\-][A-Za-z0-9_@+\-.]*\.[A-Za-z]{1,12})\b")
+    candidates = filename_pattern.findall(text)
+
+    seen: Set[str] = set()
+    out: List[str] = []
+    for candidate in candidates:
+        normalized = candidate.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+class OpaqueRemoteWorkerProxy(HepAIWorkerAgent):
+    """Proxy a remote DDF/worker agent without locally re-processing its tool calls."""
+
+    async def on_messages_stream(
+        self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken
+    ) -> AsyncGenerator[BaseAgentEvent | BaseChatMessage | Response, None]:
+        if not self._funcs_map:
+            yield Response(
+                chat_message=TextMessage(
+                    content=f"Cannot connect to the model: {self.model_name} through {self.url}. Please check the connection and try again later.",
+                    source=self.name,
+                    metadata={"internal": "no"},
+                )
+            )
+            return
+
+        if self.is_paused:
+            yield Response(
+                chat_message=TextMessage(
+                    content=f"The {self.name} is paused.",
+                    source=self.name,
+                    metadata={"internal": "no"},
+                )
+            )
+            return
+
+        try:
+            requested_model_alias = self._extract_model_alias_from_messages(messages)
+            if requested_model_alias and requested_model_alias != self.defult_config_name:
+                switch_result = await self.switch_remote_model(requested_model_alias)
+                if not switch_result.get("status", False):
+                    logger.warning(
+                        "Requested remote model switch failed before completion: {}",
+                        switch_result.get("message"),
+                    )
+
+            completion_kwargs = {
+                "messages": [message.model_dump(mode="json") for message in messages],
+                "apikey": self.api_key,
+                "stream": True,
+                "model": self.name,
+                "chat_id": self._chat_id,
+                "user": self._run_info,
+            }
+            if self.defult_config_name:
+                completion_kwargs["defult_config_name"] = self.defult_config_name
+
+            stream = self._funcs_map["a_chat_completions"](**completion_kwargs)
+
+            yielded_message = False
+            async for chunk in self.async_stream_generator(stream, timeout=self._stream_timeout):
+                if self.is_paused:
+                    raise asyncio.CancelledError("Agent paused during streaming")
+                message_type = chunk.get("type")
+                if message_type in self._message_factory._message_types:
+                    msg: BaseChatMessage | BaseAgentEvent = self._message_factory._message_types[
+                        message_type
+                    ].model_validate(chunk)
+                    yielded_message = True
+                    yield msg
+                if "stop_reason" in chunk:
+                    break
+
+            if not yielded_message:
+                yield Response(
+                    chat_message=TextMessage(
+                        content="Remote worker returned no visible output.",
+                        source=self.name,
+                        metadata={"internal": "no"},
+                    )
+                )
+        except asyncio.CancelledError:
+            if self.is_paused:
+                yield Response(
+                    chat_message=TextMessage(
+                        content=f"The {self.name} was paused.",
+                        source=self.name,
+                        metadata={"internal": "no"},
+                    )
+                )
+            else:
+                yield Response(
+                    chat_message=TextMessage(
+                        content="The task was cancelled by the user.",
+                        source=self.name,
+                        metadata={"internal": "yes"},
+                    )
+                )
+        except asyncio.TimeoutError:
+            yield Response(
+                chat_message=TextMessage(
+                    content="The task timed out.",
+                    source=self.name,
+                    metadata={"internal": "no"},
+                )
+            )
+        except Exception:
+            raise
+
 class DrSaiAssistantConfig(DrSaiAgentConfig):
     skills_dir: Optional[str | List[str]]
     work_dir: str | None
@@ -112,11 +333,10 @@ class DrSaiAssistantConfig(DrSaiAgentConfig):
     rag_flow_token: str
     memory_dataset_id: str
     learning_dataset_id: str
+    sub_agent_config: Dict[str, Dict[str, Any]] | None = None
 
 class RongZaiAgent(DrSaiAgent):
     """
-    融载智能体（精简版）。
-
     当前设计目标：
     1. 保留基础工具调用能力。
     2. 仅加载系统级 skills（不允许用户覆盖）。
@@ -157,10 +377,13 @@ class RongZaiAgent(DrSaiAgent):
         fallback_config_names: Optional[List[str]] = None,
         # skills and executor
         skills_dir: Optional[str | List[str]] = None,
+        sub_agent_config: Optional[Dict[str, Dict[str, Any]]] = None,
         work_dir: str | None = None,
         only_in_workspace: bool = True,
         extra_work_dirs: List[str] | None = None,
         executor: CodeExecutor | None = None,
+        max_delegate_depth: int = 1,
+        subagent_timeout: int = 600,
         token_limit: int = 500000
         ):
         
@@ -223,7 +446,7 @@ class RongZaiAgent(DrSaiAgent):
             )
         # self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
         for func in self._basic_funcs:
-            if func.__name__ in {"run_bash", "run_read", "run_write", "run_edit"}:
+            if func.__name__ in {"run_bash", "run_write", "run_edit"}:
                 self._tools.append(FunctionTool(func, description=func.__doc__ or ""))
 
         # 将rongzai需要的特定的函数转换为FunctionTool对象并加入self._tools列表
@@ -275,6 +498,7 @@ class RongZaiAgent(DrSaiAgent):
         
         self._download_dir = self._work_dir / self._thread_id /"downloads"
         self._download_dir.mkdir(parents=True, exist_ok=True)
+        self._delegate_file_url_cache: Dict[str, str] = {}
 
         # 浏览器 cookie 由 drsai_ui 在 WS 握手时抓白名单快照,沿
         # body["user"]["cookies"] 流过 drsai cores 落到 UserInput.extra_requests。
@@ -285,22 +509,47 @@ class RongZaiAgent(DrSaiAgent):
         # 仅加载系统级 skills，禁用用户覆盖。
         self._skills_dir = skills_dir
         self._agent_skills_tools = []
+        self._sub_agent_config = sub_agent_config or {}
+        self._subagent_tools: List[ToolSchema] = []
+        self._delegate_depth = 0
+        self._max_delegate_depth = max(0, int(max_delegate_depth))
+        self._subagent_timeout = max(30, int(subagent_timeout))
+        self._remote_subagents: Dict[str, OpaqueRemoteWorkerProxy] = {}
+        self._subagent_model_alias_cache: Dict[str, List[str]] = {}
+        self._refresh_subagent_tools()
+        # self._core_skill_tools = []
         self._core_skill_tools = [
             self._get_promote_skill_tool(),
             self._get_demote_skill_tool(),
             self._get_replace_core_skill_tool(),
         ]
         self._core_skill_slots: List[Dict[str, Any]] = []
-        self._max_core_skill_slots = 2
+        self._max_core_skill_slots = 1
         self._core_skill_update_seq = 0
+        # self._core_skill_policy_prompt = ()
         self._core_skill_policy_prompt = (
-            "[Core Skill Promotion Policy]\n"
-            "Evaluate whether to call PromoteSkillToCore before important actions.\n"
-            "Use it especially for high-risk or strict multi-step domain tasks.\n"
-            "Use it especially when you need a skill for a professional data analysis work with multi-step operation.\n"
-            "Core skills do not auto-expire; manage lifecycle explicitly with DemoteCoreSkill/ReplaceCoreSkill.\n"
-            "Always provide a concise reason when promoting, demoting, or replacing core skills."
+            "[Core Skill Runtime Reminder]\n"
+            "When task focus changes, replace or demote obsolete core skills before promoting new ones.\n"
+            "Keep only the minimum active core skills required for the current task."
         )
+        self._todo_policy_prompt = (
+            "[Todo Planning Policy]\n"
+            "For a complex task that requires multiple specialized tools, multiple dependent steps, repeated loops, or remote sub-agent delegation, call TodoWrite before execution begins.\n"
+            "TodoWrite must contain the full active todo list. Each item must include title, details, and status.\n"
+            "Maintain the todo list during execution. After each meaningful milestone or status change, call TodoWrite again with the full updated list.\n"
+            "When all steps are completed, mark them completed; the active todo list will then be removed from the system prompt automatically."
+        )
+        self._memo_policy_prompt = (
+            "[Memo Policy]\n"
+            "Use MemoWrite for a very short, high-value scratchpad of critical facts that may be needed later, such as important file paths, filenames, for avoiding forgetting important information.\n"
+            "MemoWrite is incremental by default: send only changed entries and keep existing entries unless you explicitly remove them.\n"
+            "Keep the memo compact. Remove outdated entries immediately when they are no longer useful; do not keep stale notes.\n"
+            "Only clear the whole memo when truly needed by setting clear_all=true."
+        )
+        self._todo_manager = StructuredTodoManager()
+        self._todo_tools = [get_todo_write_tool()]
+        self._memo_manager = StructuredMemoManager()
+        self._memo_tools = [get_memo_write_tool()]
 
         # 初始化固定系统提示词（仅受开发者配置影响）。
         self._lang_prompt = ""
@@ -320,6 +569,12 @@ class RongZaiAgent(DrSaiAgent):
         self._tools_names = [tool.name for tool in self._tools]
         self._default_model_client_component = self._model_client.dump_component()
         self._default_model_client_name = ""
+        self._current_run_token_usage: Dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "calls": 0,
+        }
         try:
             self._default_model_client_name = self._model_client._create_args.get("model", "")
         except Exception:
@@ -348,44 +603,6 @@ class RongZaiAgent(DrSaiAgent):
 
         setattr(ctx, "replace_messages", types.MethodType(_replace_messages, ctx))
 
-    # Legacy (disabled): tool 图片回注主模型上下文管理方法。
-    # def _record_ephemeral_image_message(self, multimodal_msg: UserMessage) -> None:
-    #     """记录新注入的临时图片消息，供下一轮推理使用。"""
-    #     self._ephemeral_images_pending.append(multimodal_msg)
-
-    # def _arm_ephemeral_images_for_inference(self) -> None:
-    #     """在每轮推理开始前装载临时图片消息。"""
-    #     self._ephemeral_images_inflight = self._ephemeral_images_pending
-    #     self._ephemeral_images_pending = []
-
-    # def _cleanup_inflight_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
-    #     """在每轮推理结束后清理已消费的临时图片消息。"""
-    #     if not self._ephemeral_images_inflight:
-    #         return
-    #     if not isinstance(model_context, DrSaiChatCompletionContext):
-    #         self._ephemeral_images_inflight = []
-    #         return
-    #
-    #     target_ids = {id(msg) for msg in self._ephemeral_images_inflight}
-    #     if target_ids:
-    #         model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
-    #         model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
-    #     self._ephemeral_images_inflight = []
-
-    # def _cleanup_all_ephemeral_images(self, model_context: ChatCompletionContext) -> None:
-    #     """兜底清理：移除 pending/inflight 的所有临时图片消息。"""
-    #     if not isinstance(model_context, DrSaiChatCompletionContext):
-    #         self._ephemeral_images_pending = []
-    #         self._ephemeral_images_inflight = []
-    #         return
-    #
-    #     all_ephemeral = self._ephemeral_images_pending + self._ephemeral_images_inflight
-    #     target_ids = {id(msg) for msg in all_ephemeral}
-    #     if target_ids:
-    #         model_context._messages = [msg for msg in model_context._messages if id(msg) not in target_ids]
-    #         model_context._current_messages = [msg for msg in model_context._current_messages if id(msg) not in target_ids]
-    #     self._ephemeral_images_pending = []
-    #     self._ephemeral_images_inflight = []
 
     def _file_changed(self, path: Path) -> bool:
         """判断文件或目录是否变化，并更新 mtime 缓存。"""
@@ -417,7 +634,7 @@ class RongZaiAgent(DrSaiAgent):
         return changed
 
     def update_system_prompt(self) -> None:
-        """构建系统提示词：开发者提示词 + 会话 ID + Core Skill 规则区。"""
+        """构建系统提示词：开发者提示词 + 运行态策略 + 会话信息。"""
         enhanced_system_message = f"{self._lang_prompt}\n\n{self._developer_system_message}"
         if self._thread_id:
             enhanced_system_message = f"{enhanced_system_message}\n\nCurrent session_id is {self._thread_id}"
@@ -428,10 +645,17 @@ class RongZaiAgent(DrSaiAgent):
             enhanced_system_message = (
                 f"{enhanced_system_message}\n\nThe files user uploaded are in {self._work_dir}/{self._thread_id}/uploads.")
         enhanced_system_message += f"\n\n{self._core_skill_policy_prompt}"
+        enhanced_system_message += f"\n\n{self._todo_policy_prompt}"
+        enhanced_system_message += f"\n\n{self._memo_policy_prompt}"
         core_skill_prompt = self._build_core_skill_prompt()
         if core_skill_prompt:
             enhanced_system_message += f"\n\n{core_skill_prompt}"
-        
+        todo_prompt = self._todo_manager.build_system_prompt_block()
+        if todo_prompt:
+            enhanced_system_message += f"\n\n{todo_prompt}"
+        memo_prompt = self._memo_manager.build_system_prompt_block()
+        if memo_prompt:
+            enhanced_system_message += f"\n\n{memo_prompt}"
         
         self._system_messages = [SystemMessage(content=enhanced_system_message)]
 
@@ -467,6 +691,9 @@ class RongZaiAgent(DrSaiAgent):
         """判断异常是否适合切换到备用模型后重试。"""
         text = str(error).lower()
         flags = [
+            "readerror",
+            "remoteprotocolerror",
+            "server disconnected",
             "insufficient_quota",
             "rate limit",
             "too many requests",
@@ -486,6 +713,109 @@ class RongZaiAgent(DrSaiAgent):
             "nonetype",
         ]
         return any(flag in text for flag in flags)
+
+    def _reset_run_token_usage(self) -> None:
+        """重置当前任务的 token 统计。"""
+        self._current_run_token_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "calls": 0,
+        }
+
+    def _extract_usage_tokens(self, usage: Any) -> Dict[str, int]:
+        """兼容多种 usage 结构，提取 prompt/completion/total token 数。"""
+        if usage is None:
+            return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        def _to_int(value: Any) -> int:
+            if value is None:
+                return 0
+            if isinstance(value, (int, float)):
+                return int(value)
+            if isinstance(value, str):
+                try:
+                    return int(float(value))
+                except ValueError:
+                    return 0
+            return 0
+
+        payload: Dict[str, Any] = {}
+        if isinstance(usage, dict):
+            payload = usage
+        else:
+            model_dump = getattr(usage, "model_dump", None)
+            if callable(model_dump):
+                try:
+                    dumped = model_dump()
+                except Exception:
+                    dumped = None
+                if isinstance(dumped, dict):
+                    payload = dumped
+
+            if not payload:
+                for key in [
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "total_tokens",
+                    "input_tokens",
+                    "output_tokens",
+                    "promptTokenCount",
+                    "completionTokenCount",
+                    "totalTokenCount",
+                    "inputTokenCount",
+                    "outputTokenCount",
+                ]:
+                    if hasattr(usage, key):
+                        payload[key] = getattr(usage, key)
+
+        prompt_tokens = _to_int(
+            payload.get(
+                "prompt_tokens",
+                payload.get("input_tokens", payload.get("promptTokenCount", payload.get("inputTokenCount", 0))),
+            )
+        )
+        completion_tokens = _to_int(
+            payload.get(
+                "completion_tokens",
+                payload.get("output_tokens", payload.get("completionTokenCount", payload.get("outputTokenCount", 0))),
+            )
+        )
+        total_tokens = _to_int(
+            payload.get("total_tokens", payload.get("totalTokenCount", prompt_tokens + completion_tokens))
+        )
+        if total_tokens <= 0 and (prompt_tokens > 0 or completion_tokens > 0):
+            total_tokens = prompt_tokens + completion_tokens
+
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+
+    def _update_and_log_token_usage(self, agent_name: str, usage: Any) -> None:
+        """累计 token 使用量，并打印当前对话累计消耗。"""
+        usage_stats = self._extract_usage_tokens(usage)
+        self._current_run_token_usage["prompt_tokens"] += usage_stats["prompt_tokens"]
+        self._current_run_token_usage["completion_tokens"] += usage_stats["completion_tokens"]
+        self._current_run_token_usage["total_tokens"] += usage_stats["total_tokens"]
+        self._current_run_token_usage["calls"] += 1
+
+        prompt_total = self._current_run_token_usage["prompt_tokens"]
+        completion_total = self._current_run_token_usage["completion_tokens"]
+        total_total = self._current_run_token_usage["total_tokens"]
+        calls = self._current_run_token_usage["calls"]
+        logger.info(
+            "[TokenUsage] agent={} prompt_total={} completion_total={} total_total={} calls={} this_call_prompt={} this_call_completion={} this_call_total={}",
+            agent_name,
+            prompt_total,
+            completion_total,
+            total_total,
+            calls,
+            usage_stats["prompt_tokens"],
+            usage_stats["completion_tokens"],
+            usage_stats["total_tokens"],
+        )
 
     def _flatten_message_content_for_summary(self, content: Any) -> str:
         """将消息内容拍平成短文本，供总结子智能体使用。"""
@@ -549,6 +879,11 @@ class RongZaiAgent(DrSaiAgent):
             "Recent message tail:\n"
             f"{bullets}"
         )
+
+    def _get_proactive_compress_threshold(self) -> int:
+        """读取预压缩阈值（精确 token 数）。<=0 表示关闭。"""
+        value = int(_get_env_float("RONGZAI_CONTEXT_COMPRESS_THRESHOLD_TOKENS", 0))
+        return max(value, 0)
 
     def _get_summary_model_client(self) -> ChatCompletionClient:
         """获取总结子智能体专用模型客户端。
@@ -812,15 +1147,16 @@ class RongZaiAgent(DrSaiAgent):
         runtime_messages: List[LLMMessage],
         cancellation_token: CancellationToken,
     ) -> List[LLMMessage]:
-        """基于总结子智能体压缩历史，构建重试上下文。"""
-        keep_recent = int(_get_env_float("RONGZAI_CONTEXT_RETRY_KEEP_RECENT", 12))
+        """基于总结子智能体压缩历史，构建重试上下文，并将压缩结果写回当前上下文。"""
+        keep_recent = int(_get_env_float("RONGZAI_CONTEXT_RETRY_KEEP_RECENT", 4))
         keep_recent = max(4, keep_recent)
 
         if len(runtime_messages) <= keep_recent:
-            return self._get_compatible_context(
+            compressed_messages = self._get_compatible_context(
                 model_client=model_client,
                 messages=system_messages + runtime_messages,
             )
+            return compressed_messages
 
         old_messages = runtime_messages[:-keep_recent]
         recent_messages = runtime_messages[-keep_recent:]
@@ -839,10 +1175,22 @@ class RongZaiAgent(DrSaiAgent):
             )
         )
 
-        return self._get_compatible_context(
+        compressed_messages = self._get_compatible_context(
             model_client=model_client,
             messages=system_messages + [summary_msg] + recent_messages,
         )
+
+        if hasattr(self._model_context, "_messages") and hasattr(self._model_context, "_current_messages"):
+            try:
+                if hasattr(self._model_context, "replace_messages"):
+                    self._model_context.replace_messages(compressed_messages)
+                else:
+                    self._model_context._messages = list(compressed_messages)
+                    self._model_context._current_messages = list(compressed_messages)
+            except Exception as replace_err:
+                logger.warning("Failed to persist compressed context into model_context: {}", replace_err)
+
+        return compressed_messages
 
     def _build_missing_tool_results(self, call_ids: set[str]) -> FunctionExecutionResultMessage:
         """为缺失的 tool call 生成占位结果，修复上下文消息链。"""
@@ -867,6 +1215,82 @@ class RongZaiAgent(DrSaiAgent):
         if value is None:
             return None
         return str(value)
+
+    def _extract_skill_name_from_tool_call(self, message: Any) -> Optional[str]:
+        """从 Skill 工具调用消息中提取 skill 名称。"""
+        if not isinstance(message, AssistantMessage):
+            return None
+
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            return None
+
+        for item in content:
+            if isinstance(item, FunctionCall) and getattr(item, "name", None) == "Skill":
+                try:
+                    arguments = _parse_json_object_with_fallback(getattr(item, "arguments", None))
+                except Exception:
+                    return None
+                skill_name = arguments.get("skill") if isinstance(arguments, dict) else None
+                if isinstance(skill_name, str) and skill_name.strip():
+                    return skill_name.strip()
+        return None
+
+    def _is_skill_result_message(self, message: Any, call_id: Optional[str]) -> bool:
+        """判断是否为某个 Skill 工具调用对应的结果消息。"""
+        if not isinstance(message, FunctionExecutionResultMessage):
+            return False
+
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            return False
+
+        for item in content:
+            if isinstance(item, FunctionExecutionResult) and getattr(item, "call_id", None) == call_id:
+                return getattr(item, "name", None) == "Skill"
+        return False
+
+    def _remove_matching_skill_context(self, model_context: ChatCompletionContext, skill_names: Sequence[str]) -> None:
+        """从上下文中删除与指定 skill 对应的历史 Skill 读取消息对。"""
+        normalized_skills = {str(skill).strip() for skill in skill_names if str(skill).strip()}
+        if not normalized_skills:
+            return
+
+        for attr_name in ("_messages", "_current_messages"):
+            messages = getattr(model_context, attr_name, None)
+            if not isinstance(messages, list):
+                continue
+
+            kept_messages: List[Any] = []
+            index = 0
+            while index < len(messages):
+                current_message = messages[index]
+                skill_name = self._extract_skill_name_from_tool_call(current_message)
+                if skill_name in normalized_skills:
+                    call_id = None
+                    if isinstance(current_message, AssistantMessage):
+                        content = getattr(current_message, "content", None)
+                        if isinstance(content, list):
+                            for item in content:
+                                if isinstance(item, FunctionCall) and getattr(item, "name", None) == "Skill":
+                                    call_id = getattr(item, "id", None)
+                                    break
+                    if call_id and index + 1 < len(messages) and self._is_skill_result_message(messages[index + 1], call_id):
+                        index += 2
+                        continue
+
+                kept_messages.append(current_message)
+                index += 1
+
+            if hasattr(model_context, attr_name):
+                setattr(model_context, attr_name, kept_messages)
+
+        if hasattr(model_context, "replace_messages"):
+            try:
+                current_messages = list(getattr(model_context, "_messages", []) or [])
+                model_context.replace_messages(current_messages)
+            except Exception:
+                pass
 
     def _is_tool_call_payload(self, content: Any) -> bool:
         """判断 assistant content 是否是工具调用列表（宽松判定）。"""
@@ -1039,9 +1463,14 @@ class RongZaiAgent(DrSaiAgent):
                     async def _proxy(arguments_json: str = "{}") -> str:
                         """调用远程 MCP 工具。arguments_json 必须是 JSON 对象字符串。"""
                         try:
-                            parsed_args = json.loads(arguments_json or "{}")
-                        except json.JSONDecodeError as e:
-                            return f"Error: invalid arguments_json: {e}"
+                            parsed_args = _parse_json_object_with_fallback(arguments_json)
+                        except Exception as e:
+                            return _build_tool_arguments_parse_error(
+                                tool_name=f"mcp_{tool}",
+                                raw_arguments={"arguments_json": arguments_json},
+                                exception=e,
+                                stage="mcp_proxy.arguments_json",
+                            )
                         result = await self._mcp_connections[sid].call_tool(tool, parsed_args)
                         return result.to_text()
                     return _proxy
@@ -1134,6 +1563,7 @@ class RongZaiAgent(DrSaiAgent):
                 UserMessage(content=[query, image_ob], source="user"),
             ]
 
+            vision_timeout_s = _get_env_float("RONGZAI_VISION_TIMEOUT_SECONDS", 150.0)
             failures: List[str] = []
             for model_name in model_candidates:
                 try:
@@ -1153,14 +1583,19 @@ class RongZaiAgent(DrSaiAgent):
                             "token_model": "gpt-4o-2024-11-20",
                         },
                     )
-                    rsp = await vision_client.create(
-                        llm_messages,
-                        cancellation_token=CancellationToken(),
+                    rsp = await asyncio.wait_for(
+                        vision_client.create(
+                            llm_messages,
+                            cancellation_token=CancellationToken(),
+                        ),
+                        timeout=vision_timeout_s,
                     )
                     answer = rsp.content if isinstance(rsp.content, str) else str(rsp.content)
                     if answer:
                         return answer
                     failures.append(f"{model_name}: empty output")
+                except asyncio.TimeoutError:
+                    failures.append(f"{model_name}: timeout after {vision_timeout_s:.0f}s")
                 except Exception as model_err:
                     failures.append(f"{model_name}: {model_err}")
 
@@ -1338,6 +1773,7 @@ class RongZaiAgent(DrSaiAgent):
             description=(
                 "Promote one loaded skill into high-priority core system rules. "
                 "Use this only when strict skill compliance is important for the current task. "
+                "If task focus has changed, prefer ReplaceCoreSkill or DemoteCoreSkill first instead of stacking promotions. "
                 "You decide whether to call this tool."
             ),
             parameters=parameters,
@@ -1363,7 +1799,10 @@ class RongZaiAgent(DrSaiAgent):
         )
         return ToolSchema(
             name="DemoteCoreSkill",
-            description="Demote/remove a promoted core skill from high-priority system rules.",
+            description=(
+                "Demote/remove a promoted core skill from high-priority system rules. "
+                "Call this immediately when that skill is no longer required by the current task to reduce prompt footprint."
+            ),
             parameters=parameters,
             strict=False,
         )
@@ -1395,7 +1834,10 @@ class RongZaiAgent(DrSaiAgent):
         )
         return ToolSchema(
             name="ReplaceCoreSkill",
-            description="Replace one promoted core skill with another in high-priority system rules.",
+            description=(
+                "Replace one promoted core skill with another in high-priority system rules. "
+                "Prefer this over adding another promoted skill when task focus changes."
+            ),
             parameters=parameters,
             strict=False,
         )
@@ -1530,6 +1972,702 @@ class RongZaiAgent(DrSaiAgent):
             self._agent_skills_tools = []
         return skills_loader
 
+    def _get_subagent_descriptions(self) -> str:
+        """将远程子智能体配置转成 Delegate 工具可读描述。"""
+        lines: List[str] = []
+        for name, cfg in self._sub_agent_config.items():
+            if not isinstance(cfg, dict):
+                continue
+            description = cfg.get("description", "")
+            if isinstance(description, dict):
+                description = description.get("zh") or description.get("en") or json.dumps(description, ensure_ascii=False)
+            known_aliases = self._get_known_subagent_model_aliases_for_prompt(name)
+            model_suffix = ""
+            if known_aliases:
+                model_suffix = f" | known_model_aliases: {', '.join(known_aliases)}"
+            lines.append(f"- {name}: {description or 'Remote sub-agent'}{model_suffix}")
+        return "\n".join(lines)
+
+    def _get_known_subagent_model_aliases_for_prompt(self, sub_agent_name: str) -> List[str]:
+        """收集指定子智能体当前已知的可用模型别名，供 Delegate 描述提示。"""
+        aliases: List[str] = []
+
+        # 优先使用当前会话键。
+        chat_key = self._get_subagent_chat_id(sub_agent_name)
+        aliases.extend(self._subagent_model_alias_cache.get(chat_key, []))
+
+        # 兼容未带 thread_id 的旧缓存键，或者来自同名子智能体的键。
+        for key, value in self._subagent_model_alias_cache.items():
+            if key == chat_key:
+                continue
+            if key == sub_agent_name or key.endswith(f":{sub_agent_name}"):
+                aliases.extend(value)
+
+        # 静态配置中的别名也纳入提示，便于首轮尽量命中。
+        aliases.extend(self._get_configured_subagent_model_aliases(sub_agent_name))
+        return self._dedupe_aliases(aliases)
+
+    def _refresh_subagent_tools(self) -> None:
+        """基于当前 sub_agent_config 生成 Delegate 工具。"""
+        if self._sub_agent_config:
+            descriptions = self._get_subagent_descriptions()
+            delegate_tool = get_subagent_tools(
+                sub_agents=list(self._sub_agent_config.keys()),
+                description=descriptions,
+            )
+            model_hint = (
+                "\n\nModel override (optional): "
+                "you can specify a subagent model alias by adding one of these tokens in description/prompt/context: "
+                "`subagent_model=<alias>` or `default_config_name=<alias>`. "
+                "Prefer aliases listed in each sub-agent description (known_model_aliases). "
+                "Example: `context: subagent_model=<known_alias>`"
+            )
+            if isinstance(delegate_tool, dict):
+                base_description = str(delegate_tool.get("description", "") or "")
+                delegate_tool["description"] = f"{base_description}{model_hint}"
+            else:
+                base_description = str(getattr(delegate_tool, "description", "") or "")
+                setattr(delegate_tool, "description", f"{base_description}{model_hint}")
+            self._subagent_tools = [delegate_tool]
+        else:
+            self._subagent_tools = []
+
+    def _check_delegate_depth(self) -> None:
+        """限制委托深度，防止递归委托导致无限膨胀。"""
+        if self._delegate_depth >= self._max_delegate_depth:
+            raise ValueError(
+                f"Cannot delegate further: max depth ({self._max_delegate_depth}) exceeded "
+                f"(current: {self._delegate_depth})."
+            )
+
+    def _extract_delegate_model_alias(self, argument: Dict[str, Any]) -> str:
+        """从 Delegate 参数中提取子智能体模型标识。"""
+        if not isinstance(argument, dict):
+            return ""
+
+        direct_keys = [
+            "subagent_model",
+            "delegate_model",
+            "model_alias",
+            "defult_config_name",
+            "default_config_name",
+        ]
+        for key in direct_keys:
+            value = argument.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        text_fields: List[str] = []
+        for field in ("description", "prompt", "context"):
+            value = argument.get(field)
+            if isinstance(value, str) and value.strip():
+                text_fields.append(value)
+
+        if not text_fields:
+            return ""
+
+        pattern = re.compile(
+            r"(?:subagent_model|delegate_model|model_alias|defult_config_name|default_config_name)\s*[:=]\s*([^\s,;\n]+)",
+            re.IGNORECASE,
+        )
+        for text in text_fields:
+            match = pattern.search(text)
+            if match:
+                alias = match.group(1).strip().strip("'\"")
+                if alias:
+                    return alias
+        return ""
+
+    async def _create_remote_subagent(
+        self,
+        sub_agent_name: str,
+        requested_model_alias: str = "",
+    ) -> OpaqueRemoteWorkerProxy:
+        """根据配置创建远程 Worker 子智能体。"""
+        chat_id = f"{self._thread_id}:{sub_agent_name}" if self._thread_id else sub_agent_name
+        cached_subagent = self._remote_subagents.get(chat_id)
+        if cached_subagent is not None:
+            if requested_model_alias and requested_model_alias != getattr(cached_subagent, "defult_config_name", ""):
+                switch_result = await cached_subagent.switch_remote_model(requested_model_alias)
+                if not switch_result.get("status", False):
+                    raise ValueError(
+                        f"Failed to switch sub-agent '{sub_agent_name}' model to '{requested_model_alias}': "
+                        f"{switch_result.get('message', 'unknown error')}"
+                    )
+            return cached_subagent
+
+        cfg = self._sub_agent_config.get(sub_agent_name)
+        if not cfg:
+            raise ValueError(f"Sub-agent '{sub_agent_name}' not found in sub_agent_config.")
+
+        agent_type = cfg.get("type", "HepAIWorkerAgent")
+        if agent_type not in {"HepAIWorkerAgent", "RemoteAgent"}:
+            raise ValueError(
+                f"Sub-agent '{sub_agent_name}' type '{agent_type}' is not a remote worker type. "
+                "Expected HepAIWorkerAgent or RemoteAgent."
+            )
+
+        remote_configs = cfg.get("model_remote_configs", {})
+        if not isinstance(remote_configs, dict):
+            raise ValueError(f"Sub-agent '{sub_agent_name}' has invalid model_remote_configs.")
+
+        api_key = remote_configs.get("api_key")
+        if not api_key:
+            try:
+                api_key = self._model_client._client.api_key
+            except Exception:
+                api_key = os.getenv("HEPAI_API_KEY", "")
+
+        model_remote_configs = {
+            "url": remote_configs.get("url", "https://aiapi.ihep.ac.cn/apiv2"),
+            "api_key": api_key,
+            "name": remote_configs.get("name", sub_agent_name),
+        }
+        default_cfg = requested_model_alias or remote_configs.get("defult_config_name") or remote_configs.get("default_config_name")
+        if default_cfg:
+            model_remote_configs["defult_config_name"] = default_cfg
+
+        subagent = OpaqueRemoteWorkerProxy(
+            name=sub_agent_name,
+            description=cfg.get("description", "") if isinstance(cfg.get("description", ""), str) else "",
+            model_remote_configs=model_remote_configs,
+            chat_id=chat_id,
+            run_info={
+                "name": self._user_id,
+                "email": self._user_id,
+            },
+            stream_timeout=float(self._subagent_timeout),
+        )
+        await subagent.lazy_init()
+        self._remote_subagents[chat_id] = subagent
+        return subagent
+
+    def _get_subagent_chat_id(self, sub_agent_name: str) -> str:
+        """构造子智能体会话键，确保缓存与复用一致。"""
+        return f"{self._thread_id}:{sub_agent_name}" if self._thread_id else sub_agent_name
+
+    def _dedupe_aliases(self, aliases: Sequence[str]) -> List[str]:
+        """对模型别名去重并保持顺序。"""
+        output: List[str] = []
+        seen: set[str] = set()
+        for alias in aliases:
+            if not isinstance(alias, str):
+                continue
+            normalized = alias.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            output.append(normalized)
+        return output
+
+    def _extract_aliases_from_container(self, value: Any) -> List[str]:
+        """从常见容器结构中提取模型别名列表。"""
+        aliases: List[str] = []
+        if isinstance(value, str):
+            for part in re.split(r"[,;\n]", value):
+                part = part.strip().strip("'\"")
+                if part:
+                    aliases.append(part)
+            return aliases
+
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str):
+                    text = item.strip().strip("'\"")
+                    if text:
+                        aliases.append(text)
+                elif isinstance(item, dict):
+                    for key in ("alias", "name", "model", "config", "default_config_name", "defult_config_name"):
+                        candidate = item.get(key)
+                        if isinstance(candidate, str) and candidate.strip():
+                            aliases.append(candidate.strip())
+            return aliases
+
+        if isinstance(value, dict):
+            for key in ("alias", "name", "model", "config", "default_config_name", "defult_config_name"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    aliases.append(candidate.strip())
+            aliases.extend([str(k).strip() for k in value.keys() if isinstance(k, str) and str(k).strip()])
+            return aliases
+
+        return aliases
+
+    def _get_configured_subagent_model_aliases(self, sub_agent_name: str) -> List[str]:
+        """从本地 sub_agent_config 中提取可选模型别名。"""
+        cfg = self._sub_agent_config.get(sub_agent_name, {})
+        if not isinstance(cfg, dict):
+            return []
+        remote_configs = cfg.get("model_remote_configs", {})
+        if not isinstance(remote_configs, dict):
+            return []
+
+        aliases: List[str] = []
+        for key in (
+            "defult_config_name",
+            "default_config_name",
+            "model_aliases",
+            "available_models",
+            "fallback_config_names",
+            "candidate_models",
+        ):
+            aliases.extend(self._extract_aliases_from_container(remote_configs.get(key)))
+
+        llm_mode_config = remote_configs.get("llm_mode_config")
+        if isinstance(llm_mode_config, dict):
+            aliases.extend([str(name).strip() for name in llm_mode_config.keys() if str(name).strip()])
+
+        return self._dedupe_aliases(aliases)
+
+    def _parse_remote_model_aliases(self, payload: Dict[str, Any]) -> List[str]:
+        """从远端 get_current_model 返回值中提取模型别名。"""
+        if not isinstance(payload, dict):
+            return []
+
+        aliases: List[str] = []
+        for key in (
+            "defult_config_name",
+            "default_config_name",
+            "current_model",
+            "model_alias",
+            "model",
+            "available",
+            "available_models",
+            "model_aliases",
+            "config_names",
+            "available_config_names",
+        ):
+            aliases.extend(self._extract_aliases_from_container(payload.get(key)))
+
+        llm_mode_config = payload.get("llm_mode_config")
+        if isinstance(llm_mode_config, dict):
+            aliases.extend([str(name).strip() for name in llm_mode_config.keys() if str(name).strip()])
+
+        # 部分后端把结构体序列化进 message 字段，尝试 JSON 解析一次。
+        message = payload.get("message")
+        if isinstance(message, str) and "{" in message and "}" in message:
+            try:
+                parsed = json.loads(message)
+                if isinstance(parsed, dict):
+                    aliases.extend(self._parse_remote_model_aliases(parsed))
+            except Exception:
+                pass
+
+        return self._dedupe_aliases(aliases)
+
+    async def _discover_subagent_model_aliases(
+        self,
+        sub_agent_name: str,
+        subagent: OpaqueRemoteWorkerProxy,
+    ) -> List[str]:
+        """查询并缓存子智能体可用模型别名（本地配置 + 远端反馈）。"""
+        cache_key = self._get_subagent_chat_id(sub_agent_name)
+        aliases: List[str] = []
+
+        # 1) 静态配置候选
+        aliases.extend(self._get_configured_subagent_model_aliases(sub_agent_name))
+
+        # 2) 已缓存候选
+        aliases.extend(self._subagent_model_alias_cache.get(cache_key, []))
+
+        # 3) 远端动态候选
+        try:
+            if hasattr(subagent, "get_remote_model"):
+                remote_payload = await subagent.get_remote_model()
+                if isinstance(remote_payload, dict) and remote_payload.get("status", True):
+                    aliases.extend(self._parse_remote_model_aliases(remote_payload))
+        except Exception as remote_err:
+            logger.warning(
+                "Failed to query remote model aliases for sub-agent '{}': {}",
+                sub_agent_name,
+                remote_err,
+            )
+
+        current_alias = getattr(subagent, "defult_config_name", "")
+        if isinstance(current_alias, str) and current_alias.strip():
+            aliases.insert(0, current_alias.strip())
+
+        deduped = self._dedupe_aliases(aliases)
+        previous_aliases = self._subagent_model_alias_cache.get(cache_key, [])
+        self._subagent_model_alias_cache[cache_key] = deduped
+
+        # 首次拿到远端 available（或候选发生变化）后，立即刷新 Delegate 描述，
+        # 让下一轮推理一开始就能看到正确的 known_model_aliases。
+        if deduped != previous_aliases:
+            self._refresh_subagent_tools()
+        return deduped
+
+    def _is_empty_subagent_text(self, text: str) -> bool:
+        """判断文本是否属于“空输出”语义。"""
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return True
+        empty_markers = {
+            "remote worker returned no visible output.",
+            "subagent completed with empty output.",
+        }
+        if normalized in empty_markers:
+            return True
+        if normalized.startswith("subagent '") and normalized.endswith("completed with empty output."):
+            return True
+        return False
+
+    def _is_subagent_failure_text(self, text: str) -> bool:
+        """判断文本是否属于子智能体失败/超时提示。"""
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return False
+
+        markers = [
+            "the task timed out",
+            "model streaming timed out",
+            "cannot connect to the model",
+            "delegate failed",
+            "nameerror:",
+            "traceback",
+            "an error occurred while executing the task",
+        ]
+        return any(marker in normalized for marker in markers)
+
+    def _is_delegate_system_notice_chunk(self, text: str) -> bool:
+        """判断流式 chunk 是否是主智能体注入的系统通知。"""
+        normalized = (text or "").strip().lower()
+        return normalized.startswith("[system notice]")
+
+    def _is_delegate_instruction_echo_text(self, text: str) -> bool:
+        """识别子智能体回显的 Delegate 指令包，避免误判为任务产出。"""
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return False
+        markers = [
+            "[delegate input source=",
+            "[delegate prompt source=",
+            "[delegate context source=",
+        ]
+        return any(normalized.startswith(marker) for marker in markers)
+
+    async def _execute_remote_subagent_with_auto_model_retry(
+        self,
+        *,
+        sub_agent_name: str,
+        prompt: str,
+        context: str = "",
+        requested_model_alias: str = "",
+        cancellation_token: CancellationToken,
+    ) -> AsyncGenerator[Union[BaseAgentEvent, BaseChatMessage, Response], None]:
+        """执行子智能体任务；若空输出则自动切换候选模型并重试。"""
+        subagent = await self._create_remote_subagent(
+            sub_agent_name,
+            requested_model_alias=requested_model_alias,
+        )
+
+        aliases = await self._discover_subagent_model_aliases(sub_agent_name, subagent)
+        attempt_sequence: List[str] = []
+        current_alias = getattr(subagent, "defult_config_name", "")
+        if requested_model_alias and requested_model_alias.strip():
+            attempt_sequence.append(requested_model_alias.strip())
+        if isinstance(current_alias, str) and current_alias.strip():
+            attempt_sequence.append(current_alias.strip())
+        attempt_sequence.extend(aliases)
+        attempt_sequence = self._dedupe_aliases(attempt_sequence)
+
+        if not attempt_sequence:
+            attempt_sequence = [""]
+
+        attempted_aliases: List[str] = []
+        failure_reasons: List[str] = []
+        for index, alias in enumerate(attempt_sequence):
+            attempted_aliases.append(alias or "<default>")
+
+            if index > 0 and alias:
+                switch_result = await subagent.switch_remote_model(alias)
+                if not switch_result.get("status", False):
+                    yield ModelClientStreamingChunkEvent(
+                        content=(
+                            f"\n[System Notice] Sub-agent model switch failed: {alias}. "
+                            f"Reason: {switch_result.get('message', 'unknown error')}. Trying next candidate.\n"
+                        ),
+                        source=self._agent_name,
+                    )
+                    continue
+
+            has_meaningful_text = False
+            has_files_output = False
+            has_failure_text = False
+            last_failure_text = ""
+
+            async for message in self._execute_remote_subagent(
+                sub_agent_name=sub_agent_name,
+                prompt=prompt,
+                context=context,
+                requested_model_alias=alias,
+                cancellation_token=cancellation_token,
+            ):
+                if isinstance(message, ModelClientStreamingChunkEvent):
+                    chunk_text = str(message.content or "")
+                    if chunk_text.strip():
+                        has_meaningful_text = True
+                elif isinstance(message, TextMessage):
+                    text = str(message.content or "")
+                    if self._is_subagent_failure_text(text):
+                        has_failure_text = True
+                        last_failure_text = text
+                    elif not self._is_empty_subagent_text(text):
+                        has_meaningful_text = True
+                elif isinstance(message, Response):
+                    text = str(getattr(message.chat_message, "content", "") or "")
+                    if self._is_subagent_failure_text(text):
+                        has_failure_text = True
+                        last_failure_text = text
+                    elif not self._is_empty_subagent_text(text):
+                        has_meaningful_text = True
+                elif isinstance(message, FilesEvent):
+                    has_files_output = True
+
+                yield message
+
+            if has_meaningful_text or has_files_output:
+                return
+
+            if has_failure_text and last_failure_text:
+                alias_name = alias or "<default>"
+                failure_reasons.append(f"{alias_name}: {last_failure_text}")
+
+            next_candidates = [candidate for candidate in attempt_sequence[index + 1 :] if candidate]
+            if next_candidates:
+                candidate_preview = ", ".join(next_candidates)
+                yield ModelClientStreamingChunkEvent(
+                    content=(
+                        "\n[System Notice] Sub-agent returned empty output. "
+                        f"Auto-switching model and retrying. Remaining candidates: {candidate_preview}.\n"
+                    ),
+                    source=self._agent_name,
+                )
+
+        tried_text = ", ".join(attempted_aliases) if attempted_aliases else "<none>"
+        reason_text = ""
+        if failure_reasons:
+            reason_text = " Details: " + " | ".join(failure_reasons)
+        yield ModelClientStreamingChunkEvent(
+            content=(
+                "\n[System Notice] Sub-agent returned empty output after trying all candidate models. "
+                f"Tried: {tried_text}.{reason_text}\n"
+            ),
+            source=self._agent_name,
+        )
+
+    async def _execute_remote_subagent(
+        self,
+        *,
+        sub_agent_name: str,
+        prompt: str,
+        context: str = "",
+        requested_model_alias: str = "",
+        cancellation_token: CancellationToken,
+    ) -> AsyncGenerator[Union[BaseAgentEvent, BaseChatMessage, Response], None]:
+        """执行一次远程子智能体任务，并流式产出消息。"""
+        self._check_delegate_depth()
+
+        subagent = await self._create_remote_subagent(
+            sub_agent_name,
+            requested_model_alias=requested_model_alias,
+        )
+        self._delegate_depth += 1
+        try:
+            task_text = (prompt or "").strip()
+            if context:
+                task_text = f"{task_text}\n\nContext:\n{context.strip()}"
+
+            sub_messages: List[BaseChatMessage] = [
+                TextMessage(content=task_text, source="user", metadata={"internal": "yes"})
+            ]
+
+            async for message in subagent.on_messages_stream(sub_messages, cancellation_token):
+                yield message
+        finally:
+            self._delegate_depth = max(0, self._delegate_depth - 1)
+
+    def _format_delegate_transcript_entry(self, message: BaseAgentEvent | BaseChatMessage) -> str:
+        """把子智能体事件压成适合回填给主模型的可读轨迹。"""
+        source = getattr(message, "source", "") or "subagent"
+        label = message.__class__.__name__
+        content = getattr(message, "content", None)
+
+        if isinstance(message, FilesEvent):
+            file_names: List[str] = []
+            if isinstance(content, dict):
+                files = content.get("files", [])
+                if isinstance(files, list):
+                    for file_item in files:
+                        if isinstance(file_item, dict):
+                            file_name = file_item.get("name") or file_item.get("filename")
+                            if file_name:
+                                file_names.append(str(file_name))
+            if file_names:
+                return f"[{label} source={source}] files={', '.join(file_names)}"
+            return f"[{label} source={source}] {self._flatten_message_content_for_summary(content)}"
+
+        if isinstance(message, ToolCallRequestEvent):
+            tool_calls: List[str] = []
+            if isinstance(content, list):
+                for item in content:
+                    name = getattr(item, "name", None)
+                    arguments = getattr(item, "arguments", None)
+                    tool_calls.append(f"{name}({arguments})" if arguments is not None else str(item))
+            return f"[{label} source={source}] {'; '.join(tool_calls) if tool_calls else self._flatten_message_content_for_summary(content)}"
+
+        if isinstance(message, ToolCallExecutionEvent):
+            tool_results: List[str] = []
+            if isinstance(content, list):
+                for item in content:
+                    name = getattr(item, "name", None)
+                    result_text = self._flatten_message_content_for_summary(getattr(item, "content", ""))
+                    status = "error" if getattr(item, "is_error", False) else "ok"
+                    tool_results.append(f"{name}[{status}]={result_text}")
+            return f"[{label} source={source}] {'; '.join(tool_results) if tool_results else self._flatten_message_content_for_summary(content)}"
+
+        if isinstance(message, ModelClientStreamingChunkEvent):
+            return f"[{label} source={source}] {self._flatten_message_content_for_summary(content)}"
+
+        if isinstance(message, TextMessage):
+            return f"[{label} source={source}] {self._flatten_message_content_for_summary(content)}"
+
+        if isinstance(message, Response):
+            return f"[{label} source={source}] {self._flatten_message_content_for_summary(getattr(message.chat_message, 'content', ''))}"
+
+        return f"[{label} source={source}] {self._flatten_message_content_for_summary(content)}"
+
+    def _resolve_existing_local_path_for_delegate(self, raw_path: str) -> Optional[Path]:
+        """Resolve a path candidate to an existing local file on the main-agent host."""
+        if not raw_path:
+            return None
+
+        path_obj = Path(raw_path).expanduser()
+        candidate_paths: List[Path] = []
+        if path_obj.is_absolute():
+            candidate_paths.append(path_obj)
+        else:
+            candidate_paths.extend(
+                [
+                    path_obj,
+                    (Path.cwd() / path_obj),
+                    (self._upload_dir / path_obj),
+                    (self._download_dir / path_obj),
+                    (self._work_dir / path_obj),
+                ]
+            )
+
+        for candidate in candidate_paths:
+            try:
+                resolved = candidate.resolve()
+            except Exception:
+                resolved = candidate
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        return None
+
+    def _resolve_existing_local_dir_for_delegate(self, raw_path: str) -> Optional[Path]:
+        """Resolve a path candidate to an existing local directory on the main-agent host."""
+        if not raw_path:
+            return None
+
+        path_obj = Path(raw_path).expanduser()
+        candidate_paths: List[Path] = []
+        if path_obj.is_absolute():
+            candidate_paths.append(path_obj)
+        else:
+            candidate_paths.extend(
+                [
+                    path_obj,
+                    (Path.cwd() / path_obj),
+                    (self._upload_dir / path_obj),
+                    (self._download_dir / path_obj),
+                    (self._work_dir / path_obj),
+                ]
+            )
+
+        for candidate in candidate_paths:
+            try:
+                resolved = candidate.resolve()
+            except Exception:
+                resolved = candidate
+            if resolved.exists() and resolved.is_dir():
+                return resolved
+        return None
+
+    async def _prepare_delegate_context_with_file_handoff(
+        self,
+        *,
+        prompt: str,
+        context: str,
+        model_client: ChatCompletionClient,
+        max_files: int = 8,
+    ) -> str:
+        """Upload referenced local files and append a handoff manifest for remote sub-agents."""
+        source_text = f"{prompt or ''}\n{context or ''}"
+        candidate_paths = _extract_candidate_local_paths(source_text)
+        candidate_filenames = _extract_candidate_filenames(source_text)
+
+        candidate_dirs: List[Path] = []
+        for raw_candidate in candidate_paths:
+            resolved_dir = self._resolve_existing_local_dir_for_delegate(raw_candidate)
+            if resolved_dir is not None and resolved_dir not in candidate_dirs:
+                candidate_dirs.append(resolved_dir)
+
+        # Support prompts that provide "directory + file names" separately.
+        if candidate_dirs and candidate_filenames:
+            for base_dir in candidate_dirs:
+                for filename in candidate_filenames:
+                    joined = str((base_dir / filename))
+                    if joined not in candidate_paths:
+                        candidate_paths.append(joined)
+
+        if not candidate_paths:
+            return context
+
+        handoff_rows: List[str] = []
+        uploaded = 0
+        for raw_candidate in candidate_paths:
+            if uploaded >= max_files:
+                break
+            local_file = self._resolve_existing_local_path_for_delegate(raw_candidate)
+            if local_file is None:
+                continue
+
+            local_file_str = str(local_file)
+            file_url = self._delegate_file_url_cache.get(local_file_str)
+            if not file_url:
+                try:
+                    file_url = show_file_to_user(model_client, file_path=local_file_str)
+                    self._delegate_file_url_cache[local_file_str] = file_url
+                except Exception as upload_err:
+                    logger.warning(
+                        "Delegate file handoff upload failed for '{}': {}",
+                        local_file_str,
+                        upload_err,
+                    )
+                    continue
+
+            uploaded += 1
+            handoff_rows.append(
+                f"- {file_url}"
+            )
+
+        if not handoff_rows:
+            return context
+
+        handoff_block = (
+            "[Delegated File Handoff]\n"
+            "You are running on a remote server and cannot read the main-agent local file paths directly.\n"
+            "Before using any file-path-based tools, first download the files from the URLs below into your own workspace, "
+            "then use your downloaded local paths in subsequent tool calls.\n\n"
+            + "\n".join(handoff_rows)
+        )
+
+        if context and context.strip():
+            return f"{context.strip()}\n\n{handoff_block}"
+        return handoff_block
+
     async def run_stream(
         self,
         *,
@@ -1541,6 +2679,7 @@ class RongZaiAgent(DrSaiAgent):
             cancellation_token = CancellationToken()
         self._cancellation_token = cancellation_token
         self._lang_prompt = ""
+        self._reset_run_token_usage()
 
         def _lang_detect_text(content: Any) -> str:
             if isinstance(content, str):
@@ -1757,7 +2896,7 @@ class RongZaiAgent(DrSaiAgent):
                     self._cached_skills_loader = self.update_system_skills()
                 skills_loader = self._cached_skills_loader
 
-                manager_tools = self._agent_skills_tools + self._core_skill_tools
+                manager_tools = self._agent_skills_tools + self._core_skill_tools + self._subagent_tools + self._todo_tools + self._memo_tools
 
                 # 将管理类工具 schema 同步到上下文，供模型决策调用。
                 if isinstance(self._model_context, DrSaiChatCompletionContext):
@@ -1802,6 +2941,9 @@ class RongZaiAgent(DrSaiAgent):
                         
                         if isinstance(inference_output, CreateResult):
                             model_result = inference_output
+                        elif isinstance(inference_output, AgentLogEvent):
+                            inner_messages.append(inference_output)
+                            yield inference_output
                         else:
                             # 先缓存本轮模型流式文本，待确认本轮结果是否合法后再决定是否对用户可见。
                             if isinstance(inference_output, ModelClientStreamingChunkEvent):
@@ -1838,6 +2980,8 @@ class RongZaiAgent(DrSaiAgent):
                     if self.is_paused or cancellation_token.is_cancelled():
                         raise asyncio.CancelledError()
                     raise RuntimeError("No model result was produced.")
+
+                self._update_and_log_token_usage(agent_name, getattr(model_result, "usage", None))
 
                 force_invalid_output = os.getenv("RONGZAI_FORCE_INVALID_MODEL_OUTPUT", "").lower() in {"1", "true", "yes", "on"}
                 if force_invalid_output and not forced_invalid_output_once:
@@ -1904,8 +3048,11 @@ class RongZaiAgent(DrSaiAgent):
                 if isinstance(model_result.content, list) and all(
                     isinstance(item, FunctionCall) for item in model_result.content
                 ):
-                    for buffered_event in buffered_stream_events:
-                        yield buffered_event
+                    has_todo_write_call = any(call.name == "TodoWrite" for call in model_result.content)
+                    has_memo_write_call = any(call.name == "MemoWrite" for call in model_result.content)
+                    if not has_todo_write_call and not has_memo_write_call:
+                        for buffered_event in buffered_stream_events:
+                            yield buffered_event
 
                     # 记录模型请求的工具调用
                     tool_call_msg = ToolCallRequestEvent(
@@ -1918,39 +3065,409 @@ class RongZaiAgent(DrSaiAgent):
                     yield tool_call_msg
 
                     pending_tool_results: List[FunctionExecutionResult] = []
+                    normalized_tool_calls: List[FunctionCall] = []
+                    cleanup_skill_names: List[str] = []
 
                     # 处理模型请求的工具调用
                     for i in range(len(model_result.content)):
-                        tool_name = model_result.content[i].name
-                        call_id = model_result.content[i].id
-                        raw_arguments = model_result.content[i].arguments
+                        tool_call = model_result.content[i]
+                        tool_name = tool_call.name
+                        call_id = tool_call.id
+                        raw_arguments = tool_call.arguments
+                        normalized_arguments = "{}"
                         try:
-                            if isinstance(raw_arguments, str):
-                                argument = json.loads(raw_arguments or "{}")
-                            elif raw_arguments is None:
-                                argument = {}
-                            else:
-                                argument = raw_arguments
-                        except json.JSONDecodeError as e:
+                            argument = _parse_json_object_with_fallback(raw_arguments)
+                            normalized_arguments = json.dumps(argument, ensure_ascii=False)
+                        except Exception as e:
+                            normalized_tool_calls.append(
+                                FunctionCall(
+                                    id=call_id,
+                                    name=tool_name,
+                                    arguments=normalized_arguments,
+                                )
+                            )
+                            parse_error = _build_tool_arguments_parse_error(
+                                tool_name=tool_name,
+                                raw_arguments=raw_arguments,
+                                exception=e,
+                                stage="llm_tool_call.arguments",
+                            )
                             pending_tool_results.append(
                                 FunctionExecutionResult(
-                                    content=(
-                                        f"Error: invalid tool arguments for {tool_name}: {e}. "
-                                        f"Raw arguments: {raw_arguments!r}"
-                                    ),
+                                    content=parse_error,
                                     name=tool_name,
                                     call_id=call_id,
                                     is_error=True,
                                 )
                             )
                             yield AgentLogEvent(
-                                title=f"Tool arguments JSON parse failed for {tool_name}.",
+                                title=f"Tool arguments invalid for {tool_name}; feedback returned for auto-repair.",
                                 source=agent_name,
                                 content=str(raw_arguments),
                                 content_type="tools",
                             )
                             continue
-                        if tool_name == "Skill":
+
+                        normalized_tool_call = FunctionCall(
+                            id=call_id,
+                            name=tool_name,
+                            arguments=normalized_arguments,
+                        )
+                        normalized_tool_calls.append(normalized_tool_call)
+
+                        if tool_name == "TodoWrite":
+                            todo_items = argument.get("items", [])
+                            try:
+                                yield AgentLogEvent(
+                                    title="I am using tool: TodoWrite",
+                                    source=agent_name,
+                                    content=str(argument),
+                                    content_type="tools",
+                                )
+
+                                todo_rendered = self._todo_manager.update(todo_items)
+                                todo_unloaded = self._todo_manager.unload_if_completed()
+                                self.update_system_prompt()
+
+                                todo_message = todo_rendered
+                                if todo_unloaded:
+                                    todo_message += (
+                                        "\n\nAll todo steps are completed. "
+                                        "The active todo list has been removed from the system prompt."
+                                    )
+                                else:
+                                    todo_message += (
+                                        "\n\nThe active todo list is now injected into the system prompt. "
+                                        "Keep maintaining it until the task is finished."
+                                    )
+
+                                user_visible_todo = (
+                                    "\n\n### Current Todo List\n"
+                                    f"{todo_rendered}\n"
+                                )
+                                if todo_unloaded:
+                                    user_visible_todo += (
+                                        "\nTodo completed: all steps are done, and the active todo list has been unloaded.\n"
+                                    )
+                                else:
+                                    user_visible_todo += (
+                                        "\nTodo updated: this list will be maintained during subsequent execution.\n"
+                                    )
+                                yield ModelClientStreamingChunkEvent(
+                                    content=user_visible_todo,
+                                    source=agent_name,
+                                )
+                                pending_tool_results.append(
+                                    FunctionExecutionResult(
+                                        content=todo_message,
+                                        name=tool_name,
+                                        call_id=call_id,
+                                        is_error=False,
+                                    )
+                                )
+                            except Exception as todo_err:
+                                pending_tool_results.append(
+                                    FunctionExecutionResult(
+                                        content=f"TodoWrite failed: {todo_err}",
+                                        name=tool_name,
+                                        call_id=call_id,
+                                        is_error=True,
+                                    )
+                                )
+                        elif tool_name == "MemoWrite":
+                            memo_items = argument.get("items", [])
+                            memo_clear_all = bool(argument.get("clear_all", False))
+                            try:
+                                yield AgentLogEvent(
+                                    title="I am using tool: MemoWrite",
+                                    source=agent_name,
+                                    content=str(argument),
+                                    content_type="tools",
+                                )
+
+                                memo_rendered = self._memo_manager.update(memo_items, clear_all=memo_clear_all)
+                                self.update_system_prompt()
+
+                                memo_message = memo_rendered
+                                if memo_rendered == "No active memo.":
+                                    memo_message = (
+                                        "Memo cleared. The memo block has been removed from the system prompt."
+                                    )
+                                else:
+                                    memo_message = (
+                                        "Memo updated. The active memo is now injected into the system prompt. "
+                                        "Keep it compact and remove outdated entries when they are no longer useful."
+                                        f"\n\n{memo_rendered}"
+                                    )
+
+                                yield ModelClientStreamingChunkEvent(
+                                    content=f"\n\n### Current Memo\n{memo_rendered}\n",
+                                    source=agent_name,
+                                )
+                                pending_tool_results.append(
+                                    FunctionExecutionResult(
+                                        content=memo_message,
+                                        name=tool_name,
+                                        call_id=call_id,
+                                        is_error=False,
+                                    )
+                                )
+                            except Exception as memo_err:
+                                pending_tool_results.append(
+                                    FunctionExecutionResult(
+                                        content=f"MemoWrite failed: {memo_err}",
+                                        name=tool_name,
+                                        call_id=call_id,
+                                        is_error=True,
+                                    )
+                                )
+                        elif tool_name == "Delegate":
+                            sub_agent_name = argument.get("agent_type", "")
+                            prompt = argument.get("prompt", "")
+                            context = argument.get("context", "")
+                            delegate_model_alias = self._extract_delegate_model_alias(argument)
+
+                            if not sub_agent_name or not prompt:
+                                pending_tool_results.append(
+                                    FunctionExecutionResult(
+                                        content="Delegate requires non-empty 'agent_type' and 'prompt'.",
+                                        name=tool_name,
+                                        call_id=call_id,
+                                        is_error=True,
+                                    )
+                                )
+                                continue
+
+                            yield AgentLogEvent(
+                                title=f"I am delegating to remote sub-agent: {sub_agent_name}.",
+                                source=agent_name,
+                                content=str(argument),
+                                content_type="tools",
+                            )
+                            try:
+                                delegated_context = await self._prepare_delegate_context_with_file_handoff(
+                                    prompt=prompt,
+                                    context=context,
+                                    model_client=model_client,
+                                )
+                                handoff_url_count = delegated_context.count("https://aiapi.ihep.ac.cn/apiv2/files/")
+                                if handoff_url_count > 0:
+                                    yield AgentLogEvent(
+                                        title=f"Prepared delegated file handoff: {handoff_url_count} file URL(s).",
+                                        source=agent_name,
+                                        content="",
+                                        content_type="tools",
+                                    )
+                                delegate_trace: List[str] = [
+                                    f"[Delegate input source={agent_name}] agent_type={sub_agent_name}",
+                                    f"[Delegate prompt source={agent_name}] {prompt}",
+                                ]
+                                if delegate_model_alias:
+                                    delegate_trace.append(
+                                        f"[Delegate model source={agent_name}] {delegate_model_alias}"
+                                    )
+                                if delegated_context.strip():
+                                    delegate_trace.append(
+                                        f"[Delegate context source={agent_name}] {delegated_context.strip()}"
+                                    )
+                                delegate_result = ""
+                                last_stream_text = ""
+                                has_subagent_visible_output = False
+                                has_subagent_failure_output = False
+                                delegate_failure_text = ""
+                                subagent_visible_chunks: List[str] = []
+
+                                async for sub_message in self._execute_remote_subagent_with_auto_model_retry(
+                                    sub_agent_name=sub_agent_name,
+                                    prompt=prompt,
+                                    context=delegated_context,
+                                    requested_model_alias=delegate_model_alias,
+                                    cancellation_token=cancellation_token,
+                                ):
+                                    if isinstance(sub_message, ModelClientStreamingChunkEvent):
+                                        chunk_text = str(sub_message.content or "")
+                                        if chunk_text:
+                                            if (
+                                                not self._is_delegate_system_notice_chunk(chunk_text)
+                                                and not self._is_delegate_instruction_echo_text(chunk_text)
+                                            ):
+                                                has_subagent_visible_output = True
+                                                subagent_visible_chunks.append(chunk_text)
+                                            delegate_trace.append(
+                                                self._format_delegate_transcript_entry(sub_message)
+                                            )
+                                            yield ModelClientStreamingChunkEvent(
+                                                content=chunk_text,
+                                                source=agent_name,
+                                            )
+                                    elif isinstance(sub_message, FilesEvent):
+                                        delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
+                                        yield sub_message
+                                    elif isinstance(sub_message, ToolCallRequestEvent):
+                                        delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
+                                        for remote_call in sub_message.content:
+                                            yield AgentLogEvent(
+                                                title=f"Sub-agent {sub_agent_name} is using tool: {remote_call.name}",
+                                                source=agent_name,
+                                                content=str(remote_call),
+                                                content_type="tools",
+                                            )
+                                    elif isinstance(sub_message, ToolCallExecutionEvent):
+                                        for remote_result in sub_message.content:
+                                            remote_content = str(getattr(remote_result, "content", "") or "")
+                                            if getattr(remote_result, "is_error", False):
+                                                yield AgentLogEvent(
+                                                    title=f"Sub-agent {sub_agent_name} tool execution failed.",
+                                                    source=agent_name,
+                                                    content=remote_content,
+                                                    content_type="tools",
+                                                )
+                                            img_paths = _extract_existing_image_paths_from_content(remote_content)
+                                            if img_paths:
+                                                for img_path in img_paths:
+                                                    fig_url = show_file_to_user(model_client, file_path=img_path)
+                                                    info2user = f"### ![image.png]({fig_url})\n\n"
+                                                    yield ModelClientStreamingChunkEvent(
+                                                        content=info2user,
+                                                        source=agent_name,
+                                                    )
+                                    elif isinstance(sub_message, TextMessage):
+                                        current_text = str(sub_message.content or "")
+                                        if current_text:
+                                            # 某些子智能体会返回累积文本；这里只向前端转发增量，避免重复刷屏。
+                                            if current_text.startswith(last_stream_text):
+                                                delta = current_text[len(last_stream_text) :]
+                                            else:
+                                                delta = current_text
+                                            last_stream_text = current_text
+                                            delegate_result = current_text
+                                            delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
+                                            if delta:
+                                                if self._is_subagent_failure_text(current_text):
+                                                    has_subagent_failure_output = True
+                                                    delegate_failure_text = current_text
+                                                elif self._is_delegate_instruction_echo_text(delta):
+                                                    pass
+                                                else:
+                                                    has_subagent_visible_output = True
+                                                    subagent_visible_chunks.append(delta)
+                                                yield ModelClientStreamingChunkEvent(
+                                                    content=delta,
+                                                    source=agent_name,
+                                                )
+                                    elif isinstance(sub_message, Response):
+                                        final_text = str(sub_message.chat_message.content or "")
+                                        if final_text:
+                                            if final_text.startswith(last_stream_text):
+                                                final_delta = final_text[len(last_stream_text) :]
+                                            else:
+                                                final_delta = final_text
+                                            delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
+                                            if final_delta:
+                                                if self._is_subagent_failure_text(final_text):
+                                                    has_subagent_failure_output = True
+                                                    delegate_failure_text = final_text
+                                                elif self._is_delegate_instruction_echo_text(final_delta):
+                                                    pass
+                                                else:
+                                                    has_subagent_visible_output = True
+                                                    subagent_visible_chunks.append(final_delta)
+                                                yield ModelClientStreamingChunkEvent(
+                                                    content=final_delta,
+                                                    source=agent_name,
+                                                )
+                                            last_stream_text = final_text
+                                            delegate_result = final_text
+                                    else:
+                                        delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
+
+                                if delegate_trace:
+                                    transcript_block = "\n".join(delegate_trace).strip()
+                                    if transcript_block:
+                                        if delegate_result and delegate_result.strip():
+                                            delegate_result = f"{transcript_block}\n\n[Delegate final source={agent_name}] {delegate_result.strip()}"
+                                        else:
+                                            delegate_result = transcript_block
+
+                                if not delegate_result:
+                                    delegate_result = f"Subagent '{sub_agent_name}' completed with empty output."
+
+                                visible_output_text = "".join(subagent_visible_chunks).strip()
+
+                                raw_last_output = str(
+                                    visible_output_text
+                                    or delegate_failure_text
+                                    or ""
+                                )
+                                if raw_last_output == "":
+                                    switch_back_diag = "<empty-string>"
+                                elif raw_last_output.strip() == "":
+                                    switch_back_diag = f"<whitespace-only len={len(raw_last_output)}>"
+                                else:
+                                    compact_preview = raw_last_output.strip().replace("\n", "\\n")
+                                    if len(compact_preview) > 220:
+                                        compact_preview = compact_preview[:220] + "..."
+                                    switch_back_diag = compact_preview
+
+                                final_output_preview = (
+                                    visible_output_text
+                                    or str(delegate_failure_text or "").strip()
+                                )
+                                if len(final_output_preview) > 1800:
+                                    final_output_preview = (
+                                        final_output_preview[:1800]
+                                        + "\n...[truncated]"
+                                    )
+
+                                if has_subagent_visible_output:
+                                    yield AgentLogEvent(
+                                        title=(
+                                            f"Sub-agent {sub_agent_name} finished. "
+                                            f"Switching back to main agent. Last output: {switch_back_diag}"
+                                        ),
+                                        source=agent_name,
+                                        content=(
+                                            "Final visible sub-agent output before switch-back:\n\n"
+                                            f"{final_output_preview or '[empty]'}"
+                                        ),
+                                        content_type="tools",
+                                    )
+                                    yield ModelClientStreamingChunkEvent(
+                                        content="\n\n---\n\n",
+                                        source=agent_name,
+                                    )
+                                elif has_subagent_failure_output:
+                                    yield AgentLogEvent(
+                                        title=(
+                                            f"Sub-agent {sub_agent_name} ended with timeout/error. "
+                                            f"Switching back to main agent. Last output: {switch_back_diag}"
+                                        ),
+                                        source=agent_name,
+                                        content=(
+                                            "Sub-agent failure output before switch-back:\n\n"
+                                            f"{final_output_preview or delegate_failure_text}"
+                                        ),
+                                        content_type="tools",
+                                    )
+
+                                pending_tool_results.append(
+                                    FunctionExecutionResult(
+                                        content=delegate_result,
+                                        name=tool_name,
+                                        call_id=call_id,
+                                        is_error=False,
+                                    )
+                                )
+                            except Exception as delegate_err:
+                                pending_tool_results.append(
+                                    FunctionExecutionResult(
+                                        content=f"Delegate failed: {delegate_err}",
+                                        name=tool_name,
+                                        call_id=call_id,
+                                        is_error=True,
+                                    )
+                                )
+                        elif tool_name == "Skill":
                             if skills_loader is None:
                                 skill_content = "No system skill is loaded."
                             else:
@@ -1969,6 +3486,7 @@ class RongZaiAgent(DrSaiAgent):
                                 content=str(argument),
                                 content_type="tools")
                         elif tool_name == "PromoteSkillToCore":
+                            cleanup_skill_names.append(argument["skill"])
                             promote_message = self._promote_skill_to_core(
                                 skills_loader=skills_loader,
                                 skill_name=argument["skill"],
@@ -2013,6 +3531,7 @@ class RongZaiAgent(DrSaiAgent):
                                 content_type="tools",
                             )
                         elif tool_name == "ReplaceCoreSkill":
+                            cleanup_skill_names.append(argument["new_skill"])
                             replace_message = self._replace_core_skill(
                                 skills_loader=skills_loader,
                                 old_skill=argument["old_skill"],
@@ -2040,16 +3559,74 @@ class RongZaiAgent(DrSaiAgent):
                             yield AgentLogEvent(
                                 title="I am using tool: " + tool_name,
                                 source=agent_name,
-                                content=str(model_result.content[i]),
+                                content=str(normalized_tool_call),
                                 content_type="tools")
 
-                            _, result = await self._execute_tool_call(
-                                tool_call=model_result.content[i],
-                                workbench=workbench,
-                                handoff_tools=handoff_tools,
-                                agent_name=agent_name,
-                                cancellation_token=cancellation_token,
-                            )
+                            # Fail fast for MCP connect to avoid hitting the outer 300s stream timeout.
+                            if tool_name == "ConnectMcpServer":
+                                connect_timeout_s = _get_env_float("RONGZAI_CONNECT_MCP_TIMEOUT_SECONDS", 60.0)
+                                try:
+                                    _, result = await asyncio.wait_for(
+                                        self._execute_tool_call(
+                                            tool_call=normalized_tool_call,
+                                            workbench=workbench,
+                                            handoff_tools=handoff_tools,
+                                            agent_name=agent_name,
+                                            cancellation_token=cancellation_token,
+                                        ),
+                                        timeout=connect_timeout_s,
+                                    )
+                                except asyncio.TimeoutError:
+                                    timeout_msg = (
+                                        f"ConnectMcpServer timeout after {connect_timeout_s:.0f}s. "
+                                        "Please retry again or tell user."
+                                    )
+                                    yield ModelClientStreamingChunkEvent(
+                                        content=f"\n[System Notice] {timeout_msg}\n",
+                                        source=agent_name,
+                                    )
+                                    result = FunctionExecutionResult(
+                                        content=timeout_msg,
+                                        name=tool_name,
+                                        call_id=call_id,
+                                        is_error=True,
+                                    )
+                            elif tool_name == "run_read":
+                                read_timeout_s = _get_env_float("RONGZAI_RUN_READ_TIMEOUT_SECONDS", 20.0)
+                                try:
+                                    _, result = await asyncio.wait_for(
+                                        self._execute_tool_call(
+                                            tool_call=normalized_tool_call,
+                                            workbench=workbench,
+                                            handoff_tools=handoff_tools,
+                                            agent_name=agent_name,
+                                            cancellation_token=cancellation_token,
+                                        ),
+                                        timeout=read_timeout_s,
+                                    )
+                                except asyncio.TimeoutError:
+                                    timeout_msg = (
+                                        f"run_read timeout after {read_timeout_s:.0f}s. "
+                                        "Please narrow the line range or split the file into smaller chunks and retry."
+                                    )
+                                    yield ModelClientStreamingChunkEvent(
+                                        content=f"\n[System Notice] {timeout_msg}\n",
+                                        source=agent_name,
+                                    )
+                                    result = FunctionExecutionResult(
+                                        content=timeout_msg,
+                                        name=tool_name,
+                                        call_id=call_id,
+                                        is_error=True,
+                                    )
+                            else:
+                                _, result = await self._execute_tool_call(
+                                    tool_call=normalized_tool_call,
+                                    workbench=workbench,
+                                    handoff_tools=handoff_tools,
+                                    agent_name=agent_name,
+                                    cancellation_token=cancellation_token,
+                                )
 
                             try:
                                 parsed = json.loads(result.content)
@@ -2101,9 +3678,12 @@ class RongZaiAgent(DrSaiAgent):
                     if pending_tool_results:
                         # 工具调用场景：将 tool_call 与 tool_result 作为一个原子对提交到上下文，
                         # 避免 pause/cancel 时只写入半对消息导致顺序不一致。
+                        if cleanup_skill_names:
+                            self._remove_matching_skill_context(model_context, cleanup_skill_names)
+
                         await model_context.add_message(
                             AssistantMessage(
-                                content=model_result.content,
+                                content=normalized_tool_calls,
                                 source=self._name,
                                 thought=getattr(model_result, "thought", None),
                             )
@@ -2235,11 +3815,77 @@ class RongZaiAgent(DrSaiAgent):
             messages=system_messages + runtime_messages,
         )
 
+        all_tools = (await workbench.list_tools()) + handoff_tools + manager_tools
+
+        threshold_tokens = self._get_proactive_compress_threshold()
+        if threshold_tokens > 0:
+            try:
+                exact_tokens = model_client.count_tokens(llm_messages, tools=all_tools)
+            except Exception as token_err:
+                logger.warning(
+                    "Failed to count exact context tokens for proactive compression; skip proactive compression this turn. error={}",
+                    token_err,
+                )
+            else:
+                if exact_tokens >= threshold_tokens:
+                    yield AgentLogEvent(
+                        title="正在压缩上下文",
+                        source=agent_name,
+                        content=(
+                            f"当前上下文约 {exact_tokens} tokens，已超过阈值 {threshold_tokens}，"
+                            "正在压缩后重试。"
+                        ),
+                        content_type="system",
+                        send_level=Send_level.INFO,
+                    )
+                    logger.warning(
+                        "Exact context size {} tokens reached proactive threshold {}. Compressing history before LLM call.",
+                        exact_tokens,
+                        threshold_tokens,
+                    )
+                    llm_messages = await self._build_retry_llm_messages_after_context_overflow(
+                        model_client=model_client,
+                        system_messages=system_messages,
+                        runtime_messages=runtime_messages,
+                        cancellation_token=cancellation_token,
+                    )
+
         # 自定义的memory_function，用于RAG检索等功能，为大模型回复增加最新的知识
         if self._memory_function is not None:
             llm_messages = await self._call_memory_function(llm_messages, model_client, cancellation_token, agent_name)
 
-        all_tools = (await workbench.list_tools()) + handoff_tools + manager_tools
+            # memory_function 可能显著膨胀上下文，二次检查并在必要时再次压缩。
+            if threshold_tokens > 0:
+                try:
+                    exact_tokens_after_memory = model_client.count_tokens(llm_messages, tools=all_tools)
+                except Exception as token_err:
+                    logger.warning(
+                        "Failed to count exact context tokens after memory injection; skip proactive compression this turn. error={}",
+                        token_err,
+                    )
+                else:
+                    if exact_tokens_after_memory >= threshold_tokens:
+                        yield AgentLogEvent(
+                            title="正在压缩上下文",
+                            source=agent_name,
+                            content=(
+                                f"memory 注入后当前上下文约 {exact_tokens_after_memory} tokens，已超过阈值 {threshold_tokens}，"
+                                "正在压缩后重试。"
+                            ),
+                            content_type="system",
+                            send_level=Send_level.INFO,
+                        )
+                        logger.warning(
+                            "Exact context size {} tokens exceeded proactive threshold {} after memory injection. Re-compressing and skipping memory injection for this attempt.",
+                            exact_tokens_after_memory,
+                            threshold_tokens,
+                        )
+                        llm_messages = await self._build_retry_llm_messages_after_context_overflow(
+                            model_client=model_client,
+                            system_messages=system_messages,
+                            runtime_messages=runtime_messages,
+                            cancellation_token=cancellation_token,
+                        )
         try:
             if self._reply_function is not None:
                 # 自定义回复函数：允许上层接管模型调用流程
@@ -2335,6 +3981,26 @@ class RongZaiAgent(DrSaiAgent):
                 ),
                 inner_messages=inner_messages,
             )
+
+    async def close(self, *args: Any, **kwargs: Any) -> None:
+        """关闭前输出可观测上下文，便于定位 close 触发来源。"""
+        active_core_skills = [slot.get("skill", "") for slot in self._core_skill_slots if slot.get("skill")]
+        logger.info(
+            "[AgentClose] name={} user_id={} thread_id={} active_core_skills={} token_usage={} cwd={}",
+            self._agent_name,
+            self._user_id,
+            self._thread_id,
+            active_core_skills,
+            self._current_run_token_usage,
+            str(self._work_dir),
+        )
+        for subagent in self._remote_subagents.values():
+            try:
+                await subagent.close()
+            except Exception:
+                pass
+        self._remote_subagents.clear()
+        await super().close(*args, **kwargs)
     
     # 后续可扩展：在不引入用户可写配置的前提下，增加更多系统级能力。
     def _to_config(self) -> DrSaiAssistantConfig:
@@ -2375,6 +4041,7 @@ class RongZaiAgent(DrSaiAgent):
             rag_flow_token=self._rag_flow_token,
             memory_dataset_id=self._memory_dataset_id,
             learning_dataset_id=self._learning_dataset_id,
+            sub_agent_config=self._sub_agent_config,
         )
     
     @classmethod
@@ -2429,6 +4096,7 @@ class RongZaiAgent(DrSaiAgent):
             rag_flow_token = config.rag_flow_token,
             memory_dataset_id = config.memory_dataset_id,
             learning_dataset_id = config.learning_dataset_id,
+            sub_agent_config = config.sub_agent_config,
             **kwargs,
         )
 

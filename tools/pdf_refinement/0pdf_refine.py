@@ -291,60 +291,6 @@ def _convert_refined_structure_to_cif(
         return False
 
 
-def _build_pdf_default_config(num_phases: int = 1) -> Dict[str, Any]:
-    return {
-        "paramsCurrentValue": {
-            "qmax": 25.0,
-            "rmin": 1.0,
-            "rmax": 20.0,
-            "pdf_source": "N",
-            "dscale": 1.0,
-            "qbroad": 0.0,
-        },
-        "parameter_controls": [],
-    }
-
-
-def _merge_refine_config(refine_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    merged = _build_pdf_default_config()
-    if isinstance(refine_config, dict):
-        for key, value in refine_config.items():
-            if key == "paramsCurrentValue" and isinstance(value, dict):
-                merged_params = dict(merged["paramsCurrentValue"])
-                merged_params.update(value)
-                merged["paramsCurrentValue"] = merged_params
-            elif key == "parameter_controls" and isinstance(value, list):
-                merged["parameter_controls"] = list(value)
-            else:
-                merged[key] = value
-    return merged
-
-
-def _merge_refine_configs(
-    base_config: Optional[Dict[str, Any]],
-    override_config: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    merged = _merge_refine_config(base_config)
-
-    # Keep base snapshot state when caller does not provide override.
-    if not isinstance(override_config, dict):
-        return merged
-
-    if isinstance(override_config.get("paramsCurrentValue"), dict):
-        merged_params = dict(merged.get("paramsCurrentValue", {}))
-        merged_params.update(override_config["paramsCurrentValue"])
-        merged["paramsCurrentValue"] = merged_params
-
-    if isinstance(override_config.get("parameter_controls"), list):
-        merged["parameter_controls"] = list(override_config["parameter_controls"])
-
-    for key, value in override_config.items():
-        if key not in {"paramsCurrentValue", "parameter_controls"}:
-            merged[key] = value
-
-    return merged
-
-
 def _safe_getpar(pf: PdfFit, idx: int, default: Any = None) -> Any:
     try:
         return pf.getpar(idx)
@@ -354,8 +300,6 @@ def _safe_getpar(pf: PdfFit, idx: int, default: Any = None) -> Any:
 
 _PHASE_SELECTOR_RE = re.compile(r"^phase\[(\d+)\]\.(.+)$", re.IGNORECASE)
 _ATOM_SELECTOR_RE = re.compile(r"^atom\[(\d+)\]\.(x|y|z|occ|u11|u22|u33|u12|u13|u23)$", re.IGNORECASE)
-_RETAINED_GLOBAL_SELECTORS = {"dscale", "qbroad"}
-_RETAINED_PHASE_KEYS = {"pscale", "delta1", "delta2", "sratio", "spdiameter"}
 
 
 def _format_number_literal(value: float) -> str:
@@ -1990,6 +1934,10 @@ def auto_spacegroup_constraints(
                 raise ValueError("phase_indices 解析后为空")
 
         origin_offset_vec = _coerce_origin_offset(origin_offset)
+        # Keep adaptive CIF origin-search behavior when caller does not provide origin_offset.
+        # Passing [0,0,0] unconditionally would force certain Fd-3m CIFs (for example Si)
+        # into a 16-atom expansion that disagrees with the initialized phase topology.
+        cif_expansion_offset = origin_offset_vec if origin_offset is not None else None
         spacegroup_override = _spacegroup_from_identifier(space_group) if space_group is not None else None
 
         pf = PdfFit()
@@ -1997,7 +1945,7 @@ def auto_spacegroup_constraints(
             pf,
             structure_files,
             spacegroup_override=spacegroup_override,
-            origin_offset=origin_offset_vec,
+            origin_offset=cif_expansion_offset,
         )
 
         existing_constraint_set = manifest.get("constraintSet")
