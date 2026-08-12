@@ -15,6 +15,7 @@ import ast
 import os, json, re
 import asyncio, traceback
 import types
+from datetime import datetime, timedelta
 from pydantic import BaseModel
 from pathlib import Path
 from loguru import logger
@@ -97,6 +98,36 @@ import traceback
 
 from src.core.auth.icat_permission_provider import IcatPermissionProvider
 from src.core.auth.domas_permission_provider import DomasPermissionProvider
+
+
+_USER_THREAD_ID_CACHE: Dict[str, str] = {}
+_ACTIVE_THREAD_IDS: Set[str] = set()
+
+
+def normalize_thread_id(thread_id: str | None, user_id: str | None) -> str:
+    """把会话 ID 规范化为纯时间戳格式，并在同一用户下复用初始时间戳。"""
+    user_key = str(user_id or "").strip()
+    if user_key and user_key in _USER_THREAD_ID_CACHE:
+        return _USER_THREAD_ID_CACHE[user_key]
+
+    provided = str(thread_id or "").strip()
+    if provided and re.fullmatch(r"\d{14}", provided):
+        if user_key:
+            _USER_THREAD_ID_CACHE[user_key] = provided
+        return provided
+
+    base_dt = datetime.now()
+    candidate = base_dt.strftime("%Y%m%d%H%M%S")
+    counter = 0
+    while candidate in _ACTIVE_THREAD_IDS:
+        counter += 1
+        base_dt = base_dt + timedelta(seconds=1)
+        candidate = base_dt.strftime("%Y%m%d%H%M%S")
+
+    if user_key:
+        _USER_THREAD_ID_CACHE[user_key] = candidate
+    _ACTIVE_THREAD_IDS.add(candidate)
+    return candidate
 
 
 def _get_env_float(name: str, default: float) -> float:
@@ -182,21 +213,80 @@ def _parse_json_object_with_fallback(raw_value: Any) -> Dict[str, Any]:
     raise ValueError("; ".join(parse_errors))
 
 
+def _clean_path_candidate(candidate: str) -> str:
+    """清洗并规范化路径候选，兼容 Markdown/引号/括号/中文标点包裹的情况。"""
+    if not candidate:
+        return ""
+
+    cleaned = candidate.strip()
+    if not cleaned:
+        return ""
+
+    # 去掉常见包装字符。
+    wrappers = "\"'`<>[](){}"
+    while cleaned and cleaned[0] in wrappers:
+        cleaned = cleaned[1:].lstrip()
+    while cleaned and cleaned[-1] in wrappers:
+        cleaned = cleaned[:-1].rstrip()
+
+    # 去掉尾部的中文/英文标点，避免把说明文字误带进去。
+    trailing_chars = "\"'`。，；：！？、）］】)]"
+    while cleaned and cleaned[-1] in trailing_chars:
+        cleaned = cleaned[:-1].rstrip()
+
+    # 去掉常见 Markdown 链接包裹后残留的括号。
+    if cleaned.startswith("(") and cleaned.endswith(")") and len(cleaned) >= 2:
+        inner = cleaned[1:-1].strip()
+        if inner and "/" in inner:
+            cleaned = inner
+
+    return cleaned.strip()
+
+
+def _looks_like_local_path(candidate: str) -> bool:
+    """判断一个候选字符串是否像本地文件/目录路径。"""
+    if not candidate:
+        return False
+    if candidate.startswith(("http://", "https://", "ftp://", "mailto:")):
+        return False
+    if candidate.startswith(("/", "./", "../")):
+        return True
+    if re.match(r"^[A-Za-z]:[\\/]", candidate):
+        return True
+    if "/" in candidate and (re.search(r"\.[A-Za-z0-9]{1,8}$", candidate) or candidate.endswith("/")):
+        return True
+    return False
+
+
 def _extract_candidate_local_paths(text: str) -> List[str]:
     """Extract possible local file paths from free text."""
     if not text:
         return []
 
-    quoted = re.findall(r"[\"']([^\"']+)[\"']", text)
-    unquoted = re.findall(r"((?:/|\.{1,2}/)[^\s\"'<>]+)", text)
-    raw_candidates = quoted + unquoted
+    raw_candidates: List[str] = []
+
+    # 1) 先抓 Markdown/引号包裹的内容，常见于 `path` 或 "path" 或 [text](path)
+    for match in re.finditer(r"`([^`\n]+)`", text):
+        raw_candidates.append(match.group(1))
+    for match in re.finditer(r"\[[^\]]+\]\(([^)\s]+)\)", text):
+        raw_candidates.append(match.group(1))
+    for match in re.finditer(r"[\"']([^\"'\n]+)[\"']", text):
+        raw_candidates.append(match.group(1))
+
+    # 2) 再抓自由文本里的路径类 token，兼容中文括号/标点尾随说明。
+    path_pattern = re.compile(
+        r"(?<![A-Za-z0-9_./-])((?:[A-Za-z]:[\\/]|/|\.{1,2}/)[^\s\"'`<>\[\]\(\)\{\},;:!?，。；：！？]+)",
+        re.IGNORECASE,
+    )
+    for match in path_pattern.finditer(text):
+        raw_candidates.append(match.group(1))
 
     # Keep order and deduplicate.
     seen: Set[str] = set()
     out: List[str] = []
     for candidate in raw_candidates:
-        normalized = candidate.strip()
-        if not normalized or normalized in seen:
+        normalized = _clean_path_candidate(candidate)
+        if not normalized or normalized in seen or not _looks_like_local_path(normalized):
             continue
         seen.add(normalized)
         out.append(normalized)
@@ -387,6 +477,7 @@ class RongZaiAgent(DrSaiAgent):
         token_limit: int = 500000
         ):
         
+        normalized_thread_id = normalize_thread_id(thread_id, user_id)
         super().__init__(
             name=name,
             model_client=model_client,
@@ -407,7 +498,7 @@ class RongZaiAgent(DrSaiAgent):
             memory_function=memory_function,
             reply_function=reply_function,
             db_manager=db_manager,
-            thread_id=thread_id,
+            thread_id=normalized_thread_id,
             user_id=user_id,
             set_model_client=set_model_client,
             llm_mode_config=llm_mode_config,
@@ -521,7 +612,6 @@ class RongZaiAgent(DrSaiAgent):
         self._core_skill_tools = [
             self._get_promote_skill_tool(),
             self._get_demote_skill_tool(),
-            self._get_replace_core_skill_tool(),
         ]
         self._core_skill_slots: List[Dict[str, Any]] = []
         self._max_core_skill_slots = 1
@@ -541,8 +631,8 @@ class RongZaiAgent(DrSaiAgent):
         )
         self._memo_policy_prompt = (
             "[Memo Policy]\n"
-            "Use MemoWrite for a very short, high-value scratchpad of critical facts that may be needed later, such as important file paths, filenames, for avoiding forgetting important information.\n"
-            "MemoWrite is incremental by default: send only changed entries and keep existing entries unless you explicitly remove them.\n"
+            "Use MemoWrite for a very short, high-value scratchpad of critical facts that are needed later, such as important file paths, valuable analysis results.\n"
+            "Must write the attached files paths in the memo before the work starting, because the future context compression will occur and the information might be lost.\n"
             "Keep the memo compact. Remove outdated entries immediately when they are no longer useful; do not keep stale notes.\n"
             "Only clear the whole memo when truly needed by setting clear_all=true."
         )
@@ -675,6 +765,93 @@ class RongZaiAgent(DrSaiAgent):
 
         logger.info("===== FULL SYSTEM PROMPT BEFORE LLM CALL =====\n{}\n===== END SYSTEM PROMPT =====", "\n\n".join(parts))
 
+    def _is_debug_llm_output_enabled(self) -> bool:
+        """是否开启每轮 LLM 完整输出日志。"""
+        return os.getenv("RONGZAI_DEBUG_LLM_OUTPUT", "").lower() in {"1", "true", "yes", "on"}
+
+    def _serialize_model_content_for_debug(self, content: Any) -> Any:
+        """将模型输出内容转换为可 JSON 序列化结构，便于完整落盘。"""
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            serialized: List[Any] = []
+            for item in content:
+                if isinstance(item, FunctionCall):
+                    serialized.append(
+                        {
+                            "type": "FunctionCall",
+                            "id": item.id,
+                            "name": item.name,
+                            "arguments": item.arguments,
+                        }
+                    )
+                else:
+                    model_dump = getattr(item, "model_dump", None)
+                    if callable(model_dump):
+                        try:
+                            serialized.append(model_dump())
+                            continue
+                        except Exception:
+                            pass
+                    serialized.append(str(item))
+            return serialized
+
+        model_dump = getattr(content, "model_dump", None)
+        if callable(model_dump):
+            try:
+                return model_dump()
+            except Exception:
+                return str(content)
+
+        return str(content)
+
+    def _log_full_llm_output(
+        self,
+        *,
+        agent_name: str,
+        model_result: CreateResult,
+        buffered_stream_events: List[ModelClientStreamingChunkEvent],
+    ) -> None:
+        """按开关记录每轮完整模型输出（流式文本 + 最终结构化结果）。"""
+        if not self._is_debug_llm_output_enabled():
+            return
+
+        stream_chunks: List[str] = []
+        for event in buffered_stream_events:
+            chunk = getattr(event, "content", "")
+            if isinstance(chunk, str):
+                stream_chunks.append(chunk)
+            else:
+                stream_chunks.append(str(chunk))
+
+        payload = {
+            "agent": agent_name,
+            "model": getattr(model_result, "model", ""),
+            "finish_reason": getattr(model_result, "finish_reason", ""),
+            "usage": self._extract_usage_tokens(getattr(model_result, "usage", None)),
+            "thought": getattr(model_result, "thought", None),
+            "stream_text": "".join(stream_chunks),
+            "final_content": self._serialize_model_content_for_debug(model_result.content),
+        }
+        logger.info(
+            "[LLMFullOutput] {}",
+            json.dumps(payload, ensure_ascii=False, default=str),
+        )
+
+    def _build_no_tool_call_followup_prompt(self) -> str:
+        """构建无工具调用时注入给模型的追问文本。"""
+        base_prompt = (
+            "注意到你这次没有调用工具，系统会认定你认为任务可以结束了。"
+            "如果任务还没结束，请马上调用工具开始工作；"
+            "如果任务确实已经结束，请再次确认，不调用工具，系统会等待用户的输入。"
+        )
+
+        lang_hint = (self._lang_prompt or "").strip()
+        if lang_hint:
+            return f"{base_prompt}\n\n语言使用提示：{lang_hint}"
+        return base_prompt
+
     def _is_context_length_error(self, error: Exception) -> bool:
         """判断异常是否属于上下文超长。"""
         text = str(error).lower()
@@ -713,6 +890,52 @@ class RongZaiAgent(DrSaiAgent):
             "nonetype",
         ]
         return any(flag in text for flag in flags)
+
+    def _is_transport_timeout_error(self, error: Exception) -> bool:
+        """判断是否属于传输层或流式读取超时。"""
+        if error is None:
+            return False
+        if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
+            return True
+        error_type = type(error).__name__.lower()
+        if "timeout" in error_type or "timedout" in error_type:
+            return True
+        text = str(error).lower()
+        return any(flag in text for flag in ["timeout", "timed out", "readtimeout", "read timeout", "deadline exceeded"])
+
+    async def _run_stream_with_retry(
+        self,
+        stream_factory: Callable[[], AsyncGenerator[Any, None]],
+        *,
+        context_name: str = "stream",
+        max_attempts: int = 3,
+        initial_delay_seconds: float = 0.75,
+    ) -> AsyncGenerator[Any, None]:
+        """对可重试的流式响应做本地重试，减少因为短暂超时导致的整轮失败。"""
+        attempts = max(1, int(max_attempts))
+        delay_seconds = max(0.0, float(initial_delay_seconds))
+
+        for attempt in range(1, attempts + 1):
+            try:
+                async for item in stream_factory():
+                    yield item
+                return
+            except Exception as exc:
+                if not self._is_transport_timeout_error(exc) and not self._is_retryable_model_error(exc):
+                    raise
+                if attempt >= attempts:
+                    raise
+
+                retry_delay = delay_seconds * attempt
+                logger.warning(
+                    "[StreamRetry] {} attempt {}/{} failed: {}. Retrying in {:.2f}s.",
+                    context_name,
+                    attempt,
+                    attempts,
+                    exc,
+                    retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
 
     def _reset_run_token_usage(self) -> None:
         """重置当前任务的 token 统计。"""
@@ -1773,7 +1996,7 @@ class RongZaiAgent(DrSaiAgent):
             description=(
                 "Promote one loaded skill into high-priority core system rules. "
                 "Use this only when strict skill compliance is important for the current task. "
-                "If task focus has changed, prefer ReplaceCoreSkill or DemoteCoreSkill first instead of stacking promotions. "
+                "Only one skill can be promoted at a time, and promoting a different skill replaces the previous core skill. "
                 "You decide whether to call this tool."
             ),
             parameters=parameters,
@@ -1802,41 +2025,6 @@ class RongZaiAgent(DrSaiAgent):
             description=(
                 "Demote/remove a promoted core skill from high-priority system rules. "
                 "Call this immediately when that skill is no longer required by the current task to reduce prompt footprint."
-            ),
-            parameters=parameters,
-            strict=False,
-        )
-
-    def _get_replace_core_skill_tool(self) -> ToolSchema:
-        """供模型调用：替换 Core Skill。"""
-        parameters = ParametersSchema(
-            type="object",
-            properties={
-                "old_skill": {
-                    "type": "string",
-                    "description": "Existing promoted core skill to replace.",
-                },
-                "new_skill": {
-                    "type": "string",
-                    "description": "New skill to promote as replacement.",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Why replacement is needed now.",
-                },
-                "focus": {
-                    "type": "string",
-                    "description": "Optional focus area/keywords for the new skill extraction.",
-                },
-            },
-            required=["old_skill", "new_skill", "reason"],
-            additionalProperties=False,
-        )
-        return ToolSchema(
-            name="ReplaceCoreSkill",
-            description=(
-                "Replace one promoted core skill with another in high-priority system rules. "
-                "Prefer this over adding another promoted skill when task focus changes."
             ),
             parameters=parameters,
             strict=False,
@@ -1916,7 +2104,7 @@ class RongZaiAgent(DrSaiAgent):
         active = ", ".join(slot["skill"] for slot in self._core_skill_slots)
         return (
             f"Promoted skill '{skill_name}' to core rules. "
-            f"Use DemoteCoreSkill or ReplaceCoreSkill when needed. Active core skills: {active}."
+            f"Use DemoteCoreSkill when the task focus changes. Active core skills: {active}."
         )
 
     def _demote_core_skill(self, skill_name: str, reason: str = "") -> str:
@@ -1930,25 +2118,6 @@ class RongZaiAgent(DrSaiAgent):
         if reason:
             return f"Demoted core skill '{skill_name}' (reason: {reason}). Active core skills: {active}."
         return f"Demoted core skill '{skill_name}'. Active core skills: {active}."
-
-    def _replace_core_skill(
-        self,
-        *,
-        skills_loader: SkillLoader | None,
-        old_skill: str,
-        new_skill: str,
-        reason: str,
-        focus: str = "",
-    ) -> str:
-        """将一个 Core Skill 替换为另一个。"""
-        demote_message = self._demote_core_skill(skill_name=old_skill, reason=f"replace -> {new_skill}")
-        promote_message = self._promote_skill_to_core(
-            skills_loader=skills_loader,
-            skill_name=new_skill,
-            reason=reason,
-            focus=focus,
-        )
-        return f"{demote_message} {promote_message}"
 
     def update_system_skills(self) -> SkillLoader:
         """加载/刷新系统级 skills（开发者维护）。"""
@@ -2015,6 +2184,24 @@ class RongZaiAgent(DrSaiAgent):
                 sub_agents=list(self._sub_agent_config.keys()),
                 description=descriptions,
             )
+            continuation_policy = (
+                "\n\nExecution policy (required): "
+                "After each Delegate call, evaluate whether the sub-agent has truly finished the assigned work. "
+                "If the returned content clearly indicates the work is still in progress, still initializing, waiting for next steps, "
+                "or only reports setup/procedure status without the required deliverable, treat it as abnormal interruption "
+                "(not background execution). In that case, immediately call Delegate again to continue from the latest state. "
+                "If repeated continuation still cannot complete, retry Delegate with another known model alias "
+                "via `subagent_model=<alias>` or `default_config_name=<alias>`. "
+                "Only return to user after continuation and model-switch attempts are exhausted, with clear failure reasons."
+            )
+            file_handoff_policy = (
+                "\n\nFile handoff policy (required): "
+                "When delegating any task that depends on files, you must include the required file absolute paths "
+                "(or complete resolvable paths) in prompt/context. "
+                "The main agent will automatically upload referenced files and append downloadable links for the sub-agent. "
+                "The sub-agent runs in an isolated filesystem and cannot access main-agent local paths directly, "
+                "so it must download from the provided links before using file-path-based tools."
+            )
             model_hint = (
                 "\n\nModel override (optional): "
                 "you can specify a subagent model alias by adding one of these tokens in description/prompt/context: "
@@ -2024,10 +2211,10 @@ class RongZaiAgent(DrSaiAgent):
             )
             if isinstance(delegate_tool, dict):
                 base_description = str(delegate_tool.get("description", "") or "")
-                delegate_tool["description"] = f"{base_description}{model_hint}"
+                delegate_tool["description"] = f"{base_description}{continuation_policy}{file_handoff_policy}{model_hint}"
             else:
                 base_description = str(getattr(delegate_tool, "description", "") or "")
-                setattr(delegate_tool, "description", f"{base_description}{model_hint}")
+                setattr(delegate_tool, "description", f"{base_description}{continuation_policy}{file_handoff_policy}{model_hint}")
             self._subagent_tools = [delegate_tool]
         else:
             self._subagent_tools = []
@@ -2487,6 +2674,27 @@ class RongZaiAgent(DrSaiAgent):
         finally:
             self._delegate_depth = max(0, self._delegate_depth - 1)
 
+    def _decorate_empty_delegate_content(self, content: Any, *, kind: str) -> str:
+        """把空/空白的委托内容替换为明确警告，避免主模型误解为正常空输出。"""
+        flattened = self._flatten_message_content_for_summary(content)
+        if isinstance(flattened, str) and flattened.strip():
+            return flattened
+        return f"[{kind} empty] This kind of output means 子智能体的工作出现了问题，需要你解决。"
+
+    def _truncate_delegate_transcript(self, transcript: Sequence[str], *, max_chars: int = 12000) -> str:
+        """把 Delegate 轨迹截断为更短的摘要，避免把过长的执行轨迹直接塞进主模型上下文。"""
+        if not transcript:
+            return ""
+        joined = "\n".join(transcript)
+        if len(joined) <= max_chars:
+            return joined
+
+        head_len = max_chars // 2
+        tail_len = max_chars - head_len
+        head = joined[:head_len]
+        tail = joined[-tail_len:] if tail_len > 0 else ""
+        return f"{head}\n\n...[delegate transcript truncated]...\n\n{tail}"
+
     def _format_delegate_transcript_entry(self, message: BaseAgentEvent | BaseChatMessage) -> str:
         """把子智能体事件压成适合回填给主模型的可读轨迹。"""
         source = getattr(message, "source", "") or "subagent"
@@ -2505,7 +2713,7 @@ class RongZaiAgent(DrSaiAgent):
                                 file_names.append(str(file_name))
             if file_names:
                 return f"[{label} source={source}] files={', '.join(file_names)}"
-            return f"[{label} source={source}] {self._flatten_message_content_for_summary(content)}"
+            return f"[{label} source={source}] {self._decorate_empty_delegate_content(content, kind='files_event')}"
 
         if isinstance(message, ToolCallRequestEvent):
             tool_calls: List[str] = []
@@ -2514,28 +2722,28 @@ class RongZaiAgent(DrSaiAgent):
                     name = getattr(item, "name", None)
                     arguments = getattr(item, "arguments", None)
                     tool_calls.append(f"{name}({arguments})" if arguments is not None else str(item))
-            return f"[{label} source={source}] {'; '.join(tool_calls) if tool_calls else self._flatten_message_content_for_summary(content)}"
+            return f"[{label} source={source}] {'; '.join(tool_calls) if tool_calls else self._decorate_empty_delegate_content(content, kind='tool_call')}"
 
         if isinstance(message, ToolCallExecutionEvent):
             tool_results: List[str] = []
             if isinstance(content, list):
                 for item in content:
                     name = getattr(item, "name", None)
-                    result_text = self._flatten_message_content_for_summary(getattr(item, "content", ""))
+                    result_text = self._decorate_empty_delegate_content(getattr(item, "content", ""), kind='tool_result')
                     status = "error" if getattr(item, "is_error", False) else "ok"
                     tool_results.append(f"{name}[{status}]={result_text}")
-            return f"[{label} source={source}] {'; '.join(tool_results) if tool_results else self._flatten_message_content_for_summary(content)}"
+            return f"[{label} source={source}] {'; '.join(tool_results) if tool_results else self._decorate_empty_delegate_content(content, kind='tool_result')}"
 
         if isinstance(message, ModelClientStreamingChunkEvent):
-            return f"[{label} source={source}] {self._flatten_message_content_for_summary(content)}"
+            return f"[{label} source={source}] {self._decorate_empty_delegate_content(content, kind='model_output')}"
 
         if isinstance(message, TextMessage):
-            return f"[{label} source={source}] {self._flatten_message_content_for_summary(content)}"
+            return f"[{label} source={source}] {self._decorate_empty_delegate_content(content, kind='model_output')}"
 
         if isinstance(message, Response):
-            return f"[{label} source={source}] {self._flatten_message_content_for_summary(getattr(message.chat_message, 'content', ''))}"
+            return f"[{label} source={source}] {self._decorate_empty_delegate_content(getattr(message.chat_message, 'content', ''), kind='model_output')}"
 
-        return f"[{label} source={source}] {self._flatten_message_content_for_summary(content)}"
+        return f"[{label} source={source}] {self._decorate_empty_delegate_content(content, kind='model_output')}"
 
     def _resolve_existing_local_path_for_delegate(self, raw_path: str) -> Optional[Path]:
         """Resolve a path candidate to an existing local file on the main-agent host."""
@@ -2865,6 +3073,7 @@ class RongZaiAgent(DrSaiAgent):
         fallback_candidates: List[str] = self._get_fallback_config_names()
         fallback_attempted: set[str] = set()
         forced_invalid_output_once = False
+        no_tool_followup_pending = False
         try:
             # 正常路径下语言检测已在 run_stream 的消息预处理阶段完成。
             if not self._lang_prompt:
@@ -2949,7 +3158,9 @@ class RongZaiAgent(DrSaiAgent):
                             if isinstance(inference_output, ModelClientStreamingChunkEvent):
                                 buffered_stream_events.append(inference_output)
                 except Exception as llm_err:
-                    if not self._is_retryable_model_error(llm_err):
+                    is_transport_timeout = self._is_transport_timeout_error(llm_err)
+                    is_retryable = self._is_retryable_model_error(llm_err) or is_transport_timeout
+                    if not is_retryable:
                         raise
 
                     remaining_fallbacks = [name for name in fallback_candidates if name not in fallback_attempted]
@@ -2962,7 +3173,7 @@ class RongZaiAgent(DrSaiAgent):
 
                     if switched_model:
                         yield ModelClientStreamingChunkEvent(
-                            content=f"\n[System Notice] Model call failed. Switched to fallback model: {switched_model}. Retrying.\n",
+                            content=f"\n[System Notice] {'Transport timeout' if is_transport_timeout else 'Model call'} failed. Switched to fallback model: {switched_model}. Retrying.\n",
                             source=agent_name,
                         )
                         logger.warning(
@@ -2982,6 +3193,11 @@ class RongZaiAgent(DrSaiAgent):
                     raise RuntimeError("No model result was produced.")
 
                 self._update_and_log_token_usage(agent_name, getattr(model_result, "usage", None))
+                self._log_full_llm_output(
+                    agent_name=agent_name,
+                    model_result=model_result,
+                    buffered_stream_events=buffered_stream_events,
+                )
 
                 force_invalid_output = os.getenv("RONGZAI_FORCE_INVALID_MODEL_OUTPUT", "").lower() in {"1", "true", "yes", "on"}
                 if force_invalid_output and not forced_invalid_output_once:
@@ -3032,6 +3248,23 @@ class RongZaiAgent(DrSaiAgent):
                             thought=getattr(model_result, "thought", None),
                         )
                     )
+
+                    if no_tool_followup_pending:
+                        logger.info(
+                            "[NoToolFollowup] Second consecutive no-tool output detected. Finish current turn and wait for user input."
+                        )
+                        # 发送一个内部可见的收尾响应，确保上层 run_stream 能产出 TaskResult，
+                        # 避免前端一直停留在 Processing。
+                        yield Response(
+                            chat_message=TextMessage(
+                                content="",
+                                source=self._agent_name,
+                                metadata={"internal": "yes"},
+                            ),
+                            inner_messages=inner_messages,
+                        )
+                        break
+
                     for buffered_event in buffered_stream_events:
                         yield buffered_event
                     response = await self.handle_str_reponse(
@@ -3042,12 +3275,28 @@ class RongZaiAgent(DrSaiAgent):
                         output_content_type=output_content_type,
                     )
                     yield response
-                    break
+
+                    followup_prompt = self._build_no_tool_call_followup_prompt()
+                    await model_context.add_message(
+                        UserMessage(
+                            content=followup_prompt,
+                            source="user",
+                        )
+                    )
+                    logger.info(
+                        "[NoToolFollowup] First no-tool output detected. Injected follow-up user prompt and forcing one more model turn."
+                    )
+                    no_tool_followup_pending = True
+                    continue
 
                 # 工具调用分支：严格要求返回 FunctionCall 列表。
                 if isinstance(model_result.content, list) and all(
                     isinstance(item, FunctionCall) for item in model_result.content
                 ):
+                    if no_tool_followup_pending:
+                        logger.info("[NoToolFollowup] Recovered: tool calls detected after follow-up prompt.")
+                        no_tool_followup_pending = False
+
                     has_todo_write_call = any(call.name == "TodoWrite" for call in model_result.content)
                     has_memo_write_call = any(call.name == "MemoWrite" for call in model_result.content)
                     if not has_todo_write_call and not has_memo_write_call:
@@ -3382,7 +3631,7 @@ class RongZaiAgent(DrSaiAgent):
                                         delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
 
                                 if delegate_trace:
-                                    transcript_block = "\n".join(delegate_trace).strip()
+                                    transcript_block = self._truncate_delegate_transcript(delegate_trace).strip()
                                     if transcript_block:
                                         if delegate_result and delegate_result.strip():
                                             delegate_result = f"{transcript_block}\n\n[Delegate final source={agent_name}] {delegate_result.strip()}"
@@ -3390,7 +3639,10 @@ class RongZaiAgent(DrSaiAgent):
                                             delegate_result = transcript_block
 
                                 if not delegate_result:
-                                    delegate_result = f"Subagent '{sub_agent_name}' completed with empty output."
+                                    delegate_result = (
+                                        f"Subagent '{sub_agent_name}' completed with empty output. "
+                                        "This kind of output means there is a problem, and if this is the last output, it means the subagent has failed. You need to resolve it."
+                                    )
 
                                 visible_output_text = "".join(subagent_visible_chunks).strip()
 
@@ -3423,7 +3675,7 @@ class RongZaiAgent(DrSaiAgent):
                                     yield AgentLogEvent(
                                         title=(
                                             f"Sub-agent {sub_agent_name} finished. "
-                                            f"Switching back to main agent. Last output: {switch_back_diag}"
+                                            f"Switching back to main agent."
                                         ),
                                         source=agent_name,
                                         content=(
@@ -3440,7 +3692,7 @@ class RongZaiAgent(DrSaiAgent):
                                     yield AgentLogEvent(
                                         title=(
                                             f"Sub-agent {sub_agent_name} ended with timeout/error. "
-                                            f"Switching back to main agent. Last output: {switch_back_diag}"
+                                            f"Switching back to main agent."
                                         ),
                                         source=agent_name,
                                         content=(
@@ -3526,31 +3778,6 @@ class RongZaiAgent(DrSaiAgent):
                             system_messages = self._system_messages
                             yield AgentLogEvent(
                                 title="I am demoting a core skill.",
-                                source=agent_name,
-                                content=str(argument),
-                                content_type="tools",
-                            )
-                        elif tool_name == "ReplaceCoreSkill":
-                            cleanup_skill_names.append(argument["new_skill"])
-                            replace_message = self._replace_core_skill(
-                                skills_loader=skills_loader,
-                                old_skill=argument["old_skill"],
-                                new_skill=argument["new_skill"],
-                                reason=argument["reason"],
-                                focus=argument.get("focus", ""),
-                            )
-                            pending_tool_results.append(
-                                FunctionExecutionResult(
-                                    content=replace_message,
-                                    name=tool_name,
-                                    call_id=call_id,
-                                    is_error=False,
-                                )
-                            )
-                            self.update_system_prompt()
-                            system_messages = self._system_messages
-                            yield AgentLogEvent(
-                                title="I am replacing a core skill.",
                                 source=agent_name,
                                 content=str(argument),
                                 content_type="tools",
@@ -3887,28 +4114,49 @@ class RongZaiAgent(DrSaiAgent):
                             cancellation_token=cancellation_token,
                         )
         try:
+            stream_retry_attempts = max(1, int(_get_env_float("RONGZAI_STREAM_RETRY_ATTEMPTS", 3.0)))
+            stream_retry_delay = max(0.0, _get_env_float("RONGZAI_STREAM_RETRY_DELAY_SECONDS", 0.75))
+
             if self._reply_function is not None:
                 # 自定义回复函数：允许上层接管模型调用流程
-                async for chunk in self._call_reply_function(
-                    llm_messages,
-                    model_client=model_client,
-                    workbench=workbench,
-                    handoff_tools=handoff_tools,
-                    tools=all_tools,
-                    agent_name=agent_name,
-                    cancellation_token=cancellation_token,
-                    db_manager=self._db_manager,
+                async def _reply_stream():
+                    async for chunk in self._call_reply_function(
+                        llm_messages,
+                        model_client=model_client,
+                        workbench=workbench,
+                        handoff_tools=handoff_tools,
+                        tools=all_tools,
+                        agent_name=agent_name,
+                        cancellation_token=cancellation_token,
+                        db_manager=self._db_manager,
+                    ):
+                        yield chunk
+
+                async for chunk in self._run_stream_with_retry(
+                    _reply_stream,
+                    context_name="reply_function",
+                    max_attempts=stream_retry_attempts,
+                    initial_delay_seconds=stream_retry_delay,
                 ):
                     yield chunk
             else:
-                async for chunk in self.call_llm(
-                    agent_name=agent_name,
-                    model_client=model_client,
-                    llm_messages=llm_messages,
-                    tools=all_tools,
-                    model_client_stream=model_client_stream,
-                    cancellation_token=cancellation_token,
-                    output_content_type=output_content_type,
+                async def _llm_stream():
+                    async for chunk in self.call_llm(
+                        agent_name=agent_name,
+                        model_client=model_client,
+                        llm_messages=llm_messages,
+                        tools=all_tools,
+                        model_client_stream=model_client_stream,
+                        cancellation_token=cancellation_token,
+                        output_content_type=output_content_type,
+                    ):
+                        yield chunk
+
+                async for chunk in self._run_stream_with_retry(
+                    _llm_stream,
+                    context_name="llm_stream",
+                    max_attempts=stream_retry_attempts,
+                    initial_delay_seconds=stream_retry_delay,
                 ):
                     yield chunk
             return

@@ -63,10 +63,6 @@ def _skill_tool_schema(name: str, description: str) -> ToolSchema:
             properties={
                 "skill_name": {"type": "string", "description": "The skill name to update."},
                 "guidance": {"type": "string", "description": "Reason or policy text for the update."},
-                "target_skill": {
-                    "type": "string",
-                    "description": "The skill to replace with when using ReplaceCoreSkill.",
-                },
             },
             required=["skill_name", "guidance"],
             additionalProperties=False,
@@ -86,22 +82,4 @@ def get_demote_core_skill_tool() -> ToolSchema:
     return _skill_tool_schema(
         "DemoteCoreSkill",
         "Remove the current core-skill slot for the current task. Use this only when you want to clear the active promoted skill.",
-    )
-
-
-def get_replace_core_skill_tool() -> ToolSchema:
-    return ToolSchema(
-        name="ReplaceCoreSkill",
-        description="Replace the current core skill with another one for the current task. This also clears the previous core-skill slot and makes the new skill the only active core skill.",
-        parameters=ParametersSchema(
-            type="object",
-            properties={
-                "skill_name": {"type": "string", "description": "The skill name to replace."},
-                "target_skill": {"type": "string", "description": "The skill that should replace the original one."},
-                "guidance": {"type": "string", "description": "Reason or policy text for the replacement."},
-            },
-            required=["skill_name", "target_skill", "guidance"],
-            additionalProperties=False,
-        ),
-        strict=False,
     )

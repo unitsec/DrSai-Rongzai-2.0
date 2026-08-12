@@ -18,12 +18,14 @@ here = Path(__file__).parent.absolute()
 import asyncio
 from drsai.backend import run_worker
 
-from src.core.agent.agent import RongZaiAgent
+from src.core.agent.agent import RongZaiAgent, normalize_thread_id
 from src.configs.system_prompt import RONGZAI_SYSTEM_PROMPT
 import os
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
 os.environ.setdefault("RONGZAI_DEBUG_SYSTEM_PROMPT", "0")
+# 打开后会把每轮模型完整输出（含流式文本与最终结构化内容）写入日志。
+os.environ.setdefault("RONGZAI_DEBUG_LLM_OUTPUT", "1")
 data_dir = os.getenv("WORKER_SPACE", "")
 parent_path = os.path.dirname(os.path.abspath(__file__))
 appdir = os.path.join(parent_path, "tmp/drsai")
@@ -202,13 +204,14 @@ async def create_agent(
     is_openai_gpt = llm_model.startswith("openai/gpt-")
     agent_token_limit = 300000 if is_openai_gpt else 500000
     sub_agent_config = _load_remote_subagent_config()
+    thread_id = normalize_thread_id(thread_id, user_id)
 
     def set_model_client(defult_config_name: str|None = "deepseek-v3.2(No image)") -> HepAIAnthropicChatCompletionClient| HepAIChatCompletionClient:
         llm_model = llm_mode_config.get(defult_config_name, "openai/gpt-4o")
         # GPT 路径在 HepAI 的 OpenAI 兼容层上更容易受到参数兼容性影响。
         # 对 GPT 尽量少传可选参数，让服务端自己决定 completion budget，避免因为
         # max_tokens 不兼容被包装成 5xx 后触发长时间重试。
-        llm_max_tokens = 12000
+        llm_max_tokens = 50000
         llm_max_retries = 1
         omit_max_tokens = False
 

@@ -262,6 +262,25 @@ def create_output_directory(path: str | Path) -> Path:
     return output_dir
 
 
+def _build_pdf_project_dir(
+    user_id: Optional[str],
+    session_id: Optional[str],
+    mission_name: Optional[str],
+) -> Path:
+    """按 user_id/session_id/mission_name 组织 PDF 工具输出目录。"""
+    if not user_id:
+        raise ValueError("user_id is required")
+    if not mission_name:
+        raise ValueError("mission_name is required")
+
+    project_dir = Path(DEFAULT_WORKDIR) / str(user_id)
+    if session_id:
+        project_dir = project_dir / str(session_id)
+    project_dir = project_dir / str(mission_name)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    return project_dir
+
+
 def _convert_refined_structure_to_cif(
     refined_structure_path: str | Path,
     output_cif_path: str | Path,
@@ -1236,6 +1255,7 @@ def initialize_pdf_project(
     pdf_source: str = "N",
     user_id: Optional[str] = None,
     mission_name: Optional[str] = None,
+    session_id: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create the first immutable PDF refinement project snapshot file (.json).
@@ -1293,7 +1313,7 @@ def initialize_pdf_project(
         if not task_id:
             raise ValueError("task_id is required")
 
-        project_dir = DEFAULT_WORKDIR / user_id / mission_name
+        project_dir = _build_pdf_project_dir(user_id, session_id, mission_name)
         path = Path(project_dir)
         path.mkdir(parents=True, exist_ok=True)
 
@@ -1366,6 +1386,7 @@ def update_nonRefineValue_and_constraintSet(
     nonRefineValue: Optional[Dict[str, Any]] = None,
     user_id: Optional[str] = None,
     mission_name: Optional[str] = None,
+    session_id: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """tool for editing snapshot constraintSet.
@@ -1658,7 +1679,7 @@ def update_nonRefineValue_and_constraintSet(
         updated_manifest["refineState"] = synced_refine_state
         updated_manifest["output_files"] = {}
 
-        project_dir = DEFAULT_WORKDIR / user_id / mission_name
+        project_dir = _build_pdf_project_dir(user_id, session_id, mission_name)
         next_project_path = Path(project_dir) / f"{task_id}.json"
         _safe_json_dump(next_project_path, updated_manifest)
 
@@ -1677,6 +1698,7 @@ def update_refine_state(
     refineState: RefineStateSchema,
     user_id: Optional[str] = None,
     mission_name: Optional[str] = None,
+    session_id: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """tool for editing snapshot refineState.
@@ -1770,7 +1792,7 @@ def update_refine_state(
         updated_manifest["refineState"] = existing_rows
         updated_manifest["output_files"] = {}
 
-        project_dir = DEFAULT_WORKDIR / user_id / mission_name
+        project_dir = _build_pdf_project_dir(user_id, session_id, mission_name)
         next_project_path = Path(project_dir) / f"{task_id}.json"
         _safe_json_dump(next_project_path, updated_manifest)
 
@@ -1794,6 +1816,7 @@ def auto_spacegroup_constraints(
     origin_offset: Optional[List[float]] = None,
     user_id: Optional[str] = None,
     mission_name: Optional[str] = None,
+    session_id: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate space-group-based atomic symmetry constraints and write a new snapshot.
@@ -2067,7 +2090,7 @@ def auto_spacegroup_constraints(
         updated_manifest["refineState"] = merged_refine_state
         updated_manifest["output_files"] = {}
 
-        project_dir = DEFAULT_WORKDIR / user_id / mission_name
+        project_dir = _build_pdf_project_dir(user_id, session_id, mission_name)
         next_project_path = Path(project_dir) / f"{task_id}.json"
         _safe_json_dump(next_project_path, updated_manifest)
 
@@ -2095,6 +2118,7 @@ def refine(
     project_path: str,
     user_id: Optional[str] = None,
     mission_name: Optional[str] = None,
+    session_id: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -2241,8 +2265,7 @@ def refine(
         # qdamp is refinable; data load uses a neutral initial value and refinement controls it later.
         read_data_qdamp = 0.001
 
-        project_dir = DEFAULT_WORKDIR / user_id / mission_name
-        project_dir.mkdir(parents=True, exist_ok=True)
+        project_dir = _build_pdf_project_dir(user_id, session_id, mission_name)
         output_prefix = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in str(task_id))
 
         pf = PdfFit()
@@ -2377,6 +2400,7 @@ def export_cifs(
     project_path: Optional[str] = None,
     user_id: Optional[str] = None,
     mission_name: Optional[str] = None,
+    session_id: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convert refined structure files (.rstr/.stru) into CIF files.
@@ -2409,8 +2433,7 @@ def export_cifs(
         if not isinstance(rstr_files, list) or not rstr_files:
             raise ValueError("rstr_files 必须是非空列表")
 
-        output_dir = DEFAULT_WORKDIR / user_id / mission_name
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = _build_pdf_project_dir(user_id, session_id, mission_name)
         safe_task_id = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in str(task_id))
 
         cif_files: List[str] = []
