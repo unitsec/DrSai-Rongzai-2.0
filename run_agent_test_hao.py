@@ -211,7 +211,7 @@ async def create_agent(
         # GPT 路径在 HepAI 的 OpenAI 兼容层上更容易受到参数兼容性影响。
         # 对 GPT 尽量少传可选参数，让服务端自己决定 completion budget，避免因为
         # max_tokens 不兼容被包装成 5xx 后触发长时间重试。
-        llm_max_tokens = 50000
+        llm_max_tokens = 60000
         llm_max_retries = 1
         omit_max_tokens = False
 
