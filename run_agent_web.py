@@ -1,5 +1,7 @@
 from pathlib import Path
 import asyncio, os
+import json
+from loguru import logger
 
 from drsai.modules.components.model_client import  HepAIChatCompletionClient, ModelFamily
 
@@ -22,12 +24,15 @@ os.environ["HOME"] = str(here.parent)
 import asyncio
 from drsai.backend import run_worker
 
-from src.core.agent.agent import RongZaiAgent
+from src.core.agent.agent import RongZaiAgent, normalize_thread_id
 from src.configs.system_prompt import RONGZAI_SYSTEM_PROMPT
 import os
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
 os.environ.setdefault("RONGZAI_DEBUG_SYSTEM_PROMPT", "0")
+# 打开后会把每轮模型完整输出（含流式文本与最终结构化内容）写入日志。
+os.environ.setdefault("RONGZAI_DEBUG_LLM_OUTPUT", "1")
+data_dir = os.getenv("WORKER_SPACE", "")
 parent_path = os.path.dirname(os.path.abspath(__file__))
 appdir = os.path.join(parent_path, "tmp/drsai")
 os.makedirs(appdir, exist_ok=True)
@@ -53,6 +58,131 @@ llm_mode_config = {
     "gpt 4.1": "openai/gpt-4.1"
 }
 
+def _load_remote_subagent_config() -> dict[str, dict]:
+    """从专用子智能体配置文件构建 RongZaiAgent 所需的 sub_agent_config。
+
+    优先读取：
+    1. RONGZAI_SUBAGENT_CONFIG_FILE（推荐）
+    2. 仓库根目录下 subagent_remote_workers.json（默认）
+
+    兼容：
+    - dict: 直接作为 sub_agent_config 使用
+    - list: 按历史 remote_agents.json / DDF agent list 格式转换
+    """
+    candidates = [
+        os.getenv("RONGZAI_SUBAGENT_CONFIG_FILE", "").strip(),
+        str((here / "subagent_remote_workers.json").resolve()),
+    ]
+    candidates = [p for p in candidates if p]
+
+    def _normalize_entry(name: str, raw_cfg: dict) -> dict | None:
+        if not isinstance(raw_cfg, dict):
+            return None
+
+        nested_cfg = raw_cfg.get("model_remote_configs")
+        if not isinstance(nested_cfg, dict):
+            nested_cfg = raw_cfg.get("config")
+        if not isinstance(nested_cfg, dict):
+            nested_cfg = {}
+
+        remote_cfg = dict(nested_cfg)
+
+        flat_name = raw_cfg.get("name") or raw_cfg.get("model") or name
+        flat_url = raw_cfg.get("url")
+        flat_api_key = raw_cfg.get("api_key") or raw_cfg.get("apiKey")
+        flat_default_cfg = raw_cfg.get("defult_config_name") or raw_cfg.get("default_config_name")
+        mode = str(raw_cfg.get("mode") or "").strip().lower()
+
+        if not mode:
+            if flat_url or remote_cfg.get("url"):
+                mode = "remote"
+            else:
+                mode = "ddf"
+
+        remote_cfg.setdefault("name", flat_name)
+        if flat_url and not remote_cfg.get("url"):
+            remote_cfg["url"] = flat_url
+        if mode == "ddf" and not remote_cfg.get("url"):
+            remote_cfg["url"] = "https://aiapi.ihep.ac.cn/apiv2"
+        if flat_api_key and not remote_cfg.get("api_key"):
+            remote_cfg["api_key"] = flat_api_key
+        if flat_default_cfg and not (remote_cfg.get("defult_config_name") or remote_cfg.get("default_config_name")):
+            remote_cfg["defult_config_name"] = flat_default_cfg
+
+        agent_type = raw_cfg.get("type", "HepAIWorkerAgent")
+        if agent_type not in {"HepAIWorkerAgent", "RemoteAgent"}:
+            return None
+
+        if not remote_cfg.get("name"):
+            return None
+
+        if not remote_cfg.get("url"):
+            return None
+
+        description = raw_cfg.get("description", "")
+        if isinstance(description, dict):
+            description = description.get("zh") or description.get("en") or json.dumps(description, ensure_ascii=False)
+
+        return {
+            "mode": mode,
+            "type": agent_type,
+            "description": description or f"Remote worker: {name}",
+            "tools": raw_cfg.get("tools", ["*"]),
+            "model_remote_configs": remote_cfg,
+        }
+
+    for path_str in candidates:
+        cfg_path = Path(path_str)
+        if not cfg_path.exists():
+            continue
+        try:
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+
+            # 推荐格式：直接使用 sub_agent_config 字典
+            if isinstance(raw, dict):
+                normalized: dict[str, dict] = {}
+                for name, cfg in raw.items():
+                    entry = _normalize_entry(str(name), cfg)
+                    if entry:
+                        normalized[str(name)] = entry
+
+                if normalized:
+                    logger.info("Loaded {} remote sub-agents from {}", len(normalized), cfg_path)
+                    return normalized
+
+                logger.warning("No valid remote sub-agent entries found in {}", cfg_path)
+                continue
+
+            # 兼容旧格式：remote_agents.json（list）
+            if not isinstance(raw, list):
+                logger.warning("Unsupported sub-agent config format in {}", cfg_path)
+                continue
+
+            sub_agents: dict[str, dict] = {}
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("mode") not in {"remote", "ddf"}:
+                    continue
+
+                name = item.get("name")
+                if not name:
+                    continue
+
+                entry = _normalize_entry(str(name), item)
+                if entry:
+                    sub_agents[str(name)] = entry
+
+            if sub_agents:
+                logger.warning("Loaded remote sub-agents from legacy list format file: {}", cfg_path)
+                logger.info("Loaded {} remote sub-agents from {}", len(sub_agents), cfg_path)
+                return sub_agents
+        except Exception as e:
+            logger.warning("Failed to load remote agents from {}: {}", cfg_path, e)
+
+    logger.info("No remote sub-agent config loaded.")
+    return {}
+
 async def create_agent(
         api_key: str | None = None,
         thread_id: str | None = None,
@@ -61,11 +191,20 @@ async def create_agent(
         defult_config_name: str | None = "default",
     ) -> RongZaiAgent:
 
+    logger.info(
+            "[AgentFactory] creating agent user_id={} thread_id={} config={} has_api_key={} worker_space={}",
+            user_id,
+            thread_id,
+            defult_config_name,
+            bool(api_key),
+            os.getenv("WORKER_SPACE", ""),
+        )
+
     llm_model = llm_mode_config.get(defult_config_name, "openai/gpt-4o")
     is_openai_gpt = llm_model.startswith("openai/gpt-")
     agent_token_limit = 300000 if is_openai_gpt else 500000
-
-    print(f"api_key: {api_key}")
+    sub_agent_config = _load_remote_subagent_config()
+    thread_id = normalize_thread_id(thread_id, user_id)
 
     def set_model_client(defult_config_name: str|None = "deepseek-v3.2(No image)") -> HepAIAnthropicChatCompletionClient| HepAIChatCompletionClient:
         llm_model = llm_mode_config.get(defult_config_name, "openai/gpt-4o")
@@ -73,7 +212,7 @@ async def create_agent(
         # 对 GPT 尽量少传可选参数，让服务端自己决定 completion budget，避免因为
         # max_tokens 不兼容被包装成 5xx 后触发长时间重试。
         llm_max_tokens = 60000
-        llm_max_retries = 12
+        llm_max_retries = 1
         omit_max_tokens = False
 
         if llm_model.startswith("openai/gpt-"):
@@ -86,15 +225,15 @@ async def create_agent(
         if is_black_user:
             client_kwargs = {
                 "model": llm_model,
-                "api_key": os.getenv("HEPAI_API_KEY"),
-                "timeout": 180,
+                "api_key": api_key,
+                "timeout": 60,
                 "max_retries": llm_max_retries,
             }
         else:
             client_kwargs = {
                 "model": llm_model,
                 "api_key": os.getenv("HEPAI_API_KEY"),
-                "timeout": 180,
+                "timeout": 60,
                 "max_retries": llm_max_retries,
             }
         if not omit_max_tokens:
@@ -156,6 +295,7 @@ async def create_agent(
 
         # skills and executor
         skills_dir=os.getenv("SYSTEM_SKILLS_DIR"),
+        sub_agent_config=sub_agent_config,
         # executor=local_executor,
 
         work_dir=WORKDIR,
