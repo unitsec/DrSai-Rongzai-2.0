@@ -13,6 +13,12 @@ from drsai.modules.managers.database import DatabaseManager
 
 here = Path(__file__).parent.absolute()
 
+# The shell/Python tools use HOME for ~ expansion. In this workspace HOME may
+# be unset or point to /, which turns ~/rongzai-agent/... into /rongzai-agent/...
+# and bypasses the intended extra_work_dirs entry. Pin HOME to the repo parent
+# so ~/rongzai-agent resolves to the real checkout path.
+os.environ["HOME"] = str(here.parent)
+
 import asyncio
 from drsai.backend import run_worker
 
@@ -27,18 +33,6 @@ appdir = os.path.join(parent_path, "tmp/drsai")
 os.makedirs(appdir, exist_ok=True)
 
 VIP_USER_LIST = os.getenv("VIP_USER_LIST", "").split(",") if os.getenv("VIP_USER_LIST") else []
-
-
-def _normalize_users(users: list[str]) -> list[str]:
-    return [u.strip() for u in users if u and u.strip()]
-
-
-PERMISSION_USERS = list(dict.fromkeys(_normalize_users(VIP_USER_LIST)))
-PERMISSION = (
-    f"groups: rongzai,payg,hairongzai@ihep.ac.cn; users: {','.join(PERMISSION_USERS)}; "
-    "owner: wanghao96@ihep.ac.cn"
-)
-print(f"PERMISSION: {PERMISSION}")
 
 
 def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
@@ -86,8 +80,10 @@ async def create_agent(
             omit_max_tokens = True
             llm_max_retries = 1
 
-        is_vip_user = bool(user_id and user_id in PERMISSION_USERS)
-        if is_vip_user:
+        BLACK_LIST = os.getenv("BLACK_LIST", "").split(",") if os.getenv("BLACK_LIST") else []
+        is_black_user = bool(user_id and user_id in BLACK_LIST)
+        print(f"User {user_id} is blacklisted: {is_black_user}")
+        if is_black_user:
             client_kwargs = {
                 "model": llm_model,
                 "api_key": os.getenv("HEPAI_API_KEY"),
@@ -139,7 +135,6 @@ async def create_agent(
     
     # Code executor and working directory
     WORKDIR=os.getenv("WORKDIR")
-    USER_UPLOAD_DIR = os.getenv("USER_UPLOAD_DIR", "")
 
 
     SYSTEM = RONGZAI_SYSTEM_PROMPT
@@ -179,7 +174,7 @@ if __name__ == "__main__":
             # 智能体注册信息
             agent_name="Rongzai Agent dev",
             author="wanghao96@ihep.ac.cn",
-            permission=PERMISSION,
+            permission="groups: rongzai,payg,hairongzai@ihep.ac.cn; users:admin, ddf_free; owner: wanghao96@ihep.ac.cn",
             description = '{"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"}',
             version = "0.1.0",
             logo="/dg_workfs/domassy/rongzai/rongzai-agent/src/configs/resized_rzera_logo.png",
@@ -196,7 +191,7 @@ if __name__ == "__main__":
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
-            port = 30004, 
+            port = 42501, 
             # 是否注册到HepAI智能体平台
             no_register=False,
             drsai_dir = "/dg_workfs/domassy/rongzai/rongzai-agent/tmp",

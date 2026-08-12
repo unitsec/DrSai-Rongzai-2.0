@@ -75,9 +75,6 @@ from drsai.modules.managers.messages import (
 )
 from drsai.modules.managers.database import DatabaseManager
 from drsai.configs.constant import RUNS_DIR
-from drsai.modules.agents.skills_agent.managers import (
-    get_operator_funcs,
-)
 from drsai.modules.components.skills import SkillLoader
 from drsai.utils.utils import download_file_from_url_or_base64
 from drsai.modules.agents.skills_agent.managers.get_managers_tools import (
@@ -527,23 +524,18 @@ class RongZaiAgent(DrSaiAgent):
         # === basic tools ===
         # 将run_bash, run_read, run_write, run_edit4个函数转换为大模型能理解的FunctionTool对象并加入self._tools列表
         self._only_in_workspace = only_in_workspace
-        self._extra_work_dirs = extra_work_dirs
-        self._basic_funcs: List[Callable] = get_operator_funcs(
-            work_dir, 
-            only_in_workspace=self._only_in_workspace,
-            extra_dirs = self._extra_work_dirs,
+        self._extra_work_dirs = list(extra_work_dirs) if extra_work_dirs else []
+        self._basic_funcs: List[Callable] = get_operator_funcs_rongzai(
+            self._work_dir,
             thread_id=self._thread_id,
-            allolow_dangrous_cmd = True, # 融载智能体默认允许执行潜在危险命令，前提是用户明确提出需求。风险由用户承担。
-            )
+            extra_dirs=self._extra_work_dirs,
+            only_in_workspace=self._only_in_workspace,
+            allolow_dangrous_cmd=True,  # rongzai智能体默认允许执行潜在危险命令，前提是用户明确提出需求。风险由用户承担。
+            source_name=self._name,
+        )
         # self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
         for func in self._basic_funcs:
-            if func.__name__ in {"run_bash", "run_write", "run_edit"}:
-                self._tools.append(FunctionTool(func, description=func.__doc__ or ""))
-
-        # 将rongzai需要的特定的函数转换为FunctionTool对象并加入self._tools列表
-        self._otherBasic_funcs: List[Callable] = get_operator_funcs_rongzai(source_name=self._name)
-        for func in self._otherBasic_funcs:
-            self._tools.append(FunctionTool(func, description=func.__doc__))
+            self._tools.append(FunctionTool(func, description=func.__doc__ or ""))
 
         # MCP 基础工具：当 skill 里提到需要连接某个 MCP 服务/工具时，模型应优先使用这里的连接工具。
         self._tools.append(
@@ -1874,20 +1866,22 @@ class RongZaiAgent(DrSaiAgent):
             # token = _get_user_token(user_id) or "Rongzai@324"
             if auth_provider == "domas":
                 PermissionCheckTool = DomasPermissionProvider()
-                probe = PermissionCheckTool.get_user_permissions(user_id, sso, ui_role)
-                all_proposals = [p['proposal_id'] for p in probe.to_dict()['proposals']]
                 if ui_role == "scientist":
-                    result = PermissionCheckTool.get_proposal_by_runid(sso, user_id, runNumber,beamline)
-                    found_proposal = result['proposalId']
-                    # 检查found_proposal是否在用户可访问的proposal列表中
-                    if str(found_proposal) not in all_proposals:
-                        results["error"] = f"用户 {user_id} 无权访问 {runNumber} 对应的课题 {found_proposal}"
-                        return results    
+                    result = PermissionCheckTool.get_proposal_by_runid(sso, user_id, runNumber, beamline)
+                    if not result:
+                        results["error"] = f"未找到 run {runNumber} 对应的课题"
+                        return results
 
+                    found_proposal = str(result.get("proposalId") or "").strip()
+                    if not found_proposal:
+                        results["error"] = f"未找到 run {runNumber} 对应的课题"
+                        return results
                 else:
+                    probe = PermissionCheckTool.get_user_permissions(user_id, sso, ui_role)
+                    all_proposals = [p['proposal_id'] for p in probe.to_dict()['proposals']]
                     found_proposal = None
                     for proposal in all_proposals:
-                        result = PermissionCheckTool._fetch_runs_for_proposal(sso,user_id,proposal)
+                        result = PermissionCheckTool._fetch_runs_for_proposal(sso, user_id, proposal)
                         checkedRUNs = [run.to_dict()['run_number'] for run in result]
                         if runNumber in checkedRUNs:
                             found_proposal = proposal

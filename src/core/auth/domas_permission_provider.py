@@ -221,47 +221,67 @@ class DomasPermissionProvider(PermissionProvider):
             }
         }
         注：data 中的元素有时也会是嵌套列表（[{...}]），统一展开处理。
+        另外，scientist 视角下可能存在跨页课题，必须把所有 page 都拉完。
         """
         url = f'{self._domas_uri}/beamtimeid/userBeamTimeByBeamline'
-        params = {
-            'isAdmin': role == 'scientist',
-            'email': email,
-            'beamline': beamline,
-            'pageNo':"1",
-            "pageSize":"50"
-        }
-        resp = requests.get(url, headers=self._get_headers(token),
-                            params=params, timeout=_REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        body = resp.json()
-        if isinstance(body, str):
-            import json as _json
-            body = _json.loads(body)
-        msg = body.get('msg', {})
-        if isinstance(msg, str):
-            import json as _json
-            msg = _json.loads(msg)
-        raw_data = msg.get('data', [])
+        result: list[dict] = []
+        page_no = 1
+        page_size = 50
 
-        # DoMAS 的 data 中偶尔会出现嵌套列表，展开成平铺结构
-        result = []
-        for item in raw_data:
-            if isinstance(item, list):
-                result.extend(item)
-            elif isinstance(item, dict):
-                result.append(item)
+        while True:
+            params = {
+                'isAdmin': role == 'scientist',
+                'email': email,
+                'beamline': beamline,
+                'pageNo': str(page_no),
+                'pageSize': str(page_size),
+            }
+            try:
+                resp = requests.get(url, headers=self._get_headers(token),
+                                    params=params, timeout=_REQUEST_TIMEOUT)
+                resp.raise_for_status()
+                body = resp.json()
+                if isinstance(body, str):
+                    import json as _json
+                    body = _json.loads(body)
+                msg = body.get('msg', {})
+                if isinstance(msg, str):
+                    import json as _json
+                    msg = _json.loads(msg)
+
+                raw_data = msg.get('data', [])
+                for item in raw_data:
+                    if isinstance(item, list):
+                        result.extend(item)
+                    elif isinstance(item, dict):
+                        result.append(item)
+
+                page_count = msg.get('PageCount') or msg.get('pageCount') or 0
+                if not page_count:
+                    break
+
+                if page_no >= int(page_count):
+                    break
+                page_no += 1
+            except requests.RequestException as ex:
+                logger.warning(f'DoMAS 查询谱仪 {beamline} 课题分页失败 [page={page_no}]: {ex}')
+                break
+            except ValueError as ex:
+                logger.warning(f'DoMAS 查询谱仪 {beamline} 课题响应解析失败 [page={page_no}]: {ex}')
+                break
+
         return result
 
     def _fetch_runs_for_proposal(self, token: str, email: str,
-                                 proposal_id: str) -> list[RunInfo]:
+                                 proposal_id: str, role: str = 'user') -> list[RunInfo]:
         """
         查询课题下的 run 列表。
 
         DoMAS 接口：GET /beamtimeid/runIdsByProposal
-        参数：proposalid, email
+        参数：proposalid, email, isAdmin
         """
         url = f'{self._domas_uri}/beamtimeid/runIdsByProposal'
-        params = {'proposalId': proposal_id, 'email': email}
+        params = {'proposalId': proposal_id, 'email': email, 'isAdmin': role == 'scientist'}
         try:
             resp = requests.get(url, headers=self._get_headers(token),
                                 params=params, timeout=_REQUEST_TIMEOUT)
@@ -339,3 +359,23 @@ class DomasPermissionProvider(PermissionProvider):
             # resp.json() 解析失败（空 body 或非 JSON 响应）
             logger.warning(f'DoMAS run 反查课题响应解析失败 [runid={run_id}]: {ex}')
             return None
+
+    def check_proposal_run_access(self, token: str, email: str,
+                                  proposal_id: str, run_number: str) -> bool:
+        """针对单个 proposal 快速判断 scientist 是否有权访问指定 run。"""
+        if not proposal_id or not run_number:
+            return False
+        try:
+            runs = self._fetch_runs_for_proposal(token, email, proposal_id, role='scientist')
+        except Exception as ex:
+            logger.debug(f'DoMAS 单课题访问检查失败 [proposal={proposal_id}, run={run_number}]: {ex}')
+            return False
+
+        for run in runs:
+            try:
+                run_data = run.to_dict()
+            except Exception:
+                continue
+            if str(run_data.get('run_number') or '').strip() == str(run_number).strip():
+                return True
+        return False

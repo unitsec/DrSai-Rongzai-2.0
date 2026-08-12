@@ -146,4 +146,4 @@ pip install open-webui
 pipeline的密钥：```0p3n-w3bu!```，将密钥和pipeline后端服务的地址：```http://localhost:42808/pipelines```加入OpenWebUI的```管理员面板-设置-外部连接-管理OpenAI API连接```中。
 
 
-\
+DDF很可能无法直接访问东莞的服务器，需要有一个能直接访问的服务器做转发。
