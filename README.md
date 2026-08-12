@@ -98,6 +98,8 @@ pm2 start "conda run -n sasmodels python tools/sasview/0sasview_refine.py" --nam
 
 pm2 start "conda run -n diffpy.pdffit2_env python tools/pdf_refinement/0pdf_refine.py" --name "pdf-refine"
 
+pm2 start "conda run -n sasmodels python tools/Irena/0Irena_fit.py" --name "Irena-refine"
+
 ## skill中涉及文件的权限问题
     为了保证代码安全，限制智能体只能在agentWorkSpace, datasets, agent_skills三个文件夹下有操作权限。
     同时，agent_skills被设为只读，防止agent修改系统级skills。
