@@ -16,6 +16,9 @@ tmp/
 *.pyo
 __pycache__/
 
+# Gatsby build:sync 写入 drsai_ui 的部署静态资源；由前端源码构建生成
+/src/drsai_ui/ui_backend/backend/web/ui/
+
 # 忽略 IDE 的配置文件
 .vscode/
 .idea/
@@ -101,7 +104,7 @@ tools/GSAS-II-master/GSASII/RUN0021905/*
 output/
 
 # 忽略本地前端工作目录（暂不纳入git）
-/webui/
+# /webui/
 
 # 忽略仓内drsai_ui源码（暂不纳入git）
-/src/drsai_ui/
+# /src/drsai_ui/
