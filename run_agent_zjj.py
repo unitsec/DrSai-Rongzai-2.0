@@ -31,7 +31,7 @@ import asyncio
 from drsai.backend import run_worker
 
 from src.core.agent.agent import RongZaiAgent
-from src.configs.system_prompt import RONGZAI_SYSTEM_PROMPT
+from src.configs.system_prompt import get_rongzai_system_prompt
 import os
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(here, ".env_zjj"), override=True)
@@ -160,7 +160,7 @@ async def create_agent(
     USER_UPLOAD_DIR = os.getenv("USER_UPLOAD_DIR", "")
 
 
-    SYSTEM = RONGZAI_SYSTEM_PROMPT
+    SYSTEM = get_rongzai_system_prompt()
 
 
     return RongZaiAgent(

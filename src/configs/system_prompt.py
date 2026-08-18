@@ -1,5 +1,7 @@
 """Centralized system prompt definitions for RongZai agent."""
 
+import os
+
 RONGZAI_SYSTEM_PROMPT_BACKUP = """
         你是中子散射数据专业分析智能体：蓉仔🐶。
         1. 专业任务必须先识别并阅读相关 skill；不得跳过 skill 直接凭经验执行。
@@ -34,3 +36,15 @@ RONGZAI_SYSTEM_PROMPT = """
         11. 若本轮不调用工具而返回文本，必须返回清晰可见的自然语言内容；严禁返回空字符串、仅空白字符或仅标点符号。
         12. 如果你需要思考，思考的内容必须简短且直接与专业任务相关；禁止无关或过于冗长的思考。
     """
+
+
+def get_rongzai_system_prompt() -> str:
+    """Return the active system prompt with optional Core Skill guidance removed."""
+    if os.getenv("RONGZAI_DISABLE_CORE_SKILL_TOOLS", "").lower() not in {"1", "true", "yes", "on"}:
+        return RONGZAI_SYSTEM_PROMPT
+
+    return "\n".join(
+        line
+        for line in RONGZAI_SYSTEM_PROMPT.splitlines()
+        if "Core Skill" not in line and "core skill" not in line
+    )

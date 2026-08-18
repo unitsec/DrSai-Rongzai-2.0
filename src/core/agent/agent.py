@@ -600,16 +600,17 @@ class RongZaiAgent(DrSaiAgent):
         self._remote_subagents: Dict[str, OpaqueRemoteWorkerProxy] = {}
         self._subagent_model_alias_cache: Dict[str, List[str]] = {}
         self._refresh_subagent_tools()
-        # self._core_skill_tools = []
-        self._core_skill_tools = [
+        disable_core_skill_tools = os.getenv(
+            "RONGZAI_DISABLE_CORE_SKILL_TOOLS", ""
+        ).lower() in {"1", "true", "yes", "on"}
+        self._core_skill_tools = [] if disable_core_skill_tools else [
             self._get_promote_skill_tool(),
             self._get_demote_skill_tool(),
         ]
         self._core_skill_slots: List[Dict[str, Any]] = []
         self._max_core_skill_slots = 1
         self._core_skill_update_seq = 0
-        # self._core_skill_policy_prompt = ()
-        self._core_skill_policy_prompt = (
+        self._core_skill_policy_prompt = "" if disable_core_skill_tools else (
             "[Core Skill Runtime Reminder]\n"
             "When task focus changes, replace or demote obsolete core skills before promoting new ones.\n"
             "Keep only the minimum active core skills required for the current task."
@@ -621,17 +622,20 @@ class RongZaiAgent(DrSaiAgent):
             "Maintain the todo list during execution. After each meaningful milestone or status change, call TodoWrite again with the full updated list.\n"
             "When all steps are completed, mark them completed; the active todo list will then be removed from the system prompt automatically."
         )
-        self._memo_policy_prompt = (
+        disable_memo_write_tool = os.getenv(
+            "RONGZAI_DISABLE_MEMO_WRITE_TOOL", ""
+        ).lower() in {"1", "true", "yes", "on"}
+        self._memo_policy_prompt = "" if disable_memo_write_tool else (
             "[Memo Policy]\n"
             "Use MemoWrite for a very short, high-value scratchpad of critical facts that are needed later, such as important file paths, valuable analysis results.\n"
-            "Must write the attached files paths in the memo before the work starting, because the future context compression will occur and the information might be lost.\n"
+            "Must write the attached files' paths in the memo before the work starting, because the future context compression will occur and the information might be lost.\n"
             "Keep the memo compact. Remove outdated entries immediately when they are no longer useful; do not keep stale notes.\n"
             "Only clear the whole memo when truly needed by setting clear_all=true."
         )
         self._todo_manager = StructuredTodoManager()
         self._todo_tools = [get_todo_write_tool()]
         self._memo_manager = StructuredMemoManager()
-        self._memo_tools = [get_memo_write_tool()]
+        self._memo_tools = [] if disable_memo_write_tool else [get_memo_write_tool()]
 
         # 初始化固定系统提示词（仅受开发者配置影响）。
         self._lang_prompt = ""
@@ -3247,6 +3251,13 @@ class RongZaiAgent(DrSaiAgent):
                         logger.info(
                             "[NoToolFollowup] Second consecutive no-tool output detected. Finish current turn and wait for user input."
                         )
+                        for buffered_event in buffered_stream_events:
+                            yield buffered_event
+                        if not buffered_stream_events:
+                            yield ModelClientStreamingChunkEvent(
+                                content=model_result.content,
+                                source=agent_name,
+                            )
                         # 发送一个内部可见的收尾响应，确保上层 run_stream 能产出 TaskResult，
                         # 避免前端一直停留在 Processing。
                         yield Response(
@@ -3261,14 +3272,11 @@ class RongZaiAgent(DrSaiAgent):
 
                     for buffered_event in buffered_stream_events:
                         yield buffered_event
-                    response = await self.handle_str_reponse(
-                        model_result=model_result,
-                        agent_name=agent_name,
-                        format_string=format_string,
-                        inner_messages=inner_messages,
-                        output_content_type=output_content_type,
-                    )
-                    yield response
+                    if not buffered_stream_events:
+                        yield ModelClientStreamingChunkEvent(
+                            content=model_result.content,
+                            source=agent_name,
+                        )
 
                     followup_prompt = self._build_no_tool_call_followup_prompt()
                     await model_context.add_message(
@@ -3417,6 +3425,15 @@ class RongZaiAgent(DrSaiAgent):
                                         is_error=True,
                                     )
                                 )
+                        elif tool_name == "MemoWrite" and not self._memo_tools:
+                            pending_tool_results.append(
+                                FunctionExecutionResult(
+                                    content="MemoWrite is disabled in this agent configuration.",
+                                    name=tool_name,
+                                    call_id=call_id,
+                                    is_error=True,
+                                )
+                            )
                         elif tool_name == "MemoWrite":
                             memo_items = argument.get("items", [])
                             memo_clear_all = bool(argument.get("clear_all", False))
@@ -3443,8 +3460,20 @@ class RongZaiAgent(DrSaiAgent):
                                         f"\n\n{memo_rendered}"
                                     )
 
+                                user_visible_memo = (
+                                    "\n\n### Current Memo\n"
+                                    f"{memo_rendered}\n"
+                                )
+                                if memo_rendered == "No active memo.":
+                                    user_visible_memo += (
+                                        "\nMemo cleared: the active memo has been removed.\n"
+                                    )
+                                else:
+                                    user_visible_memo += (
+                                        "\nMemo updated: these entries will remain available during subsequent execution.\n"
+                                    )
                                 yield ModelClientStreamingChunkEvent(
-                                    content=f"\n\n### Current Memo\n{memo_rendered}\n",
+                                    content=user_visible_memo,
                                     source=agent_name,
                                 )
                                 pending_tool_results.append(

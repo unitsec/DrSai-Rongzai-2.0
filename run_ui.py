@@ -38,11 +38,14 @@ os.makedirs(appdir, exist_ok=True)
 db_file = Path(appdir) / "drsai_ui.db"
 db_uri = f"sqlite:///{db_file.as_posix()}"
 UI_PORT = int(os.getenv("RONGZAI_UI_PORT", "8081"))
+SERVICE_MODE = os.getenv("SERVICE_MODE", "DEV").strip().upper()
+SSO_ENABLED = SERVICE_MODE == "PROD"
 
 if __name__ == "__main__":
     print(f"[drsai_ui] mode={ui_mode}")
     if ui_mode == "internal":
         print(f"[drsai_ui] internal_src={ui_internal_src}")
+    print(f"[drsai_ui] service_mode={SERVICE_MODE} sso_enabled={SSO_ENABLED}")
     ui(
         # reload=True,
         port=UI_PORT,

@@ -25,6 +25,7 @@ _SCRIPT_EXEC_RE = re.compile(
 )
 _ABS_PATH_RE = re.compile(r"(/(?:[^\s'\"`]|\\\s)+)")
 _WIN_ABS_PATH_RE = re.compile(r"([A-Za-z]:\\(?:[^\s'\"]|\\\s)+)")
+_RUN_READ_MAX_CHARS = 5_000
 
 def _extract_existing_image_paths_from_content(content: str) -> List[str]:
     """Extract existing local image file paths from tool result text.
@@ -235,20 +236,34 @@ def get_operator_funcs_rongzai(
                 if end_line < start_line:
                     return "Error: end_line must be >= start_line"
 
-            def _read_selected_lines() -> list[str]:
+            def _read_selected_lines() -> tuple[str, bool]:
                 selected: list[str] = []
+                selected_chars = 0
                 with open(file_path, "r", encoding=encoding, errors="ignore") as f:
                     for current_line, line in enumerate(f, start=1):
                         if current_line < start_line:
                             continue
                         if end_line is not None and current_line > end_line:
                             break
-                        selected.append(line.rstrip("\n"))
-                return selected
+                        chunk = ("\n" if selected else "") + line.rstrip("\n")
+                        remaining_chars = _RUN_READ_MAX_CHARS - selected_chars
+                        if len(chunk) > remaining_chars:
+                            selected.append(chunk[:remaining_chars])
+                            return "".join(selected), True
+                        selected.append(chunk)
+                        selected_chars += len(chunk)
+                return "".join(selected), False
 
             async with asyncio.timeout(timeout):
-                selected = await asyncio.to_thread(_read_selected_lines)
-                return "\n".join(selected)
+                content, truncated = await asyncio.to_thread(_read_selected_lines)
+                if not truncated:
+                    return content
+                notice = (
+                    f"[Truncated: The requested file content exceeds the {_RUN_READ_MAX_CHARS}-character limit, "
+                    f"so only the first {_RUN_READ_MAX_CHARS} characters are shown. To continue reading, "
+                    "strongly prefer using start_line and end_line to read the file in chunks.]"
+                )
+                return f"{content}\n\n{notice}"
         except asyncio.TimeoutError:
             return f"Error: Read operation timed out after {timeout}s"
         except Exception as e:

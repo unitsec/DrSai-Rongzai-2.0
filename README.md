@@ -70,6 +70,26 @@ cd ../..
 python run_ui.py
 ```
 
+## 2.2 统一认证开关
+
+统一认证由 `SERVICE_MODE` 唯一控制。在仓库 `.env` 中设置：
+
+```shell
+SERVICE_MODE=PROD
+```
+
+同时配置原 DrSai 所需的 `IHEP_SSO_APP_KEY`、`IHEP_SSO_APP_SECRET` 和
+`IHEP_SSO_REDIRECT_URI`。重新构建并同步前端后再启动 UI：
+
+```shell
+cd webui/frontend
+yarn build:sync
+cd ../..
+python run_ui.py
+```
+
+将 `SERVICE_MODE` 改为 `DEV` 后重新构建并重启，即关闭统一认证并只保留本地登录。
+
 ## 3.运行RONGZAI Agent 后端
 
 ```shell

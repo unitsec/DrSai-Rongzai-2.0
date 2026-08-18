@@ -8,8 +8,7 @@ from drsai.modules.components.tool import ParametersSchema, ToolSchema
 class StructuredMemoManager:
     """Manage a short runtime memo for critical facts, paths, and constraints."""
 
-    def __init__(self, max_items: int = 5) -> None:
-        self._max_items = max(1, int(max_items))
+    def __init__(self) -> None:
         self.items: List[Dict[str, str]] = []
 
     def update(self, items: List[Dict[str, Any]], clear_all: bool = False) -> str:
@@ -46,9 +45,6 @@ class StructuredMemoManager:
             if key in key_order:
                 key_order.remove(key)
             key_order.append(key)
-
-        if len(key_order) > self._max_items:
-            key_order = key_order[-self._max_items :]
 
         self.items = [
             {"key": key, "value": value_by_key[key]}

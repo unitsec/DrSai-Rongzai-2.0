@@ -2,7 +2,7 @@ from src.core.agent.memo_manager import StructuredMemoManager, get_memo_write_to
 
 
 def test_memo_manager_keeps_only_essential_items_and_can_clear_them():
-    manager = StructuredMemoManager(max_items=3)
+    manager = StructuredMemoManager()
 
     rendered = manager.update([
         {"key": "diffraction_path", "value": "/data/1.cif"},
@@ -38,7 +38,7 @@ def test_memo_tool_guides_short_and_removal():
 
 
 def test_memo_manager_supports_rich_content_and_explicit_removal():
-    manager = StructuredMemoManager(max_items=3)
+    manager = StructuredMemoManager()
 
     rendered = manager.update([
         {
@@ -61,3 +61,17 @@ def test_memo_manager_supports_rich_content_and_explicit_removal():
 
     assert cleared == "No active memo."
     assert manager.items == []
+
+
+def test_memo_manager_does_not_limit_item_count():
+    manager = StructuredMemoManager()
+    items = [
+        {"key": f"key_{index}", "value": f"value_{index}"}
+        for index in range(10)
+    ]
+
+    rendered = manager.update(items)
+
+    assert manager.items == items
+    assert "key_0: value_0" in rendered
+    assert "key_9: value_9" in rendered
