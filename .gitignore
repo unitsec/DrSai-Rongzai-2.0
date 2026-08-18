@@ -39,7 +39,6 @@ datasets/
 test_datesets/*
 # datasets/*
 *.gpx
-*.png
 *.lst
 *.csv
 
