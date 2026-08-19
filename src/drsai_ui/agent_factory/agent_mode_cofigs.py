@@ -240,6 +240,31 @@ def get_default_agent_mode_config(
         agents_list.extend(default_agents_mode)
     return agents_list
 
+
+def _agent_name_key(agent: Dict[str, Any]) -> str:
+    config = agent.get("config") if isinstance(agent.get("config"), dict) else {}
+    name = agent.get("name") or config.get("name") or agent.get("model")
+    return str(name or "").strip().casefold()
+
+
+def _remote_default_name_keys(default_agents: List[Dict[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for agent in default_agents:
+        if not isinstance(agent, dict):
+            continue
+        if str(agent.get("mode") or "").strip().lower() != "remote":
+            continue
+        key = _agent_name_key(agent)
+        if key:
+            names.add(key)
+    return names
+
+
+def _is_shadowed_ddf_agent(agent: Dict[str, Any], remote_default_names: set[str]) -> bool:
+    if str(agent.get("mode") or "").strip().lower() != "ddf":
+        return False
+    return _agent_name_key(agent) in remote_default_names
+
 async def get_agents_mode(
     user_id: str, db: DatabaseManager, user_source: str | None = None
 ) -> Dict:
@@ -260,14 +285,20 @@ async def get_agents_mode(
     else:
         settings = response.data[0]
 
-    stored = [dict(a) for a in (settings.agents_mode or []) if isinstance(a, dict)]
-    by_id: Dict[str, Dict[str, Any]] = {}
-    for agent in get_default_agent_mode_config(
+    default_agents = get_default_agent_mode_config(
         user_id=user_id, user_source=user_source
-    ):
+    )
+    remote_default_names = _remote_default_name_keys(default_agents)
+    stored = [
+        dict(a)
+        for a in (settings.agents_mode or [])
+        if isinstance(a, dict) and not _is_shadowed_ddf_agent(a, remote_default_names)
+    ]
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for agent in stored:
         if isinstance(agent, dict) and agent.get("id"):
             by_id[str(agent["id"])] = dict(agent)
-    for agent in stored:
+    for agent in default_agents:
         if isinstance(agent, dict) and agent.get("id"):
             by_id[str(agent["id"])] = dict(agent)
     merged = list(by_id.values())
@@ -467,13 +498,16 @@ async def get_user_agents(
     
     agents_list = []
     # 获取默认的远程智能体
-    agents_list.extend(
-        get_default_agent_mode_config(user_id=user_id, user_source=user_source)
-    )
+    default_agents = get_default_agent_mode_config(user_id=user_id, user_source=user_source)
+    remote_default_names = _remote_default_name_keys(default_agents)
+    agents_list.extend(default_agents)
 
     # 获取用户的DDF智能体
     agents = await get_ddf_agents(user_id = user_id, authorization = authorization, is_refresh = is_refresh, db=db)
-    agents = agents["data"]
+    agents = [
+        agent for agent in agents["data"]
+        if isinstance(agent, dict) and not _is_shadowed_ddf_agent(agent, remote_default_names)
+    ]
     for agent in agents:
         if not agent.get("config"):
             agent.update(

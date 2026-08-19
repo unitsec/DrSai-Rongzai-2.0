@@ -53,11 +53,13 @@ class AppInitializer:
     def _init_paths(self) -> _AppPaths:
         """Initialize and return AppPaths instance"""
         app_root = self._get_app_root()
+        static_ui_dir = os.getenv("DRSAI_UI_STATIC_DIR", "").strip()
+        ui_root = Path(static_ui_dir).expanduser() if static_ui_dir else self._app_path / "ui"
         return _AppPaths(
             app_root=app_root,
             static_root=app_root / "files",
             user_files=app_root / "files" / "user",
-            ui_root=self._app_path / "ui",
+            ui_root=ui_root,
             config_dir=app_root / self.settings.CONFIG_DIR,
             database_uri=self._get_database_uri(app_root),
         )

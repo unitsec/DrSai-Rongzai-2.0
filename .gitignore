@@ -10,6 +10,7 @@ model_status.yaml
 
 # 忽略临时文件
 tmp/
+tmp_test/
 
 # 忽略 Python 编译文件
 *.pyc
@@ -90,6 +91,7 @@ datasets/BL16/RUNdataFiles/RUN0021905/outtput/*
 .env.example
 .env
 .env_zjj
+.env_test
 tools/pdf_refinement/0pdf_multi_refine.py
 tools/pdf_refinement/0pdf_multi_refine20250926.py
 tools/pdf_refinement/0pdf_refine20250905.py

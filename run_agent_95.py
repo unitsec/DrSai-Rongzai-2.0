@@ -273,7 +273,7 @@ async def create_agent(
     SYSTEM = get_rongzai_system_prompt()
 
     return RongZaiAgent(
-        name = "RongZaiAgent",
+        name = "RongzaiAgent",
         model_client=set_model_client(defult_config_name),
         system_message=SYSTEM,
         reflect_on_tool_use=False,
@@ -324,8 +324,10 @@ if __name__ == "__main__":
                         "zh":"沸石类材料分析：附件中是一个掺杂了XX的沸石材料的粉末衍射数据，以及仪器参数文件和一个初始的cif文件。这个样品的化学式是XXX,好，现在请你帮我研究XX在X个X位的富集分布，也研究一下X放在哪个位置合适。注意X-X键的键长和X-X的键长应该在合理范围内，不能有太大偏离。X也要与周围原子保持合适的距离。"},
                       {"en":"SANS data fitting: Use the sasview tool to analyze the uploaded small-angle scattering data, use the Fit function, select the hollow cylinder model, fit the scattering curve until the chisquare is less than 10, then return the fitting results and fitting graph.",
                        "zh":"小角中子散射拟合：帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"}],
+            announcements=[{"en":"This is a test agent for DrSai Rongzai, please do not use it for production purposes. If you have any questions, please contact wanghao96@ihep.ac.cn."},
+                        {"zh":"这是DrSai Rongzai的测试智能体，请勿用于生产用途。如有任何问题，请联系 wanghao96@ihep.ac.cn."}],
             agent_config = llm_mode_config,
-            defult_config_name = "deepseek-v4-pro",
+            default_config_name = "deepseek-v4-pro",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置

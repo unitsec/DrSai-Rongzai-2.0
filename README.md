@@ -90,6 +90,62 @@ python run_ui.py
 
 将 `SERVICE_MODE` 改为 `DEV` 后重新构建并重启，即关闭统一认证并只保留本地登录。
 
+### 2.3 95 服务器隔离 DEV 测试环境
+
+生产前端使用 `webui/frontend/public`，不要在生产目录直接执行 DEV 构建。
+仓库提供 `scripts/build_test_ui.sh`，它会在独立目录中构建 DEV 静态文件并同步到测试 UI：
+
+```shell
+cd /home/dur/rongzai-agent
+./scripts/build_test_ui.sh
+```
+
+该脚本等价于在临时目录中执行：
+
+```shell
+SERVICE_MODE=DEV GATSBY_SERVICE_MODE=DEV yarn build:dev
+```
+
+隔离目录如下：
+
+- 临时前端构建目录：`tmp_test/frontend-dev`
+- 测试 UI 静态目录：`tmp_test/drsai_ui/ui`
+- 测试 UI 数据库：`tmp_test/drsai_ui/drsai_ui.db`
+
+测试环境使用 `.env_test`，其中应保持：
+
+```shell
+SERVICE_MODE="DEV"
+RONGZAI_UI_PORT="8088"
+DRSAI_UI_STATIC_DIR=/home/dur/rongzai-agent/tmp_test/drsai_ui/ui
+```
+
+启动测试智能体和测试 UI：
+
+```shell
+cd /home/dur/rongzai-agent
+conda activate rongzai_agent
+
+nohup python run_agent_95_test.py > run_agent_95_test.log 2>&1 &
+nohup python run_ui_95_test.py > run_ui_95_test.log 2>&1 &
+```
+
+默认端口分配如下：
+
+| 服务 | 生产端口 | 测试端口 |
+| --- | ---: | ---: |
+| 智能体 Worker | `42812` | `42818` |
+| DrSai UI | `8081` | `8088` |
+
+测试 UI 可通过 `http://10.1.252.95:8088/` 访问。测试静态文件和数据库都位于 `tmp_test`，不会覆盖生产前端或生产 UI 数据库。
+
+停止测试进程：
+
+```shell
+pkill -f 'run_agent_95_test.py'
+pkill -f 'run_ui_95_test.py'
+```
+
 ## 3.运行RONGZAI Agent 后端
 
 ```shell

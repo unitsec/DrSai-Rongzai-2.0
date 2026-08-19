@@ -1,4 +1,5 @@
 import { useModeConfigStore } from "@/store/modeConfig";
+import { parseAgentText } from "@/utils/agentLocalizedText";
 import { pickAgentForSessionStart } from "@/utils/agentPreference";
 import { parseModelApiKeyFromSettingsConfig } from "@/utils/modelApiKey";
 import { DRSAI_RECENT_AGENTS_KEY } from "@/utils/recentAgentsStorage";
@@ -27,7 +28,7 @@ const AgentSquare: React.FC<AgentSquareProps> = ({
   handleAgentList,
 }) => {
   const { user } = useContext(appContext);
-  const { t } = useLang();
+  const { t, lang } = useLang();
   const { agentId, setAgentId, setMode } = useModeConfigStore();
   const [agentList, setAgentList] = useState<AgentCardData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -115,7 +116,7 @@ const AgentSquare: React.FC<AgentSquareProps> = ({
     id: agent.id,
     logo: agent.logo || "/api/placeholder/64/64",
     name: agent.name,
-    description: agent.description || t("agentsquare.remoteAgentDesc"),
+    description: parseAgentText(agent.description, lang) || t("agentsquare.remoteAgentDesc"),
     owner: agent.owner || t("agentsquare.unknown"),
     url: agent.url || "",
     config: agent.config,
@@ -132,7 +133,7 @@ const AgentSquare: React.FC<AgentSquareProps> = ({
       id: agent.id,
       logo: agent.logo || "/api/placeholder/64/64",
       name: agent.name || config.name || t("agentsquare.unknownAgent"),
-      description: agent.description || t("agentsquare.agent"),
+      description: parseAgentText(agent.description, lang) || t("agentsquare.agent"),
       owner: agent.owner || user?.email || t("agentsquare.unknown"),
       url: agent.url || config.url || config.base_url || "",
       config: agent.config,
@@ -147,7 +148,7 @@ const AgentSquare: React.FC<AgentSquareProps> = ({
       onSetDefault: (id?: string) => handleSetDefault(id || agent.id),
       onClick: () => { },
     };
-  }, [user?.email, handleRemoveRemoteAgent, handleSetDefault, userDefaultAgentId]);
+  }, [user?.email, handleRemoveRemoteAgent, handleSetDefault, userDefaultAgentId, lang]);
 
   // 提取获取 API Key 和 BaseUrl 的逻辑
   const getApiKeyFromSettings = useCallback(async (userEmail: string) => {
@@ -497,9 +498,10 @@ const AgentSquare: React.FC<AgentSquareProps> = ({
   const matchSearch = (agent: AgentCardData) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
+    const description = typeof agent.description === "string" ? agent.description : "";
     return (
       (agent.name || "").toLowerCase().includes(q) ||
-      (agent.description || "").toLowerCase().includes(q) ||
+      description.toLowerCase().includes(q) ||
       (agent.owner || "").toLowerCase().includes(q)
     );
   };

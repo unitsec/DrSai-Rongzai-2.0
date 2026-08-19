@@ -1110,7 +1110,38 @@ class WebSocketManager:
         return response.data[0] if response.status and response.data else None
 
     async def _get_agent_mode_config(self, user_id: str, agent_id: str) -> Optional[Dict]:
-        """Resolve the selected agent config from UserAgents as single source of truth."""
+        """Resolve the selected agent config, preferring DEFAULT_REMOTE_AGENTS overrides."""
+        try:
+            from .....agent_factory.agent_mode_cofigs import get_default_agent_mode_config
+
+            default_agents = [
+                dict(agent)
+                for agent in get_default_agent_mode_config(user_id=user_id)
+                if isinstance(agent, dict)
+            ]
+        except Exception as e:
+            logger.warning("Failed to load default remote agents for user_id=%s: %s", user_id, e)
+            default_agents = []
+
+        def _agent_name_key(agent: Dict) -> str:
+            config = agent.get("config") if isinstance(agent.get("config"), dict) else {}
+            name = agent.get("name") or config.get("name") or agent.get("model")
+            return str(name or "").strip().casefold()
+
+        default_by_id = {
+            str(agent.get("id")): agent
+            for agent in default_agents
+            if agent.get("id") and str(agent.get("mode") or "").strip().lower() == "remote"
+        }
+        if agent_id in default_by_id:
+            return default_by_id[agent_id]
+
+        default_by_name = {
+            _agent_name_key(agent): agent
+            for agent in default_agents
+            if _agent_name_key(agent) and str(agent.get("mode") or "").strip().lower() == "remote"
+        }
+
         updated_agent = None
         response = self.db_manager.get(UserAgents, filters={"user_id": user_id}, return_json=False)
         if response.status and response.data:
@@ -1123,6 +1154,17 @@ class WebSocketManager:
                     break
             if updated_agent is None:
                 logger.warning(f"Agent config not found in UserAgents for user_id={user_id}, agent_id={agent_id}")
+            elif str(updated_agent.get("mode") or "").strip().lower() == "ddf":
+                remote_override = default_by_name.get(_agent_name_key(updated_agent))
+                if remote_override:
+                    logger.info(
+                        "Using DEFAULT_REMOTE_AGENTS override for DDF agent user_id=%s agent_id=%s name=%s url=%s",
+                        user_id,
+                        agent_id,
+                        remote_override.get("name"),
+                        remote_override.get("url"),
+                    )
+                    return remote_override
         return updated_agent
 
     def _resolve_default_agent_id(self, user_id: str) -> Optional[str]:

@@ -28,7 +28,7 @@ if [[ "$ORIG_DRSAI_UI_INTERNAL_STATIC_DIR" != "__UNSET__" ]]; then
 fi
 
 UI_MODE="${DRSAI_UI_MODE:-external}"
-INTERNAL_STATIC_DEFAULT="$(cd "$SCRIPT_DIR/../../src/drsai_ui/ui_backend/backend/web/ui" 2>/dev/null && pwd || true)"
+INTERNAL_STATIC_DEFAULT="$SCRIPT_DIR/../../src/drsai_ui/ui_backend/backend/web/ui"
 
 if [[ ! -d "$PUBLIC_DIR" ]]; then
   echo "[error] frontend public directory not found: $PUBLIC_DIR"
@@ -62,12 +62,6 @@ if [[ -z "$TARGET_DIR" ]]; then
   echo "Set one of these manually:"
   echo "  DRSAI_UI_STATIC_DIR=/path/to/target yarn sync:ui"
   echo "  DRSAI_UI_INTERNAL_STATIC_DIR=/path/to/rongzai-agent/src/drsai_ui/ui_backend/backend/web/ui DRSAI_UI_MODE=internal yarn sync:ui"
-  exit 1
-fi
-
-if [[ "$UI_MODE" == "internal" && ! -d "$TARGET_DIR" ]]; then
-  echo "[error] Internal mode selected but static directory does not exist: $TARGET_DIR"
-  echo "Expected internal drsai_ui source under rongzai-agent/src/drsai_ui"
   exit 1
 fi
 
