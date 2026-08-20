@@ -904,7 +904,7 @@ class RongZaiAgent(DrSaiAgent):
         stream_factory: Callable[[], AsyncGenerator[Any, None]],
         *,
         context_name: str = "stream",
-        max_attempts: int = 3,
+        max_attempts: int = 2,
         initial_delay_seconds: float = 0.75,
     ) -> AsyncGenerator[Any, None]:
         """对可重试的流式响应做本地重试，减少因为短暂超时导致的整轮失败。"""
@@ -4137,7 +4137,7 @@ class RongZaiAgent(DrSaiAgent):
                             cancellation_token=cancellation_token,
                         )
         try:
-            stream_retry_attempts = max(1, int(_get_env_float("RONGZAI_STREAM_RETRY_ATTEMPTS", 3.0)))
+            stream_retry_attempts = max(1, int(_get_env_float("RONGZAI_STREAM_RETRY_ATTEMPTS", 2.0)))
             stream_retry_delay = max(0.0, _get_env_float("RONGZAI_STREAM_RETRY_DELAY_SECONDS", 0.75))
 
             if self._reply_function is not None:

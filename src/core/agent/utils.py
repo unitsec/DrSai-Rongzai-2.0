@@ -23,8 +23,11 @@ _SCRIPT_EXEC_RE = re.compile(
     r"(^|[\s;&|])(python\s+.*\.py|python3\s+.*\.py|bash\s+.*\.sh|sh\s+.*\.sh|./.*\.sh|source\s+.*\.(?:sh|bash))",
     re.IGNORECASE,
 )
-_ABS_PATH_RE = re.compile(r"(/(?:[^\s'\"`]|\\\s)+)")
+_ABS_PATH_RE = re.compile(r"(/(?:[^\s'\"`;|&()]|\\\s)+)")
 _WIN_ABS_PATH_RE = re.compile(r"([A-Za-z]:\\(?:[^\s'\"]|\\\s)+)")
+_HOME_PATH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])~(?=/)")
+_SHELL_VAR_ASSIGNMENT_RE = re.compile(r"(?:^|[\s;])([A-Za-z_][A-Za-z0-9_]*)=(?:\"([^\"]*)\"|'([^']*)'|([^\s;]+))")
+_SHELL_VAR_REFERENCE_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 _RUN_READ_MAX_CHARS = 5_000
 
 def _extract_existing_image_paths_from_content(content: str) -> List[str]:
@@ -168,7 +171,20 @@ def get_operator_funcs_rongzai(
 
     def _check_cmd_paths(cmd: str) -> str | None:
         allowed_dirs = _allowed_dirs()
-        for match in _ABS_PATH_RE.finditer(cmd):
+        shell_variables: dict[str, str] = {}
+        for match in _SHELL_VAR_ASSIGNMENT_RE.finditer(cmd):
+            value = next((part for part in match.groups()[1:] if part is not None), "")
+            shell_variables[match.group(1)] = value
+
+        checked_cmd = _SHELL_VAR_REFERENCE_RE.sub(
+            lambda match: shell_variables.get(match.group(1) or match.group(2), match.group(0)),
+            cmd,
+        )
+        checked_cmd = _HOME_PATH_TOKEN_RE.sub(
+            str(Path.home()),
+            checked_cmd,
+        )
+        for match in _ABS_PATH_RE.finditer(checked_cmd):
             raw = match.group(1).rstrip('/')
             if not raw:
                 continue
@@ -179,7 +195,7 @@ def get_operator_funcs_rongzai(
             if not any(resolved.is_relative_to(d) for d in allowed_dirs):
                 return f"Error: Path '{raw}' is outside the allowed workspace"
 
-        for match in _WIN_ABS_PATH_RE.finditer(cmd):
+        for match in _WIN_ABS_PATH_RE.finditer(checked_cmd):
             raw = match.group(1)
             try:
                 resolved = Path(raw).resolve()
