@@ -153,6 +153,33 @@ bash start_tools.sh &
 python run_agent.py
 drsai ui # 打开前端
 ```
+
+### 3.1 后台运行非中子会话监控
+
+监控脚本默认单次扫描最近 2 天的 UI 数据库消息。使用 `--loop` 可在后台常驻运行，默认每 2 天扫描一次；首次启动会立即执行一轮扫描。
+
+```shell
+cd /home/dur/rongzai-agent
+nohup env PYTHONUNBUFFERED=1 \
+    /home/dur/miniconda3/envs/rongzai_agent/bin/python \
+    monitor_non_neutron_chats.py --loop \
+    >> tmp/monitor/runner.log 2>&1 &
+echo $! > tmp/monitor/runner.pid
+```
+
+运行报告会追加至 `tmp/monitor/non_neutron_sessions.jsonl`，运行日志写入 `tmp/monitor/runner.log`。检测到非中子会话时，脚本会使用 `monitor_non_neutron_chats.py` 中的 SMTP 配置发送邮件。
+
+查看日志、确认进程和停止服务：
+
+```shell
+cd /home/dur/rongzai-agent
+tail -f tmp/monitor/runner.log
+ps -fp "$(cat tmp/monitor/runner.pid)"
+kill "$(cat tmp/monitor/runner.pid)"
+```
+
+首次验证时不发送邮件，可在启动命令的 `--loop` 后增加 `--email-dry-run`。
+
 ## 4.remote_agents.json配置
 里面的url，如果是走DDF,是"https://aiapi.ihep.ac.cn/apiv2"
 如果是走本地，没有速率限制，是"http://10.1.252.95:42812/apiv2"

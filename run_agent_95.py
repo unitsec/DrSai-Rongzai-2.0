@@ -50,12 +50,15 @@ def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
 _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
-    "deepseek-v4-pro": "hepai/deepseek-v4-pro",
-    "glm-5.2": "zhipu/glm-5.2",
-    "gpt 5": "openai/gpt-5",
-    "miniMax": "minimax/minimax-m2.7",
-    "gpt 4.1": "openai/gpt-4.1"
+    "deepseek-v4-pro (free)": "hepai/deepseek-v4-pro",
+    "gpt-5 (charge)": "openai/gpt-5",
+    "glm-5.2 (free)": "zhipu/glm-5.2",
+    "miniMax (free)": "minimax/minimax-m2.7"
 }
+
+
+def _is_free_model_config(config_name: str | None) -> bool:
+    return "(free)" in (config_name or "").lower()
 
 def _load_remote_subagent_config() -> dict[str, dict]:
     """从专用子智能体配置文件构建 RongZaiAgent 所需的 sub_agent_config。
@@ -218,23 +221,25 @@ async def create_agent(
             omit_max_tokens = True
             llm_max_retries = 0
 
-        BLACK_LIST = os.getenv("BLACK_LIST", "").split(",") if os.getenv("BLACK_LIST") else []
+        BLACK_LIST = [
+            account.strip()
+            for account in os.getenv("BLACK_LIST", "").split(",")
+            if account.strip()
+        ]
         is_black_user = bool(user_id and user_id in BLACK_LIST)
-        print(f"User {user_id} is blacklisted: {is_black_user}")
-        if is_black_user:
-            client_kwargs = {
-                "model": llm_model,
-                "api_key": api_key,
-                "timeout": 60,
-                "max_retries": llm_max_retries,
-            }
-        else:
-            client_kwargs = {
-                "model": llm_model,
-                "api_key": os.getenv("HEPAI_API_KEY"),
-                "timeout": 60,
-                "max_retries": llm_max_retries,
-            }
+        is_free_model = _is_free_model_config(defult_config_name)
+        # 黑名单账户始终消耗其传入的 key；普通账户仅免费模型使用服务端 key。
+        selected_api_key = os.getenv("HEPAI_API_KEY") if is_free_model and not is_black_user else api_key
+        print(
+            f"User {user_id} is blacklisted: {is_black_user}; "
+            f"model config is free: {is_free_model}"
+        )
+        client_kwargs = {
+            "model": llm_model,
+            "api_key": selected_api_key,
+            "timeout": 60,
+            "max_retries": llm_max_retries,
+        }
         if not omit_max_tokens:
             client_kwargs["max_tokens"] = llm_max_tokens
 
