@@ -10,6 +10,8 @@ import { IPlan } from "../../components/types/plan";
 import ChatInput from "./chat/chatinput";
 import type { ServerUploadedFileInfo } from "./chat/hooks/useFileUpload";
 import SampleTasks from "./sampletasks";
+import CitationNotice from "../../components/common/CitationNotice";
+import AnnouncementMarquee from "../../components/common/AnnouncementMarquee";
 
 const LOGO_BOX_BASE =
     "mb-4 flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl";
@@ -108,6 +110,7 @@ export default function NewChatView({
         [rawDescription, lang]
     );
     const logoSrc = agentInfo?.logo ?? agent?.logo;
+    const agentAnnouncements = agentInfo?.announcements ?? agent?.announcements ?? [];
 
     const handleSubmit = async (
         query: string,
@@ -149,6 +152,8 @@ export default function NewChatView({
             >
                 <div className="absolute left-1/2 top-[8%] h-48 w-[min(480px,85vw)] -translate-x-1/2 rounded-full bg-accent/[0.08] blur-3xl dark:bg-accent/[0.12]" />
             </div>
+
+            <AnnouncementMarquee fallbackAnnouncements={agentAnnouncements} className="mt-4" />
 
             <div className="hide-scrollbar relative flex flex-1 items-start justify-center overflow-y-auto pt-10 sm:pt-14 md:pt-[9vh]">
                 <div className="w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
@@ -234,6 +239,10 @@ export default function NewChatView({
                             chatInputRef.current?.setValue(task);
                         }}
                     />
+
+                    <div className="mt-4 animate-fade-in" style={{ animationDelay: "0.18s" }}>
+                        <CitationNotice />
+                    </div>
                 </div>
             </div>
         </div>
