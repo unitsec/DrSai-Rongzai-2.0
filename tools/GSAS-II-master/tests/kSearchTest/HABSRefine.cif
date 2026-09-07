@@ -1,0 +1,68 @@
+ 
+######################################################################
+data_MnTe
+_gsas_GSASII_version  5806
+
+# phase info for MnTe follows
+_pd_phase_name  MnTe
+_cell_length_a  4.1257(3)
+_cell_length_b  4.1257
+_cell_length_c  6.6589(5)
+_cell_angle_alpha  90
+_cell_angle_beta   90
+_cell_angle_gamma  120
+_cell_volume  98.157(11)
+_exptl_crystal_density_diffrn  6.0897
+_symmetry_cell_setting  hexagonal
+_space_group_name_H-M_alt  "P 63/m m c"
+_space_group_name_Hall  "-P 6c 2c"
+loop_
+    _space_group_symop_id
+    _space_group_symop_operation_xyz
+     1  x,y,z
+     2  x-y,x,1/2+z
+     3  -y,x-y,z
+     4  -x,-y,1/2+z
+     5  y-x,-x,z
+     6  y,y-x,1/2+z
+     7  y-x,y,z
+     8  -x,y-x,1/2+z
+     9  -y,-x,z
+    10  x-y,-y,1/2+z
+    11  x,x-y,z
+    12  y,x,1/2+z
+    13  -x,-y,-z
+    14  y-x,-x,1/2-z
+    15  y,y-x,-z
+    16  x,y,1/2-z
+    17  x-y,x,-z
+    18  -y,x-y,1/2-z
+    19  x-y,-y,-z
+    20  x,x-y,1/2-z
+    21  y,x,-z
+    22  y-x,y,1/2-z
+    23  -x,y-x,-z
+    24  -y,-x,1/2-z
+
+# ATOMIC COORDINATES AND DISPLACEMENT PARAMETERS
+loop_ 
+   _atom_site_label
+   _atom_site_type_symbol
+   _atom_site_fract_x
+   _atom_site_fract_y
+   _atom_site_fract_z
+   _atom_site_occupancy
+   _atom_site_adp_type
+   _atom_site_U_iso_or_equiv
+   _atom_site_site_symmetry_multiplicity
+Mn1    Mn   0.00000     0.00000     0.00000     1.0000     Uiso 0.0168     2   
+Te1    Te   0.33333     0.66667     0.25000     0.9800     Uiso 0.0092     2   
+
+loop_  _atom_type_symbol _atom_type_number_in_cell
+  Mn      2
+  Te      1.96
+
+# Note that Z affects _cell_formula_sum and _weight
+_cell_formula_units_Z  2
+_chemical_formula_sum  "Mn Te0.98"
+_chemical_formula_weight  179.99
