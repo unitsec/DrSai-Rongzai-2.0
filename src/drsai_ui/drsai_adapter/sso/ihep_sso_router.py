@@ -52,8 +52,9 @@ class IhepSSOConfig:
     client_secret: str = field(default_factory=lambda: os.getenv("IHEP_SSO_APP_SECRET"))
     redirect_uri: str = field(default_factory=lambda: os.getenv("IHEP_SSO_REDIRECT_URI"))
 
-    authorize_url: str = field(default="https://login.ihep.ac.cn/oauth2/authorize", metadata={"description": "ihep oauth authorize_url"})
-    access_token_url: str = field(default="https://login.ihep.ac.cn/oauth2/token", metadata={"description": "ihep oauth access_token_url"})
+    authorize_url: str = field(default="https://newlogin.ihep.ac.cn/oauth2/authorize", metadata={"description": "ihep oauth authorize_url"})
+    access_token_url: str = field(default="https://newlogin.ihep.ac.cn/oauth2/token", metadata={"description": "ihep oauth access_token_url"})
+    logout_url: str = field(default="https://newlogin.ihep.ac.cn/logout", metadata={"description": "ihep oauth logout_url"})
     theme: str = field(default="full", metadata={"description": "ihep oauth theme"})
 
 
@@ -78,7 +79,7 @@ class IhepSSOConfig:
             if SERVICE_MODE == "PROD":
                 raise ValueError("IHEP_SSO_REDIRECT_URI is not set, please set it in .env file")
             else:
-                self.redirect_uri = "https://login.ihep.ac.cn/umt/callback"
+                self.redirect_uri = "https://newlogin.ihep.ac.cn/umt/callback"
             # logger.warning("IHEP_SSO_REDIRECT_URI is not set, please set it in .env file if you want to use SSO")
 
         self.api_base_url = self.redirect_uri.split("/umt")[0]
@@ -141,16 +142,17 @@ def index(user: dict = Depends(get_user)):
 
 @router.get('/logout')
 async def logout(request: Request):
-    # ⑥ 点击登出按钮，清除session的user
-    request.session.pop('user', None)
-    
-    # TODO: 清除cookie中的token
-    response = RedirectResponse(url='/')
+    # ⑥ 点击登出按钮，清除本地会话后跳转到统一认证登出
+    request.session.clear()
+
+    return_url = f"{str(request.base_url).rstrip('/')}/login?logout=1"
+    logout_url = f"{oauth_config.logout_url}?{urlencode({'WebServerURL': return_url})}"
+    response = RedirectResponse(url=logout_url)
     clear_refresh_cookie(response)
     response.delete_cookie("api-key", path="/")
+    response.delete_cookie("sso-token", path="/")
     logger.info("User logged out successfully.")
 
-    # return RedirectResponse(url='/')
     return response
 
 @router.get('/callback')
