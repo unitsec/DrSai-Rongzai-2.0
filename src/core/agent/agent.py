@@ -2429,7 +2429,10 @@ class RongZaiAgent(DrSaiAgent):
                 "(or complete resolvable paths) in prompt/context. "
                 "The main agent will automatically upload referenced files and append downloadable links for the sub-agent. "
                 "The sub-agent runs in an isolated filesystem and cannot access main-agent local paths directly, "
-                "so it must download from the provided links before using file-path-based tools."
+                "so it must download from the provided links before using file-path-based tools. "
+                "The isolation is bidirectional: the main agent cannot access or inspect paths in the sub-agent filesystem. "
+                "Never search for, read, or validate a path returned by the sub-agent from the main-agent workspace."
+                "The FilesEvent from subagent also send files back to the main agent frontend and user can get it directly."
             )
             model_hint = (
                 "\n\nModel override (optional): "
@@ -2461,6 +2464,13 @@ class RongZaiAgent(DrSaiAgent):
         if not isinstance(argument, dict):
             return ""
 
+        sub_agent_name = str(argument.get("agent_type", "") or "").strip()
+        known_aliases = (
+            self._get_known_subagent_model_aliases_for_prompt(sub_agent_name)
+            if sub_agent_name
+            else []
+        )
+
         direct_keys = [
             "subagent_model",
             "delegate_model",
@@ -2483,15 +2493,26 @@ class RongZaiAgent(DrSaiAgent):
             return ""
 
         pattern = re.compile(
-            r"(?:subagent_model|delegate_model|model_alias|defult_config_name|default_config_name)\s*[:=]\s*([^\s,;\n]+)",
+            r"(?:subagent_model|delegate_model|model_alias|defult_config_name|default_config_name)\s*[:=]\s*",
             re.IGNORECASE,
         )
         for text in text_fields:
             match = pattern.search(text)
             if match:
-                alias = match.group(1).strip().strip("'\"")
-                if alias:
-                    return alias
+                remainder = text[match.end() :]
+                if remainder.startswith(("'", '"')):
+                    quote = remainder[0]
+                    closing_quote = remainder.find(quote, 1)
+                    if closing_quote > 1:
+                        return remainder[1:closing_quote].strip()
+
+                for alias in sorted(known_aliases, key=len, reverse=True):
+                    if remainder[: len(alias)].casefold() == alias.casefold():
+                        return remainder[: len(alias)].strip()
+
+                fallback = re.match(r"([^\s,;\n]+(?:\s+\([^\n)]*\))?)", remainder)
+                if fallback:
+                    return fallback.group(1).strip()
         return ""
 
     async def _create_remote_subagent(
