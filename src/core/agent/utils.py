@@ -6,9 +6,12 @@ import json
 import os
 import platform
 import re
+import requests
 import shutil
 import signal
+import uuid
 from pathlib import Path
+from urllib.parse import quote
 from drsai.modules.managers.messages import (
     FileInfo,
     FilesContent,
@@ -29,6 +32,7 @@ _HOME_PATH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])~(?=/)")
 _SHELL_VAR_ASSIGNMENT_RE = re.compile(r"(?:^|[\s;])([A-Za-z_][A-Za-z0-9_]*)=(?:\"([^\"]*)\"|'([^']*)'|([^\s;]+))")
 _SHELL_VAR_REFERENCE_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 _RUN_READ_MAX_CHARS = 5_000
+_SAFE_DEVICE_PATHS = {Path("/dev/null")}
 
 def _extract_existing_image_paths_from_content(content: str) -> List[str]:
     """Extract existing local image file paths from tool result text.
@@ -133,6 +137,34 @@ def show_file_to_user(model_client, file_path: str, purpose: str = "user_data") 
     )
     return f"https://aiapi.ihep.ac.cn/apiv2/files/{file_obj.id}/preview"
 
+def publish_file_to_ui(file_path: str, user_id: str) -> str:
+    """Copy a generated file into the UI static tree and return its local URL."""
+    source = Path(file_path).expanduser().resolve(strict=True)
+    user_files_root = Path(os.environ["DRSAI_UI_USER_FILES_ROOT"]).expanduser().resolve()
+    target_dir = (user_files_root / user_id / "generated").resolve()
+    if not target_dir.is_relative_to(user_files_root):
+        raise ValueError("Generated file target escapes UI user files root")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_name = f"{uuid.uuid4().hex}_{source.name}"
+    shutil.copy2(source, target_dir / target_name)
+    return f"/files/user/{quote(user_id, safe='')}/generated/{quote(target_name, safe='')}"
+
+
+
+def upload_to_throway(file_path: str) -> str:
+    """上传文件到 throway，返回无需鉴权的公开下载 URL。"""
+    filename = file_path.split("/")[-1]
+    with open(file_path, "rb") as f:
+        resp = requests.post(
+            f"https://skale.dev/throway/?name={filename}",
+            data=f,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=30,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return data["url"]
+
 def get_operator_funcs_rongzai(
     worker_dir: str | Path,
     thread_id: str,
@@ -191,6 +223,8 @@ def get_operator_funcs_rongzai(
             try:
                 resolved = Path(raw).resolve()
             except Exception:
+                continue
+            if resolved in _SAFE_DEVICE_PATHS:
                 continue
             if not any(resolved.is_relative_to(d) for d in allowed_dirs):
                 return f"Error: Path '{raw}' is outside the allowed workspace"

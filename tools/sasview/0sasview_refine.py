@@ -458,6 +458,8 @@ mcp=FastMCP(
     name="SasViewTools",
     instructions=(
         "Tools for analysis small-angle neutron scattering (SANS) data using SasView core function. "
+        "Every tool call must include session_id, using the current Agent session_id exactly as provided "
+        "in the system prompt; never omit it, use a default value, or invent a new value. "
         "Important calling rule: mission_name is a high-level mission identifier and can stay the same "
         "across multiple tool calls; task_id identifies a sub-task/step inside that mission. "
         "Use the same mission_name for the same overall user goal, and advance task_id per step."

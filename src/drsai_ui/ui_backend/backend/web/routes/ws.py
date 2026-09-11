@@ -16,38 +16,42 @@ router = APIRouter()
 
 
 def _enrich_input_response_with_files(
-    response: str | dict | None, metadata: dict | None
+    response: str | dict | None,
+    metadata: dict | None,
 ) -> dict | None:
-    """
-    Mirror start/continue: run construct_task so metadata gets attached_files (echo + parity).
-    Keeps metadata[\"files\"] so the agent runtime can still expand paths downstream.
-    """
     if not metadata or not isinstance(metadata, dict):
         return metadata
+
     files_list = metadata.get("files") or []
-    if not files_list:
+    if not isinstance(files_list, list) or not files_list:
         return metadata
-    query = ""
-    if isinstance(response, str):
-        try:
-            inner = json.loads(response)
-            if isinstance(inner, dict):
-                query = str(inner.get("content", "") or "")
-        except (json.JSONDecodeError, TypeError):
-            query = ""
-    elif isinstance(response, dict):
-        query = str(response.get("content", "") or "")
-    md_for_task = {k: v for k, v in metadata.items() if k != "files"}
-    try:
-        msgs = construct_task(query=query, files=files_list, metadata=md_for_task)
-        if msgs:
-            last = msgs[-1]
-            lm = getattr(last, "metadata", None) or {}
-            att = lm.get("attached_files")
-            if att:
-                metadata["attached_files"] = att
-    except Exception as e:
-        logger.exception(f"input_response construct_task failed: {e}")
+
+    attached_files = []
+    for file_info in files_list:
+        if not isinstance(file_info, dict):
+            continue
+
+        name = str(file_info.get("name") or "").strip()
+        if not name:
+            continue
+
+        attached_files.append(
+            {
+                "name": name,
+                "type": file_info.get("type", "application/octet-stream"),
+                "size": file_info.get("size", 0),
+                "path": file_info.get("path"),
+                "url": file_info.get("url", ""),
+                "base64": file_info.get("base64", ""),
+            }
+        )
+
+    if attached_files:
+        metadata["attached_files"] = json.dumps(
+            attached_files,
+            ensure_ascii=False,
+        )
+
     return metadata
 
 
