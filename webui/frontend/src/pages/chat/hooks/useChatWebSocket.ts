@@ -35,6 +35,8 @@ export const useChatWebSocket = ({
   const activeSocketRef = React.useRef<WebSocket | null>(null);
   const inputTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
   const streamingMessageRef = React.useRef<{ source: string; content: string } | null>(null);
+  const pendingChunkRef = React.useRef<WebSocketMessage | null>(null);
+  const chunkFrameRef = React.useRef<number | null>(null);
 
   const handleWebSocketMessage = React.useCallback(
     (wsMessage: WebSocketMessage) => {
@@ -92,9 +94,9 @@ export const useChatWebSocket = ({
               const lastMsgIndex = current.messages.length - 1;
               const chunkSource =
                 typeof chunkData.source === "string" ? chunkData.source : "assistant";
-              const sanitizedChunkMetadata =
+              const sanitizedChunkMetadata: Record<string, string> | undefined =
                 chunkData.metadata && typeof chunkData.metadata === "object"
-                  ? { ...(chunkData.metadata as Record<string, unknown>) }
+                  ? { ...(chunkData.metadata as Record<string, string>) }
                   : undefined;
               const rawStartFlag = sanitizedChunkMetadata?.start_flag;
               const startFlagValue =
@@ -142,7 +144,7 @@ export const useChatWebSocket = ({
 
                 // Check if last message is a FilesEvent — chunk should not append to file messages
                 const isLastMessageFilesEvent =
-                  lastMessage.config.type === "FilesEvent" ||
+                  (lastMessage.config as any).type === "FilesEvent" ||
                   lastMessage.config.metadata?.type === "FilesEvent";
 
                 if (
@@ -451,6 +453,71 @@ export const useChatWebSocket = ({
     [session?.id, activeSocket, setCurrentRun, userEmail]
   );
 
+  const flushPendingChunk = React.useCallback(() => {
+    if (chunkFrameRef.current !== null) {
+      window.cancelAnimationFrame(chunkFrameRef.current);
+      chunkFrameRef.current = null;
+    }
+    const pending = pendingChunkRef.current;
+    pendingChunkRef.current = null;
+    if (pending) handleWebSocketMessage(pending);
+  }, [handleWebSocketMessage]);
+
+  const dispatchWebSocketMessage = React.useCallback(
+    (wsMessage: WebSocketMessage) => {
+      if (wsMessage.type !== "message_chunk" || !wsMessage.data) {
+        flushPendingChunk();
+        handleWebSocketMessage(wsMessage);
+        return;
+      }
+
+      const chunkData = wsMessage.data as any;
+      const content = typeof chunkData.content === "string" ? chunkData.content : "";
+      if (!content) return;
+
+      const pending = pendingChunkRef.current;
+      const pendingData = pending?.data as any;
+      const sameSource =
+        pending?.type === "message_chunk" &&
+        (pendingData?.source || "assistant") === (chunkData.source || "assistant");
+      const startsNewMessage =
+        typeof chunkData.metadata?.start_flag === "string" &&
+        chunkData.metadata.start_flag.toLowerCase() === "yes";
+
+      if (pending && (!sameSource || startsNewMessage)) {
+        flushPendingChunk();
+      }
+
+      const activePending = pendingChunkRef.current;
+      const activePendingData = activePending?.data as any;
+
+      pendingChunkRef.current = activePending
+        ? {
+            ...activePending,
+            data: {
+              ...activePendingData,
+              ...chunkData,
+              content: `${activePendingData.content || ""}${content}`,
+              metadata: {
+                ...(chunkData.metadata || {}),
+                ...(activePendingData.metadata || {}),
+              },
+            },
+          }
+        : wsMessage;
+
+      if (chunkFrameRef.current === null) {
+        chunkFrameRef.current = window.requestAnimationFrame(() => {
+          chunkFrameRef.current = null;
+          const queued = pendingChunkRef.current;
+          pendingChunkRef.current = null;
+          if (queued) handleWebSocketMessage(queued);
+        });
+      }
+    },
+    [flushPendingChunk, handleWebSocketMessage]
+  );
+
   const setupWebSocket = React.useCallback(
     (
       runId: string,
@@ -475,7 +542,7 @@ export const useChatWebSocket = ({
       socket.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          handleWebSocketMessage(message);
+          dispatchWebSocketMessage(message);
         } catch (error) {
           console.error("WebSocket message parsing error:", error);
         }
@@ -486,6 +553,7 @@ export const useChatWebSocket = ({
       const socketRunId = runId;
       
       socket.onclose = () => {
+        flushPendingChunk();
         // Only process close event if this socket belongs to the current session and run
         // This prevents old socket close events from affecting new sessions
         setCurrentRun((current: Run | null) => {
@@ -531,8 +599,10 @@ return updatedRun;
       activeSocketRef.current = socket;
       return socket;
     },
-    [session?.id, getSessionSocket, handleWebSocketMessage, setCurrentRun]
+    [session?.id, getSessionSocket, dispatchWebSocketMessage, flushPendingChunk, setCurrentRun]
   );
+
+  React.useEffect(() => flushPendingChunk, [flushPendingChunk]);
 
   const ensureWebSocketConnection = React.useCallback(
     async (runId: string): Promise<WebSocket> => {

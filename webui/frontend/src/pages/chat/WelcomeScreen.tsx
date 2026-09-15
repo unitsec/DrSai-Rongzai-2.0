@@ -7,6 +7,7 @@ import { IStatus } from "../../components/types/app";
 import ChatInput from "./chat/chatinput";
 import type { ServerUploadedFileInfo } from "./chat/hooks/useFileUpload";
 import SampleTasks from "./sampletasks";
+import AnnouncementMarquee from "../../components/common/AnnouncementMarquee";
 
 interface WelcomeScreenProps {
     currentRun: Run | null;
@@ -67,6 +68,8 @@ export default function WelcomeScreen({
         <div
             className="text-center w-full mx-auto px-2 sm:px-3 md:px-4"
         >
+            <AnnouncementMarquee className="mb-6" />
+
             <div className="animate-fade-in text-center mb-10">
                 <div className="space-y-3">
                     <h1 className="leading-tight">

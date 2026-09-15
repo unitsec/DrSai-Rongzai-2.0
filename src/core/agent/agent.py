@@ -15,6 +15,7 @@ import ast
 import os, json, re
 import asyncio, traceback
 import types
+import shutil
 from datetime import datetime, timedelta
 from pydantic import BaseModel
 from pathlib import Path
@@ -86,6 +87,7 @@ from .todo_manager import StructuredTodoManager, get_todo_write_tool
 from .memo_manager import StructuredMemoManager, get_memo_write_tool
 from .utils import (
     _extract_existing_image_paths_from_content,
+    publish_file_to_ui,
     show_file_to_user,
     get_operator_funcs_rongzai
 )
@@ -97,32 +99,36 @@ from src.core.auth.icat_permission_provider import IcatPermissionProvider
 from src.core.auth.domas_permission_provider import DomasPermissionProvider
 
 
-_USER_THREAD_ID_CACHE: Dict[str, str] = {}
+_USER_THREAD_ID_CACHE: Dict[tuple[str, str], str] = {}
 _ACTIVE_THREAD_IDS: Set[str] = set()
 
 
 def normalize_thread_id(thread_id: str | None, user_id: str | None) -> str:
     """把会话 ID 规范化为纯时间戳格式，并在同一用户下复用初始时间戳。"""
     user_key = str(user_id or "").strip()
-    if user_key and user_key in _USER_THREAD_ID_CACHE:
-        return _USER_THREAD_ID_CACHE[user_key]
-
     provided = str(thread_id or "").strip()
-    if provided and re.fullmatch(r"\d{14}", provided):
-        if user_key:
-            _USER_THREAD_ID_CACHE[user_key] = provided
+
+    # 序列化恢复时传入的已经是规范化时间戳，必须保持不变。
+    if re.fullmatch(r"\d{14}", provided):
+        _ACTIVE_THREAD_IDS.add(provided)
         return provided
+
+    cache_key = (user_key, provided)
+
+    # 同一个用户、同一个原始会话继续复用原目录。
+    if user_key and provided and cache_key in _USER_THREAD_ID_CACHE:
+        return _USER_THREAD_ID_CACHE[cache_key]
 
     base_dt = datetime.now()
     candidate = base_dt.strftime("%Y%m%d%H%M%S")
-    counter = 0
+    
+    # 确保生成的会话 ID 在当前活跃的线程 ID 中唯一
     while candidate in _ACTIVE_THREAD_IDS:
-        counter += 1
-        base_dt = base_dt + timedelta(seconds=1)
+        base_dt += timedelta(seconds=1)
         candidate = base_dt.strftime("%Y%m%d%H%M%S")
 
-    if user_key:
-        _USER_THREAD_ID_CACHE[user_key] = candidate
+    if user_key and provided:
+        _USER_THREAD_ID_CACHE[cache_key] = candidate
     _ACTIVE_THREAD_IDS.add(candidate)
     return candidate
 
@@ -671,6 +677,181 @@ class RongZaiAgent(DrSaiAgent):
         # self._ephemeral_images_pending: List[UserMessage] = []
         # self._ephemeral_images_inflight: List[UserMessage] = []
 
+    def _get_ui_user_files_dir(self) -> Path:
+        """获取当前用户在 DrSai UI 中的本地上传目录。"""
+        root = os.getenv("DRSAI_UI_USER_FILES_ROOT", "").strip()
+        if not root:
+            raise RuntimeError("DRSAI_UI_USER_FILES_ROOT is not configured")
+        return (Path(root).expanduser() / self._user_id).resolve()
+
+    def _resolve_local_attachment(
+    self,
+    file_info: Dict[str, Any],
+    ) -> Path | None:
+        """本地附件路径安全校验，确保当前用户无法访问其他用户的文件"""
+        raw_path = str(file_info.get("path") or "").strip()
+        if not raw_path:
+            filename = Path(str(file_info.get("name") or "")).name
+            if not filename:
+                return None
+            candidate = (self._get_ui_user_files_dir() / filename).resolve()
+            return candidate if candidate.is_file() else None
+
+        try:
+            source_path = Path(raw_path).expanduser().resolve(strict=True)
+            allowed_root = self._get_ui_user_files_dir()
+        except (OSError, RuntimeError) as error:
+            logger.warning(
+                "Cannot resolve local attachment path: user={} path={} error={}",
+                self._user_id,
+                raw_path,
+                error,
+            )
+            return None
+
+        if not source_path.is_file():
+            return None
+
+        if not source_path.is_relative_to(allowed_root):
+            logger.warning(
+                "Rejected attachment outside current user's UI upload directory: "
+                "user={} path={} allowed_root={}",
+                self._user_id,
+                source_path,
+                allowed_root,
+            )
+            return None
+
+        return source_path
+    
+    def _subagent_image_display_enabled(self) -> bool:
+        """Whether delegated sub-agent images may be forwarded to the frontend."""
+        return os.getenv("RONGZAI_SHOW_SUBAGENT_IMAGES", "false").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+
+    def _strip_subagent_image_markdown(self, text: str) -> str:
+        """Filter delegated Markdown images when sub-agent image display is disabled."""
+        if not text or self._subagent_image_display_enabled():
+            return text
+        return re.sub(r'!\[.*?\]\(.*?\)', '[图片由子智能体生成，受跨环境限制暂不支持前端展示]', text)
+
+    def _filter_subagent_files_event(self, event: FilesEvent) -> FilesEvent | None:
+        """Remove only image entries from delegated file events when display is disabled."""
+        if self._subagent_image_display_enabled():
+            return event
+
+        content = event.content
+        content_was_json = isinstance(content, str)
+        if content_was_json:
+            try:
+                payload = json.loads(content)
+            except Exception:
+                return event
+        elif hasattr(content, "model_dump"):
+            payload = content.model_dump()
+        elif isinstance(content, dict):
+            payload = dict(content)
+        else:
+            return event
+
+        files = payload.get("files")
+        if not isinstance(files, list):
+            return event
+
+        image_suffixes = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg"}
+
+        def _is_image(file_info: Any) -> bool:
+            if hasattr(file_info, "model_dump"):
+                file_info = file_info.model_dump()
+            if not isinstance(file_info, dict):
+                return False
+            mime_type = str(file_info.get("mime_type") or "").lower()
+            name = str(file_info.get("name") or "")
+            return mime_type.startswith("image/") or Path(name).suffix.lower() in image_suffixes
+
+        remaining_files = [file_info for file_info in files if not _is_image(file_info)]
+        if len(remaining_files) == len(files):
+            return event
+        if not remaining_files:
+            return None
+
+        payload["files"] = remaining_files
+        filtered_content: Any = json.dumps(payload, ensure_ascii=False) if content_was_json else payload
+        return event.model_copy(update={"content": filtered_content})
+
+    def _extract_subagent_tool_image_paths(self, tool_name: str, content: str) -> List[str]:
+        """Extract delegated MCP image paths only when image forwarding is enabled."""
+        if not self._subagent_image_display_enabled() or not tool_name.startswith("mcp_"):
+            return []
+        return _extract_existing_image_paths_from_content(content)
+
+    def _materialize_attached_file(
+    self,
+    file_info: Dict[str, Any],
+) -> str:
+        """将附件文件从本地路径或 URL/base64 下载到当前会话的上传目录，并返回目标路径。"""
+        filename = Path(str(file_info.get("name") or "")).name
+        if not filename or filename in {".", ".."}:
+            raise ValueError("Invalid attachment filename")
+
+        upload_root = self._upload_dir.resolve()
+        target_path = (upload_root / filename).resolve()
+
+        if not target_path.is_relative_to(upload_root):
+            raise ValueError(
+                f"Attachment target escapes upload directory: {filename}"
+            )
+
+        source_path = self._resolve_local_attachment(file_info)
+
+        if source_path is not None:
+            shutil.copy2(source_path, target_path)
+            source_type = "local_path"
+        else:
+            # 本地路径不存在时，兼容跨服务器部署，回退 URL/base64。
+            download_file_from_url_or_base64(
+                file_info=file_info,
+                save_path=str(target_path),
+            )
+            source_type = "url_or_base64"
+
+        if not target_path.is_file() or target_path.stat().st_size <= 0:
+            target_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Attachment was not materialized correctly: {target_path}"
+            )
+
+        expected_size = file_info.get("size")
+        if expected_size not in (None, ""):
+            try:
+                expected_size = int(expected_size)
+            except (TypeError, ValueError):
+                expected_size = 0
+
+            actual_size = target_path.stat().st_size
+            if expected_size > 0 and actual_size != expected_size:
+                target_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"Attachment size mismatch: "
+                    f"expected={expected_size}, actual={actual_size}"
+                )
+
+        logger.info(
+            "Attached file materialized: user={} thread={} source={} "
+            "source_path={} target={} size={}",
+            self._user_id,
+            self._thread_id,
+            source_type,
+            source_path,
+            target_path,
+            target_path.stat().st_size,
+        )
+
+        return str(target_path)
+
+    
+
     def _ensure_model_context_replace_messages(self) -> None:
         """为不支持 replace_messages 的上下文补充原地替换能力。
 
@@ -729,7 +910,10 @@ class RongZaiAgent(DrSaiAgent):
                 f"{enhanced_system_message}\n\nCurrent user_id is {self._user_id}. ")
         if self._work_dir:
             enhanced_system_message = (
-                f"{enhanced_system_message}\n\nThe files user uploaded are in {self._work_dir}/{self._thread_id}/uploads.")
+                f"{enhanced_system_message}\n\n"
+                f"Allowed workspace root: {self._work_dir}, and {self._extra_work_dirs}. You are allowed to access these directories and their descendants only.\n"
+                f"User upload directory: {self._upload_dir}\n"
+                )
         enhanced_system_message += f"\n\n{self._core_skill_policy_prompt}"
         enhanced_system_message += f"\n\n{self._todo_policy_prompt}"
         enhanced_system_message += f"\n\n{self._memo_policy_prompt}"
@@ -904,7 +1088,7 @@ class RongZaiAgent(DrSaiAgent):
         stream_factory: Callable[[], AsyncGenerator[Any, None]],
         *,
         context_name: str = "stream",
-        max_attempts: int = 3,
+        max_attempts: int = 2,
         initial_delay_seconds: float = 0.75,
     ) -> AsyncGenerator[Any, None]:
         """对可重试的流式响应做本地重试，减少因为短暂超时导致的整轮失败。"""
@@ -1408,6 +1592,53 @@ class RongZaiAgent(DrSaiAgent):
                     self._model_context._current_messages = list(compressed_messages)
             except Exception as replace_err:
                 logger.warning("Failed to persist compressed context into model_context: {}", replace_err)
+
+        return compressed_messages
+
+    async def _build_emergency_retry_messages_after_context_overflow(
+        self,
+        model_client: ChatCompletionClient,
+        system_messages: List[SystemMessage],
+        runtime_messages: List[LLMMessage],
+        cancellation_token: CancellationToken,
+    ) -> List[LLMMessage]:
+        """Compress all runtime history when even the normal retry is too large."""
+        summary = await self._summarize_history_with_subagent(
+            model_client=model_client,
+            old_messages=runtime_messages,
+            recent_messages=[],
+            cancellation_token=cancellation_token,
+        )
+        summary = summary[: int(_get_env_float("RONGZAI_EMERGENCY_SUMMARY_MAX_CHARS", 4000))]
+        compressed_messages = self._get_compatible_context(
+            model_client=model_client,
+            messages=system_messages + [
+                SystemMessage(
+                    content=(
+                        "Emergency compressed context after repeated context overflow. "
+                        "Use this as the authoritative task state:\n"
+                        f"{summary}"
+                    )
+                ),
+                UserMessage(
+                    content=(
+                        "Continue the current task from the compressed state. "
+                        "Do not repeat completed tool calls unless needed."
+                    ),
+                    source="user",
+                ),
+            ],
+        )
+
+        if hasattr(self._model_context, "_messages") and hasattr(self._model_context, "_current_messages"):
+            try:
+                if hasattr(self._model_context, "replace_messages"):
+                    self._model_context.replace_messages(compressed_messages)
+                else:
+                    self._model_context._messages = list(compressed_messages)
+                    self._model_context._current_messages = list(compressed_messages)
+            except Exception as replace_err:
+                logger.warning("Failed to persist emergency compressed context: {}", replace_err)
 
         return compressed_messages
 
@@ -2198,7 +2429,10 @@ class RongZaiAgent(DrSaiAgent):
                 "(or complete resolvable paths) in prompt/context. "
                 "The main agent will automatically upload referenced files and append downloadable links for the sub-agent. "
                 "The sub-agent runs in an isolated filesystem and cannot access main-agent local paths directly, "
-                "so it must download from the provided links before using file-path-based tools."
+                "so it must download from the provided links before using file-path-based tools. "
+                "The isolation is bidirectional: the main agent cannot access or inspect paths in the sub-agent filesystem. "
+                "Never search for, read, or validate a path returned by the sub-agent from the main-agent workspace."
+                "The FilesEvent from subagent also send files back to the main agent frontend and user can get it directly."
             )
             model_hint = (
                 "\n\nModel override (optional): "
@@ -2230,6 +2464,13 @@ class RongZaiAgent(DrSaiAgent):
         if not isinstance(argument, dict):
             return ""
 
+        sub_agent_name = str(argument.get("agent_type", "") or "").strip()
+        known_aliases = (
+            self._get_known_subagent_model_aliases_for_prompt(sub_agent_name)
+            if sub_agent_name
+            else []
+        )
+
         direct_keys = [
             "subagent_model",
             "delegate_model",
@@ -2252,15 +2493,26 @@ class RongZaiAgent(DrSaiAgent):
             return ""
 
         pattern = re.compile(
-            r"(?:subagent_model|delegate_model|model_alias|defult_config_name|default_config_name)\s*[:=]\s*([^\s,;\n]+)",
+            r"(?:subagent_model|delegate_model|model_alias|defult_config_name|default_config_name)\s*[:=]\s*",
             re.IGNORECASE,
         )
         for text in text_fields:
             match = pattern.search(text)
             if match:
-                alias = match.group(1).strip().strip("'\"")
-                if alias:
-                    return alias
+                remainder = text[match.end() :]
+                if remainder.startswith(("'", '"')):
+                    quote = remainder[0]
+                    closing_quote = remainder.find(quote, 1)
+                    if closing_quote > 1:
+                        return remainder[1:closing_quote].strip()
+
+                for alias in sorted(known_aliases, key=len, reverse=True):
+                    if remainder[: len(alias)].casefold() == alias.casefold():
+                        return remainder[: len(alias)].strip()
+
+                fallback = re.match(r"([^\s,;\n]+(?:\s+\([^\n)]*\))?)", remainder)
+                if fallback:
+                    return fallback.group(1).strip()
         return ""
 
     async def _create_remote_subagent(
@@ -2844,6 +3096,8 @@ class RongZaiAgent(DrSaiAgent):
             file_url = self._delegate_file_url_cache.get(local_file_str)
             if not file_url:
                 try:
+                    # from .utils import upload_to_throway
+                    # file_url = upload_to_throway(local_file_str)
                     file_url = show_file_to_user(model_client, file_path=local_file_str)
                     self._delegate_file_url_cache[local_file_str] = file_url
                 except Exception as upload_err:
@@ -2954,15 +3208,39 @@ class RongZaiAgent(DrSaiAgent):
                         output_messages.append(msg)
 
                         if attached_files_json:
-                            attached_files = json.loads(attached_files_json)
-                            saved_files: List[str] = []
-                            for file in attached_files:
-                                save_path = f"{self._upload_dir}/{file['name']}"
-                                download_file_from_url_or_base64(
-                                    file_info=file,
-                                    save_path=save_path,
+
+                            if isinstance(attached_files_json, str):
+                                attached_files = json.loads(attached_files_json)
+                            elif isinstance(attached_files_json, list):
+                                attached_files = attached_files_json
+                            else:
+                                raise TypeError(
+                                    "attached_files must be a JSON string or list, "
+                                    f"got {type(attached_files_json).__name__}"
                                 )
-                                saved_files.append(save_path)
+
+                            saved_files: List[str] = []
+
+                            for file_info in attached_files:
+                                if not isinstance(file_info, dict):
+                                    logger.warning(
+                                        "Skip invalid attachment metadata: {}",
+                                        file_info,
+                                    )
+                                    continue
+
+                                try:
+                                    saved_path = self._materialize_attached_file(file_info)
+                                    saved_files.append(saved_path)
+                                except Exception as error:
+                                    logger.exception(
+                                        "Failed to materialize attachment: "
+                                        "user={} thread={} name={} error={}",
+                                        self._user_id,
+                                        self._thread_id,
+                                        file_info.get("name"),
+                                        error,
+                                    )
 
                             # 提取纯文本内容（多模态消息 content 是 list，取其中的字符串部分）。
                             if isinstance(msg.content, list):
@@ -3067,7 +3345,6 @@ class RongZaiAgent(DrSaiAgent):
             return
 
         inner_messages: List[BaseAgentEvent | BaseChatMessage] = []
-        last_buffered_stream_events: List[ModelClientStreamingChunkEvent] = []
         fallback_candidates: List[str] = self._get_fallback_config_names()
         fallback_attempted: set[str] = set()
         forced_invalid_output_once = False
@@ -3127,7 +3404,6 @@ class RongZaiAgent(DrSaiAgent):
                 self._debug_log_system_prompt(system_messages)
                 model_result = None
                 buffered_stream_events: List[ModelClientStreamingChunkEvent] = []
-                last_buffered_stream_events = buffered_stream_events
                 # Legacy (disabled): 如需恢复 tool 图片回注上下文，启用下一行。
                 # self._arm_ephemeral_images_for_inference()
                 try:
@@ -3151,10 +3427,9 @@ class RongZaiAgent(DrSaiAgent):
                         elif isinstance(inference_output, AgentLogEvent):
                             inner_messages.append(inference_output)
                             yield inference_output
-                        else:
-                            # 先缓存本轮模型流式文本，待确认本轮结果是否合法后再决定是否对用户可见。
-                            if isinstance(inference_output, ModelClientStreamingChunkEvent):
-                                buffered_stream_events.append(inference_output)
+                        elif isinstance(inference_output, ModelClientStreamingChunkEvent):
+                            buffered_stream_events.append(inference_output)
+                            yield inference_output
                 except Exception as llm_err:
                     is_transport_timeout = self._is_transport_timeout_error(llm_err)
                     is_retryable = self._is_retryable_model_error(llm_err) or is_transport_timeout
@@ -3251,8 +3526,6 @@ class RongZaiAgent(DrSaiAgent):
                         logger.info(
                             "[NoToolFollowup] Second consecutive no-tool output detected. Finish current turn and wait for user input."
                         )
-                        for buffered_event in buffered_stream_events:
-                            yield buffered_event
                         if not buffered_stream_events:
                             yield ModelClientStreamingChunkEvent(
                                 content=model_result.content,
@@ -3270,8 +3543,6 @@ class RongZaiAgent(DrSaiAgent):
                         )
                         break
 
-                    for buffered_event in buffered_stream_events:
-                        yield buffered_event
                     if not buffered_stream_events:
                         yield ModelClientStreamingChunkEvent(
                             content=model_result.content,
@@ -3298,12 +3569,6 @@ class RongZaiAgent(DrSaiAgent):
                     if no_tool_followup_pending:
                         logger.info("[NoToolFollowup] Recovered: tool calls detected after follow-up prompt.")
                         no_tool_followup_pending = False
-
-                    has_todo_write_call = any(call.name == "TodoWrite" for call in model_result.content)
-                    has_memo_write_call = any(call.name == "MemoWrite" for call in model_result.content)
-                    if not has_todo_write_call and not has_memo_write_call:
-                        for buffered_event in buffered_stream_events:
-                            yield buffered_event
 
                     # 记录模型请求的工具调用
                     tool_call_msg = ToolCallRequestEvent(
@@ -3559,22 +3824,26 @@ class RongZaiAgent(DrSaiAgent):
                                     if isinstance(sub_message, ModelClientStreamingChunkEvent):
                                         chunk_text = str(sub_message.content or "")
                                         if chunk_text:
+                                            filtered_text = self._strip_subagent_image_markdown(chunk_text)
+                                            last_stream_text += filtered_text
                                             if (
-                                                not self._is_delegate_system_notice_chunk(chunk_text)
-                                                and not self._is_delegate_instruction_echo_text(chunk_text)
+                                                not self._is_delegate_system_notice_chunk(filtered_text)
+                                                and not self._is_delegate_instruction_echo_text(filtered_text)
                                             ):
                                                 has_subagent_visible_output = True
-                                                subagent_visible_chunks.append(chunk_text)
+                                                subagent_visible_chunks.append(filtered_text)
                                             delegate_trace.append(
                                                 self._format_delegate_transcript_entry(sub_message)
                                             )
                                             yield ModelClientStreamingChunkEvent(
-                                                content=chunk_text,
+                                                content=filtered_text,
                                                 source=agent_name,
                                             )
                                     elif isinstance(sub_message, FilesEvent):
                                         delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
-                                        yield sub_message
+                                        filtered_event = self._filter_subagent_files_event(sub_message)
+                                        if filtered_event is not None:
+                                            yield filtered_event
                                     elif isinstance(sub_message, ToolCallRequestEvent):
                                         delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
                                         for remote_call in sub_message.content:
@@ -3594,10 +3863,14 @@ class RongZaiAgent(DrSaiAgent):
                                                     content=remote_content,
                                                     content_type="tools",
                                                 )
-                                            img_paths = _extract_existing_image_paths_from_content(remote_content)
+                                            remote_tool_name = str(getattr(remote_result, "name", "") or "")
+                                            img_paths = self._extract_subagent_tool_image_paths(
+                                                remote_tool_name,
+                                                remote_content,
+                                            )
                                             if img_paths:
                                                 for img_path in img_paths:
-                                                    fig_url = show_file_to_user(model_client, file_path=img_path)
+                                                    fig_url = publish_file_to_ui(img_path, self._user_id)
                                                     info2user = f"### ![image.png]({fig_url})\n\n"
                                                     yield ModelClientStreamingChunkEvent(
                                                         content=info2user,
@@ -3606,18 +3879,19 @@ class RongZaiAgent(DrSaiAgent):
                                     elif isinstance(sub_message, TextMessage):
                                         current_text = str(sub_message.content or "")
                                         if current_text:
+                                            filtered_text = self._strip_subagent_image_markdown(current_text)
                                             # 某些子智能体会返回累积文本；这里只向前端转发增量，避免重复刷屏。
-                                            if current_text.startswith(last_stream_text):
-                                                delta = current_text[len(last_stream_text) :]
+                                            if filtered_text.startswith(last_stream_text):
+                                                delta = filtered_text[len(last_stream_text) :]
                                             else:
-                                                delta = current_text
-                                            last_stream_text = current_text
-                                            delegate_result = current_text
+                                                delta = filtered_text
+                                            last_stream_text = filtered_text
+                                            delegate_result = filtered_text
                                             delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
                                             if delta:
-                                                if self._is_subagent_failure_text(current_text):
+                                                if self._is_subagent_failure_text(filtered_text):
                                                     has_subagent_failure_output = True
-                                                    delegate_failure_text = current_text
+                                                    delegate_failure_text = filtered_text
                                                 elif self._is_delegate_instruction_echo_text(delta):
                                                     pass
                                                 else:
@@ -3630,15 +3904,17 @@ class RongZaiAgent(DrSaiAgent):
                                     elif isinstance(sub_message, Response):
                                         final_text = str(sub_message.chat_message.content or "")
                                         if final_text:
-                                            if final_text.startswith(last_stream_text):
-                                                final_delta = final_text[len(last_stream_text) :]
+                                            # 过滤掉图片语法
+                                            filtered_text = self._strip_subagent_image_markdown(final_text)
+                                            if filtered_text.startswith(last_stream_text):
+                                                final_delta = filtered_text[len(last_stream_text) :]
                                             else:
-                                                final_delta = final_text
+                                                final_delta = filtered_text
                                             delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
                                             if final_delta:
-                                                if self._is_subagent_failure_text(final_text):
+                                                if self._is_subagent_failure_text(filtered_text):
                                                     has_subagent_failure_output = True
-                                                    delegate_failure_text = final_text
+                                                    delegate_failure_text = filtered_text
                                                 elif self._is_delegate_instruction_echo_text(final_delta):
                                                     pass
                                                 else:
@@ -3648,8 +3924,8 @@ class RongZaiAgent(DrSaiAgent):
                                                     content=final_delta,
                                                     source=agent_name,
                                                 )
-                                            last_stream_text = final_text
-                                            delegate_result = final_text
+                                            last_stream_text = filtered_text
+                                            delegate_result = filtered_text
                                     else:
                                         delegate_trace.append(self._format_delegate_transcript_entry(sub_message))
 
@@ -3903,12 +4179,15 @@ class RongZaiAgent(DrSaiAgent):
 
                             result.content = f"{self._lang_prompt}\n\n{result.content}\n\n{self._lang_prompt}"
                             pending_tool_results.append(result)
-                            img_paths = []
-                            img_paths.extend(_extract_existing_image_paths_from_content(result.content))
+                            img_paths = (
+                                _extract_existing_image_paths_from_content(result.content)
+                                if tool_name.startswith("mcp_")
+                                else []
+                            )
                             if img_paths:
                                 for img_path in img_paths:
                                     # 把工具输出中的图片回显给用户
-                                    fig_url = show_file_to_user(model_client, file_path=img_path)
+                                    fig_url = publish_file_to_ui(img_path, self._user_id)
                                     info2user = f"### ![image.png]({fig_url})\n\n"
                                     yield ModelClientStreamingChunkEvent(content=info2user, source=agent_name)
 
@@ -3993,8 +4272,6 @@ class RongZaiAgent(DrSaiAgent):
                 break
 
         except asyncio.CancelledError:
-            for buffered_event in last_buffered_stream_events:
-                yield buffered_event
             # 任务被取消时，返回统一提示
             yield Response(
                 chat_message=TextMessage(
@@ -4137,7 +4414,7 @@ class RongZaiAgent(DrSaiAgent):
                             cancellation_token=cancellation_token,
                         )
         try:
-            stream_retry_attempts = max(1, int(_get_env_float("RONGZAI_STREAM_RETRY_ATTEMPTS", 3.0)))
+            stream_retry_attempts = max(1, int(_get_env_float("RONGZAI_STREAM_RETRY_ATTEMPTS", 2.0)))
             stream_retry_delay = max(0.0, _get_env_float("RONGZAI_STREAM_RETRY_DELAY_SECONDS", 0.75))
 
             if self._reply_function is not None:
@@ -4198,10 +4475,50 @@ class RongZaiAgent(DrSaiAgent):
                 cancellation_token=cancellation_token,
             )
 
-            # 重试时不再注入 memory_function，避免再次膨胀上下文。
+            try:
+                # 重试时不再注入 memory_function，避免再次膨胀上下文。
+                if self._reply_function is not None:
+                    async for chunk in self._call_reply_function(
+                        retry_messages,
+                        model_client=model_client,
+                        workbench=workbench,
+                        handoff_tools=handoff_tools,
+                        tools=all_tools,
+                        agent_name=agent_name,
+                        cancellation_token=cancellation_token,
+                        db_manager=self._db_manager,
+                    ):
+                        yield chunk
+                else:
+                    async for chunk in self.call_llm(
+                        agent_name=agent_name,
+                        model_client=model_client,
+                        llm_messages=retry_messages,
+                        tools=all_tools,
+                        model_client_stream=model_client_stream,
+                        cancellation_token=cancellation_token,
+                        output_content_type=output_content_type,
+                    ):
+                        yield chunk
+                return
+            except Exception as retry_err:
+                if not self._is_context_length_error(retry_err):
+                    raise
+                logger.warning(
+                    "Context still exceeds the limit after normal compression; "
+                    "dropping recent raw tool messages and retrying with a full-history summary. error={}",
+                    retry_err,
+                )
+
+            emergency_messages = await self._build_emergency_retry_messages_after_context_overflow(
+                model_client=model_client,
+                system_messages=system_messages,
+                runtime_messages=runtime_messages,
+                cancellation_token=cancellation_token,
+            )
             if self._reply_function is not None:
                 async for chunk in self._call_reply_function(
-                    retry_messages,
+                    emergency_messages,
                     model_client=model_client,
                     workbench=workbench,
                     handoff_tools=handoff_tools,
@@ -4215,7 +4532,7 @@ class RongZaiAgent(DrSaiAgent):
                 async for chunk in self.call_llm(
                     agent_name=agent_name,
                     model_client=model_client,
-                    llm_messages=retry_messages,
+                    llm_messages=emergency_messages,
                     tools=all_tools,
                     model_client_stream=model_client_stream,
                     cancellation_token=cancellation_token,

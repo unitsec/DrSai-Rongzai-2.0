@@ -34,3 +34,33 @@ def test_stream_retry_replays_after_timeout(monkeypatch):
 
     assert collected == [{"ok": True}]
     assert call_count == 2
+
+
+def test_stream_retry_defaults_to_one_retry(monkeypatch):
+    agent = object.__new__(RongZaiAgent)
+
+    async def fake_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("src.core.agent.agent.asyncio.sleep", fake_sleep)
+
+    call_count = 0
+
+    async def stream_factory():
+        nonlocal call_count
+        call_count += 1
+        raise asyncio.TimeoutError("stream timed out")
+        yield None
+
+    async def run_test():
+        async for _item in agent._run_stream_with_retry(stream_factory):
+            pass
+
+    try:
+        asyncio.run(run_test())
+    except asyncio.TimeoutError:
+        pass
+    else:
+        raise AssertionError("Expected final timeout to be raised")
+
+    assert call_count == 2

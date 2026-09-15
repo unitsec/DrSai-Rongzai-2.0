@@ -117,11 +117,6 @@ def construct_task(
     for file in files:
         try:
             url = file.get("url", "")
-            file_base64 = ""
-            if not url:
-                with open(file["path"], "rb") as f:
-                    file_content = f.read()
-                    file_base64 = base64.b64encode(file_content).decode("utf-8")
 
             if _is_image_attachment(file):
                 image = Image.from_file(file["path"])
@@ -133,42 +128,21 @@ def construct_task(
                         "name": file.get("name", "unknown.img"),
                         "type": file.get("type", "image"),
                         "size": file.get("size", 0),
+                        "path": file.get("path", ""),
                         "url": url,
-                        "base64": file_base64
                     }
                 )
             else:
-                # Handle all other files as text
-                try:
-                    # text_content = base64.b64decode(file["content"]).decode("utf-8")
-                    with open(file["path"], "r", encoding="utf-8") as f:
-                        text_content = f.read()
-                    text_parts.append(
-                        f"Attached file: {file.get('name', 'unknown.file')}\n{text_content}"
-                    )
-                    attached_files.append(
-                        {
-                            "name": file.get("name", "unknown.file"),
-                            "type": file.get("type", "text"),
-                            "size": file.get("size", 0),
-                            "url": url,
-                            "base64": file_base64
-                        }
-                    )
-                except Exception as e:
-                    logger.error(f"Error processing file content: {str(e)}")
-                    text_parts.append(
-                        f"Attached file: {file.get('name', 'unknown.file')} (failed to process content)"
-                    )
-                    attached_files.append(
-                        {
-                            "name": file.get("name", "unknown.file"),
-                            "type": file.get("type", "text"),
-                            "size": file.get("size", 0),
-                            "url": url,
-                            "base64": file_base64
-                        }
-                    )
+                text_parts.append(f"Attached file: {file.get('name', 'unknown.file')}")
+                attached_files.append(
+                    {
+                        "name": file.get("name", "unknown.file"),
+                        "type": file.get("type", "text"),
+                        "size": file.get("size", 0),
+                        "path": file.get("path", ""),
+                        "url": url,
+                    }
+                )
 
         except Exception as e:
             logger.error(f"Error processing file {file.get('name')}: {str(e)}")

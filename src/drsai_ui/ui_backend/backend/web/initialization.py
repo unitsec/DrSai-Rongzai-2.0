@@ -58,7 +58,9 @@ class AppInitializer:
         return _AppPaths(
             app_root=app_root,
             static_root=app_root / "files",
-            user_files=app_root / "files" / "user",
+            user_files=Path(
+                os.getenv("DRSAI_UI_USER_FILES_ROOT", str(app_root / "files" / "user"))
+            ).expanduser().resolve(),
             ui_root=ui_root,
             config_dir=app_root / self.settings.CONFIG_DIR,
             database_uri=self._get_database_uri(app_root),

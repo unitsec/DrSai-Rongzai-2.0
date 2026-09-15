@@ -36,6 +36,11 @@ import os
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(here, ".env_zjj"), override=True)
 os.environ.setdefault("RONGZAI_DEBUG_SYSTEM_PROMPT", "0")
+# 模型请求由 RongZaiAgent 统一控制：当前模型失败后直接切换备用模型。
+# 禁用 SDK 内部重试，避免两层重试累积等待时间。
+os.environ.setdefault("RONGZAI_STREAM_RETRY_ATTEMPTS", "1")
+os.environ.setdefault("RONGZAI_FALLBACK_MAX_RETRIES", "0")
+os.environ.setdefault("RONGZAI_FALLBACK_TIMEOUT", "60")
 data_dir = os.getenv("WORKER_SPACE", "")
 parent_path = os.path.dirname(os.path.abspath(__file__))
 appdir = os.path.join(parent_path, "tmp/drsai")
@@ -97,12 +102,12 @@ async def create_agent(
         # 对 GPT 尽量少传可选参数，让服务端自己决定 completion budget，避免因为
         # max_tokens 不兼容被包装成 5xx 后触发长时间重试。
         llm_max_tokens = 60000
-        llm_max_retries = 12
+        llm_max_retries = 0
         omit_max_tokens = False
 
         if llm_model.startswith("openai/gpt-"):
             omit_max_tokens = True
-            llm_max_retries = 1
+            llm_max_retries = 0
 
         is_vip_user = bool(user_id and user_id in PERMISSION_USERS)
         if is_vip_user:
