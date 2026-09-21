@@ -5,7 +5,8 @@
         "mode": "remote",
         "description": {"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"},
         "agent_config":{
-            "deepseek-v4-pro (free)": "hepai/deepseek-v4-pro",
+            "deepseek-v4-flash (free)": "deepseek-ai/deepseek-v4-flash",
+            "deepseek-v4-pro (free)": "deepseek-ai/deepseek-v4-pro",
             "gpt-5 (charge)": "openai/gpt-5",
             "glm-5.2 (free)": "zhipu/glm-5.2",
             "miniMax (free)": "minimax/minimax-m2.7"

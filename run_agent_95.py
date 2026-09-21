@@ -50,7 +50,8 @@ def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
 _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
-    "deepseek-v4-pro (free)": "hepai/deepseek-v4-pro",
+    "deepseek-v4-flash (free)": "deepseek-ai/deepseek-v4-flash",
+    "deepseek-v4-pro (free)": "deepseek-ai/deepseek-v4-pro",
     "gpt-5 (charge)": "openai/gpt-5",
     "glm-5.2 (free)": "zhipu/glm-5.2",
     "miniMax (free)": "minimax/minimax-m2.7"

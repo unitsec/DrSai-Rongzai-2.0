@@ -3,6 +3,7 @@ import multiprocessing
 import time
 import traceback
 import uuid
+from queue import Empty
 from typing import Any, Dict, Optional, Tuple
 
 
@@ -93,16 +94,29 @@ class ProcessPollingMcpToolBase:
             }
             return snapshot
 
-        if proc.is_alive():
+        info = None
+        try:
+            if resq is not None:
+                info = resq.get_nowait()
+        except Empty:
+            pass
+        except Exception:
+            info = None
+
+        # A child that queued a large result can remain alive while its feeder
+        # thread waits for the parent to drain the pipe. Read before checking
+        # is_alive() so such tasks can complete instead of polling forever.
+        if info is None and proc.is_alive():
             snapshot["state"] = "running"
             return snapshot
 
-        info = None
-        try:
-            if resq is not None and not resq.empty():
-                info = resq.get_nowait()
-        except Exception:
-            info = None
+        if info is None and resq is not None:
+            try:
+                info = resq.get(timeout=0.1)
+            except Empty:
+                pass
+            except Exception:
+                info = None
 
         try:
             proc.join(timeout=0.1)

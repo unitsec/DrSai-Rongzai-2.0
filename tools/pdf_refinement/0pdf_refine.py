@@ -1268,6 +1268,7 @@ def initialize_pdf_project(
         rmax: Upper r-range used for refinement.
         pdf_source: PDF source type, `X` or `N`. 'X'means X-ray, 'N' means neutron.
         user_id: User namespace used to build the project directory.
+        session_id: Current Agent session ID. Always pass it so outputs are isolated under the current session directory.
         mission_name: Mission namespace used to build the project directory and task polling.
         task_id: task name under mission for the purpose of naming the project file and for task polling.    
 
@@ -2126,6 +2127,7 @@ def refine(
         - project_path: Path to the JSON project snapshot file.
         - user_id: User namespace for project directory.
         - mission_name: Mission namespace for project directory and task polling.
+        - session_id: Current Agent session ID. Always pass it so outputs are isolated under the current session directory.
         - task_id: Task identifier for naming output files and task polling.
         
     Execution flow:
@@ -2411,6 +2413,7 @@ def export_cifs(
             missing on disk, it will be regenerated from the snapshot.
         user_id: User namespace used to build CIF output directory.
         mission_name: Mission namespace used to build CIF output directory.
+        session_id: Current Agent session ID. Always pass it so outputs are isolated under the current session directory.
         task_id: Task identifier used to build CIF file name.
 
     Returns:
@@ -2549,6 +2552,8 @@ if __name__ == "__main__":
             "Tools for PDF refinement."
             "Use InitializeProject to create a persistent project manifest, Refine to run staged refinement, "
             "UpdateConstraintSet and UpdateRefineState to edit snapshot state, and ExportCIFs to collect the generated outputs. "
+            "Every tool call must include the current Agent session_id so all outputs stay under "
+            "WORKDIR/user_id/session_id/mission_name. "
             "Mission/task rule: mission_name identifies one high-level mission and should stay the same across multiple tool calls; "
             "task_id identifies a sub-task/step inside that mission."
         ),
