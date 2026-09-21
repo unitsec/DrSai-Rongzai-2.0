@@ -50,19 +50,62 @@ def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
 _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
-    "quick refinement":"openai/gpt-4.1",
-    "deep refinement":"openai/gpt-5",
-    "gpt5.4": "openai/gpt-5.4",
-    "qwen3 Max": "aliyun/qwen3-max",
-    "qwen3 Coder+": "aliyun/qwen3-coder-plus",
-    "minimax": "minimax/minimax-m2.7",
-    "磐石": "scienceone/s1-base-ultra",
-    "intern-s1": "intern-ai/intern-s1",
-    "intern-s1-pro": "intern-ai/intern-s1-pro",
-    "deepseek":"hepai/deepseek-v4-pro"
+    "deepseek-v4-flash (free)": "deepseek-ai/deepseek-v4-flash",
+    "deepseek-v4-pro (free)": "deepseek-ai/deepseek-v4-pro",
+    "gpt-5 (charge)": "openai/gpt-5",
+    "glm-5.2 (free)": "zhipu/glm-5.2",
+    "miniMax (free)": "minimax/minimax-m2.7"
 }
 
+def _get_optional_float_env(name: str, minimum: float, maximum: float) -> float | None:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return None
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number, got {raw_value!r}") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}, got {value}")
+    return value
 
+
+def _get_optional_int_env(name: str, minimum: int, maximum: int) -> int | None:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw_value!r}") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}, got {value}")
+    return value
+
+
+def _get_bool_env(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name, "").strip().lower()
+    if not raw_value:
+        return default
+    if raw_value in {"1", "true", "yes", "on"}:
+        return True
+    if raw_value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false, got {raw_value!r}")
+
+
+class DeepSeekChatCompletionClient(HepAIChatCompletionClient):
+    def __init__(self, *args, thinking_enabled: bool = True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_args["extra_body"] = {
+            "thinking": {
+                "type": "enabled" if thinking_enabled else "disabled"
+            }
+        }
+
+
+def _is_free_model_config(config_name: str | None) -> bool:
+    return "(free)" in (config_name or "").lower()
 def _load_remote_subagent_config() -> dict[str, dict]:
     """从专用子智能体配置文件构建 RongZaiAgent 所需的 sub_agent_config。
 
@@ -224,28 +267,40 @@ async def create_agent(
             omit_max_tokens = True
             llm_max_retries = 0
 
-        BLACK_LIST = os.getenv("BLACK_LIST", "").split(",") if os.getenv("BLACK_LIST") else []
+        BLACK_LIST = [
+            account.strip()
+            for account in os.getenv("BLACK_LIST", "").split(",")
+            if account.strip()
+        ]
         is_black_user = bool(user_id and user_id in BLACK_LIST)
-        print(f"User {user_id} is blacklisted: {is_black_user}")
-        if is_black_user:
-            client_kwargs = {
-                "model": llm_model,
-                "api_key": api_key,
-                "timeout": 60,
-                "max_retries": llm_max_retries,
-            }
-        else:
-            client_kwargs = {
-                "model": llm_model,
-                "api_key": os.getenv("HEPAI_API_KEY"),
-                "timeout": 60,
-                "max_retries": llm_max_retries,
-            }
+        is_free_model = _is_free_model_config(defult_config_name)
+        # 黑名单账户始终消耗其传入的 key；普通账户仅免费模型使用服务端 key。
+        selected_api_key = os.getenv("HEPAI_API_KEY") if is_free_model and not is_black_user else api_key
+        print(
+            f"User {user_id} is blacklisted: {is_black_user}; "
+            f"model config is free: {is_free_model}"
+        )
+        client_kwargs = {
+            "model": llm_model,
+            "api_key": selected_api_key,
+            "timeout": 60,
+            "max_retries": llm_max_retries,
+        }
+        temperature = _get_optional_float_env("RONGZAI_LLM_TEMPERATURE", 0.0, 2.0)
+        seed = _get_optional_int_env("RONGZAI_LLM_SEED", 0, 2147483647)
+        if temperature is not None:
+            client_kwargs["temperature"] = temperature
         if not omit_max_tokens:
             client_kwargs["max_tokens"] = llm_max_tokens
 
 
         if ("claude" in llm_model) or ("minimax" in llm_model):
+            if seed is not None:
+                logger.warning(
+                    "RONGZAI_LLM_SEED={} is not applied to Anthropic-compatible model {} because that API has no seed parameter.",
+                    seed,
+                    llm_model,
+                )
             model_client = HepAIAnthropicChatCompletionClient(
                 # model="claude-haiku-4-5",
                 # model="claude-sonnet-4-6",
@@ -257,10 +312,18 @@ async def create_agent(
                 **client_kwargs,
             )
         else:
+            if seed is not None:
+                client_kwargs["seed"] = seed
             is_vision = True
             if "deepseek" in llm_model:
                 is_vision = False
-            model_client = HepAIChatCompletionClient(
+                client_class = DeepSeekChatCompletionClient
+                client_kwargs["thinking_enabled"] = _get_bool_env(
+                    "RONGZAI_DEEPSEEK_THINKING", True
+                )
+            else:
+                client_class = HepAIChatCompletionClient
+            model_client = client_class(
                 # model="openai/gpt-4o",
                 base_url="https://aiapi.ihep.ac.cn/apiv2",
                 **client_kwargs,
@@ -332,7 +395,7 @@ if __name__ == "__main__":
                       {"en":"Use the sasview tool to analyze the uploaded small-angle scattering data, use the Fit function, select the hollow cylinder model, fit the scattering curve until the chisquare is less than 10, then return the fitting results and fitting graph.",
                        "zh":"帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"}],
             agent_config = llm_mode_config,
-            defult_config_name = "minimax",
+            defult_config_name = "deepseek-v4-pro",
             announcements=[{"en":"This is a test agent for DrSai Rongzai, please do not use it for production purposes. If you have any questions, please contact wanghao96@ihep.ac.cn."},
                         {"zh":"这是DrSai Rongzai的测试智能体，请勿用于生产用途。如有任何问题，请联系 wanghao96@ihep.ac.cn."}],
             # 智能体实体
