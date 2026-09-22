@@ -336,7 +336,7 @@ if __name__ == "__main__":
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
-            port = 42501, 
+            port = int(os.getenv('RZ_PORT_AGENT_WEB', '42501')),
             # 是否注册到HepAI智能体平台
             no_register=False,
             drsai_dir = "/dg_workfs/domassy/rongzai/rongzai-agent/tmp",
