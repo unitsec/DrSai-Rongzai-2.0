@@ -121,7 +121,8 @@ const ChatInput = React.forwardRef<
       () => new Set()
     );
     const [attachedSkills, setAttachedSkills] = React.useState<HepaiSkillPickRow[]>([]);
-    const [text, setText] = React.useState("");
+    const [hasText, setHasText] = React.useState(false);
+    const resizeFrameRef = React.useRef<number | null>(null);
     const [dragOver, setDragOver] = React.useState(false);
     const [isDragActive, setIsDragActive] = React.useState(false);
     const { darkMode, user } = React.useContext(appContext) as {
@@ -277,21 +278,31 @@ const ChatInput = React.forwardRef<
       const baseHeight = 52; // 基础高度 52px
       return `${baseHeight}px`;
     };
-    // Handle textarea auto-resize
-    React.useEffect(() => {
-      const ta = textAreaRef.current;
-      if (!ta) return;
 
-      // 清空后 scrollHeight 有时会沿用撑开前的值，不能直接用来设高度
-      if (!text.trim()) {
-        ta.style.height = getTextAreaDefaultHeight();
-        return;
+    const resizeTextArea = React.useCallback((value: string) => {
+      if (resizeFrameRef.current !== null) {
+        cancelAnimationFrame(resizeFrameRef.current);
       }
 
-      ta.style.height = getTextAreaDefaultHeight();
-      const scrollHeight = ta.scrollHeight;
-      ta.style.height = `${Math.min(scrollHeight, 120)}px`;
-    }, [text, inputRequest]);
+      resizeFrameRef.current = requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        const textArea = textAreaRef.current;
+        if (!textArea) return;
+
+        textArea.style.height = getTextAreaDefaultHeight();
+        if (value.trim()) {
+          textArea.style.height = `${Math.min(textArea.scrollHeight, 120)}px`;
+        }
+      });
+    }, []);
+
+    React.useEffect(() => {
+      return () => {
+        if (resizeFrameRef.current !== null) {
+          cancelAnimationFrame(resizeFrameRef.current);
+        }
+      };
+    }, []);
 
     React.useEffect(() => {
       if (!error) {
@@ -345,7 +356,7 @@ const ChatInput = React.forwardRef<
       if (textAreaRef.current) {
         textAreaRef.current.value = "";
         textAreaRef.current.style.height = getTextAreaDefaultHeight();
-        setText("");
+        setHasText(false);
         clearFiles();
         setAttachedSkills([]);
         setRelevantPlans([]);
@@ -362,13 +373,19 @@ const ChatInput = React.forwardRef<
       event: React.ChangeEvent<HTMLTextAreaElement>
     ) => {
       const newText = event.target.value;
-      setText(newText);
+      const nextHasText = newText.trim().length > 0;
+      if (hasText !== nextHasText) {
+        setHasText(nextHasText);
+      }
+      resizeTextArea(newText);
 
       if (onTextChange) {
         onTextChange(newText);
       }
 
-      setRelevantPlans([]);
+      if (relevantPlans.length > 0) {
+        setRelevantPlans([]);
+      }
 
       const shouldSearch = !(
         runStatus === "connected" || runStatus === "awaiting_input"
@@ -617,23 +634,17 @@ const ChatInput = React.forwardRef<
     };
 
     const applyValue = React.useCallback((value: string) => {
-      setText(value);
+      setHasText(value.trim().length > 0);
       if (textAreaRef.current) {
         textAreaRef.current.value = value;
-        if (!value.trim()) {
-          textAreaRef.current.style.height = getTextAreaDefaultHeight();
-        } else {
-          const scrollHeight = textAreaRef.current.scrollHeight;
-          const newHeight = Math.min(scrollHeight, 120);
-          textAreaRef.current.style.height = `${newHeight}px`;
-        }
+        resizeTextArea(value);
         textAreaRef.current.focus();
         textAreaRef.current.setSelectionRange(value.length, value.length);
       }
       if (onTextChange) {
         onTextChange(value);
       }
-    }, [onTextChange]);
+    }, [onTextChange, resizeTextArea]);
 
     // Expose focus and setValue methods via ref
     React.useImperativeHandle(ref, () => ({
@@ -702,7 +713,7 @@ const ChatInput = React.forwardRef<
     };
 
     const clearText = () => {
-      setText("");
+      setHasText(false);
       if (textAreaRef.current) {
         textAreaRef.current.value = "";
         textAreaRef.current.style.height = getTextAreaDefaultHeight();
@@ -912,12 +923,12 @@ const ChatInput = React.forwardRef<
 
         <div className="chat-input-wrapper mt-4 p-1">
           <div
-            className={`relative w-full transition-smooth rounded-[28px] shadow-modern ${isDragActive
+            className={`relative w-full rounded-[28px] shadow-modern ${isDragActive
               ? "ring-2 ring-accent ring-opacity-50 bg-accent/5"
               : ""
               } ${darkMode === "dark"
-                ? "bg-[#0d1117] backdrop-blur-sm border border-border-primary/50 hover:border-accent/40 focus-within:border-accent/60"
-                : "bg-white/95 backdrop-blur-sm border border-gray-200/80 hover:border-violet-300/60 focus-within:border-violet-400/70"
+                ? "bg-[#0d1117] border border-border-primary/50 hover:border-accent/40 focus-within:border-accent/60"
+                : "bg-white border border-gray-200/80 hover:border-violet-300/60 focus-within:border-violet-400/70"
               }`}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -1032,14 +1043,17 @@ const ChatInput = React.forwardRef<
                     name="queryInput"
                     aria-labelledby={composerLabelledBy}
                     aria-label={composerLabelledBy ? undefined : composerAriaLabel}
-                    onPaste={(e) => handlePaste(e, textAreaRef, setText)}
+                    onPaste={(e) => handlePaste(e, textAreaRef, (value) => {
+                      setHasText(value.trim().length > 0);
+                      resizeTextArea(value);
+                    })}
                     ref={textAreaRef}
                     defaultValue={""}
                     onChange={handleTextChange}
                     onKeyDown={handleKeyDown}
                     className={`input-enhanced chat-input-scrollbar-hide flex items-center w-full resize-none p-4 ${enable_upload ? "pl-14" : "pl-6"
                       } ${runStatus === "active" ? "pr-36" : "pr-28"
-                      } rounded-[28px] transition-smooth border-0 bg-transparent ${isInputDisabled
+                      } rounded-[28px] border-0 bg-transparent ${isInputDisabled
                         ? "cursor-not-allowed opacity-50"
                         : ""
                       } focus:outline-none`}
@@ -1062,7 +1076,7 @@ const ChatInput = React.forwardRef<
                   {/* Right button group */}
                   <div className="absolute right-2 bottom-2 flex items-center space-x-2">
                     {/* Clear text button */}
-                    {text.trim().length > 0 && !isInputDisabled && (
+                    {hasText && !isInputDisabled && (
                       <button
                         type="button"
                         onClick={clearText}
@@ -1097,8 +1111,8 @@ const ChatInput = React.forwardRef<
                       className={`transition-smooth rounded-full flex justify-center items-center w-10 h-10 ${isInputDisabled
                         ? "cursor-not-allowed opacity-50 bg-gray-400"
                         : darkMode === "dark"
-                          ? "bg-gradient-primary hover:shadow-modern-lg text-white hover-lift pulse-glow"
-                          : "bg-gradient-primary hover:shadow-modern-lg text-white hover-lift pulse-glow"
+                          ? "bg-gradient-primary hover:shadow-modern-lg text-white hover-lift"
+                          : "bg-gradient-primary hover:shadow-modern-lg text-white hover-lift"
                         }`}
                     >
                       <PaperAirplaneIcon className="h-5 w-5 transform -rotate-45" />
