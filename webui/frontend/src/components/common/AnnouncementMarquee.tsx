@@ -75,7 +75,7 @@ export default function AnnouncementMarquee({
   if (!showAnnouncement || !announcementText) return null;
 
   return (
-    <div className={`relative z-10 mx-auto flex w-[min(52rem,calc(100%-2rem))] items-center gap-2 overflow-hidden rounded-full border border-border-primary/55 bg-white/72 px-3 py-1.5 shadow-sm backdrop-blur-md dark:bg-white/[0.045] ${className}`}>
+    <div className={`relative z-10 mx-auto flex w-[min(52rem,calc(100%-2rem))] items-center gap-2 overflow-hidden rounded-full border border-border-primary/55 bg-white/95 px-3 py-1.5 shadow-sm dark:bg-[#151923]/95 ${className}`}>
       <div className="min-w-0 flex-1 overflow-hidden [mask-image:linear-gradient(90deg,transparent,black_10%,black_90%,transparent)]">
         <div
           className="font-agent-mono animate-marquee-x flex w-max whitespace-nowrap text-[10px] font-medium text-accent sm:text-[11px]"
