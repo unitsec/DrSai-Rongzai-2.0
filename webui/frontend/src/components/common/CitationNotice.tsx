@@ -17,8 +17,9 @@ const CITATION_COPY = {
   },
 } as const;
 
-const PAPER_CITATION =
-  "Li Q, Wang H, Xiong D, et al. Rongzai agent: A Large Language Model-Based Autonomous Assistant for Rietveld Refinement of Neutron Diffraction Data[J]. arXiv preprint arXiv:2605.13911, 2026.";
+const PAPER_TITLE =
+  "Rongzai agent: A Large Language Model-Based Autonomous Assistant for Rietveld Refinement of Neutron Diffraction Data";
+const PAPER_URL = "https://arxiv.org/abs/2605.13911";
 
 const ACKNOWLEDGEMENT_TEMPLATE =
   "We thank the data analysis group at CSNS for providing the DrSai-Rongzai agent to assist neutron scattering data analysis, which facilitated our data interpretation.";
@@ -40,7 +41,16 @@ export default function CitationNotice({ compact = false }: CitationNoticeProps)
           <p>
             {copy.paperIntro}
             <span className="mt-1 block font-agent-mono text-[11px] leading-relaxed text-primary/85 sm:text-xs">
-              {PAPER_CITATION}
+              Li Q, Wang H, Xiong D, et al. {" "}
+              <a
+                href={PAPER_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline decoration-accent/45 underline-offset-2 transition-colors hover:text-accent"
+              >
+                {PAPER_TITLE}
+              </a>
+              [J]. arXiv preprint arXiv:2605.13911, 2026.
             </span>
           </p>
           <p>

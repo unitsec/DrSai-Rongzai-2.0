@@ -4284,16 +4284,26 @@ class RongZaiAgent(DrSaiAgent):
         except Exception as e:
             logger.error(f"Error in {self._agent_name}: {e}")
             logger.error(traceback.format_exc())
+            error_message = str(e)
+            if (
+                getattr(e, "status_code", None) == 401
+                and "api key" in error_message.lower().replace("-", " ")
+            ):
+                error_message += (
+                    " If you have not yet linked an API key, please sign in to "
+                    "https://ai.ihep.ac.cn with your current account to link one automatically, "
+                    "then return here and try again."
+                )
             # add to chat history
             await self._model_context.add_message(
                 AssistantMessage(
-                    content=f"An error occurred while executing the task: {e}",
+                    content=error_message,
                     source=self._name
                 )
             )
             yield Response(
                 chat_message=TextMessage(
-                    content=f"An error occurred while executing the task: {e}",
+                    content=error_message,
                     source=self._agent_name,
                     metadata={"internal": "no"},
                 ),

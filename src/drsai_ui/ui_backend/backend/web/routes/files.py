@@ -312,7 +312,7 @@ async def upload_files(
             }
 
             # 顺便上传到文件系统
-            USE_HEPAI_FILE = os.getenv("USE_HEPAI_FILE", False)
+            USE_HEPAI_FILE = os.getenv("USE_HEPAI_FILE", "false").strip().lower() == "true"
             if USE_HEPAI_FILE:
                 file_obj = upload_to_filesystem(file_path, user_id)
                 files_info[file_id]["url"] = file_obj["url"]
@@ -544,7 +544,7 @@ async def edit_docx_file(
         }
         
         # Upload to HepAI filesystem if enabled
-        USE_HEPAI_FILE = os.getenv("USE_HEPAI_FILE", False)
+        USE_HEPAI_FILE = os.getenv("USE_HEPAI_FILE", "false").strip().lower() == "true"
         if USE_HEPAI_FILE:
             try:
                 file_obj = upload_to_filesystem(final_path, user_id)
