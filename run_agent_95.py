@@ -320,7 +320,13 @@ if __name__ == "__main__":
             agent_name="Rongzai Agent",
             author="wanghao96@ihep.ac.cn",
             permission="groups: rongzai,payg,hairongzai@ihep.ac.cn; users:admin, ddf_free; owner: wanghao96@ihep.ac.cn",
-            description = '{"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"}',
+            description=json.dumps(
+                {
+                    "en": "Rongzai-Your neutron scattering data analysis assistant\nby CSNS data analysis group",
+                    "zh": "蓉仔——你的中子散射数据分析助手\nby 中国散裂中子源数据分析组",
+                },
+                ensure_ascii=False,
+            ),
             version = "0.1.0",
             logo="https://note.ihep.ac.cn/uploads/244b9387-5eb0-425f-ad3e-0db3ab1a56f6.png",
             examples=[{"en":"Example1: Help me refine the BL16 RUN0023568 group5 diffraction spectrum using GSAS-II, the cif file is Si.cif",

@@ -3,7 +3,7 @@
         "url": "http://10.1.252.95:42812/apiv2",
         "apiKey": "",
         "mode": "remote",
-        "description": {"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"},
+        "description": {"en":"Rongzai-Your neutron scattering data analysis assistant\nby CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手\nby 中国散裂中子源数据分析组"},
         "agent_config":{
             "deepseek-v4-flash (free)": "deepseek-ai/deepseek-v4-flash",
             "deepseek-v4-pro (free)": "deepseek-ai/deepseek-v4-pro",
