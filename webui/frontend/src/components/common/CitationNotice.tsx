@@ -41,16 +41,16 @@ export default function CitationNotice({ compact = false }: CitationNoticeProps)
           <p>
             {copy.paperIntro}
             <span className="mt-1 block font-agent-mono text-[11px] leading-relaxed text-primary/85 sm:text-xs">
-              Li Q, Wang H, Xiong D, et al. {" "}
+              Li Q, Wang H, Xiong D, et al. {PAPER_TITLE}[J]. arXiv preprint {" "}
               <a
                 href={PAPER_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="underline decoration-accent/45 underline-offset-2 transition-colors hover:text-accent"
               >
-                {PAPER_TITLE}
+                arXiv:2605.13911
               </a>
-              [J]. arXiv preprint arXiv:2605.13911, 2026.
+              , 2026.
             </span>
           </p>
           <p>
