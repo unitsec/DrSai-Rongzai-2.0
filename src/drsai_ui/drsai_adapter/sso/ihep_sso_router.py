@@ -182,7 +182,7 @@ async def auth(request: Request, db=Depends(get_db)):
     user = UserInfo(
         username=userdata["truename"].strip(),
         email=userdata['cstnetId'],
-        type=userdata['type'],
+        type=userdata.get('type'),
         umt_id=userdata['umtId']
         )
     # print(f'SSO authed user: {user_info}')
