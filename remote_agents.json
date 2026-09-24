@@ -5,13 +5,14 @@
         "mode": "remote",
         "description": {"en":"Rongzai-Your neutron scattering data analysis assistant\nby CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手\nby 中国散裂中子源数据分析组"},
         "agent_config":{
-            "deepseek-v4-flash (free)": "deepseek-ai/deepseek-v4-flash",
+          "deepseek-v4.1-flash (free)": "deepseek-ai/deepseek-v4.1-flash",
+          "deepseek-v4-flash (free)": "deepseek-ai/deepseek-v4-flash",
             "deepseek-v4-pro (free)": "deepseek-ai/deepseek-v4-pro",
             "gpt-5 (charge)": "openai/gpt-5",
             "glm-5.2 (free)": "zhipu/glm-5.2",
             "miniMax (free)": "minimax/minimax-m2.7"
             },
-        "default_config_name": "deepseek-v4-pro",
+        "default_config_name": "deepseek-v4.1-flash",
         "version": "0.1.0",
         "examples":[{"en":"Example1: Help me refine the BL16 RUN0023568 group5 diffraction spectrum using GSAS-II, the cif file is Si.cif",
                        "zh":"示例1：用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif"},

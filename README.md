@@ -278,27 +278,11 @@ pm2 stop 0 1 2
 # 删除进程
 stop替换成delete
 
-# 以下已经废弃
+# 重启前端服务
+pkill -f 'run_ui\.py' && nohup python run_ui.py > run_ui.log 2>&1 < /dev/null & 
 
-## 3.运行Openweb UI前端
-
-### 3.1.安装OpenWebUI
-
-```shell
-conda create -n open-webui python=3.11
-conda activate open-webui
-pip install open-webui
-```
-
-**设置HuggingFace镜像：**
-将HuggingFace镜像：'HF_ENDPOINT '= 'https://hf-mirror.com'加入到本地的环境。对于Linux系统，可以将其加入到~/.bashrc文件中：
-```export HF_ENDPOINT=https://hf-mirror.com```
-
-在命令行中运行：```open-webui serve --port 8088```启动OpenWebUI服务。
-
-### 3.2.配置OpenWebUI Pipeline
-
-pipeline的密钥：```0p3n-w3bu!```，将密钥和pipeline后端服务的地址：```http://localhost:42808/pipelines```加入OpenWebUI的```管理员面板-设置-外部连接-管理OpenAI API连接```中。
+# 重启95的智能体服务
+pkill -f 'run_agent_95\.py' && nohup python run_agent_95.py > run_agent.log 2>&1 < /dev/null &
 
 
 DDF很可能无法直接访问东莞的服务器，需要有一个能直接访问的服务器做转发。

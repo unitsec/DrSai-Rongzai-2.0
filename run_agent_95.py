@@ -50,6 +50,7 @@ def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
 _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
+    "deepseek-v4.1-flash (free)": "deepseek-ai/deepseek-v4.1-flash",
     "deepseek-v4-flash (free)": "deepseek-ai/deepseek-v4-flash",
     "deepseek-v4-pro (free)": "deepseek-ai/deepseek-v4-pro",
     "gpt-5 (charge)": "openai/gpt-5",
@@ -344,7 +345,7 @@ if __name__ == "__main__":
             announcements=[{"en":"This is a test agent for DrSai Rongzai, please do not use it for production purposes. If you have any questions, please contact wanghao96@ihep.ac.cn."},
                         {"zh":"这是DrSai Rongzai的测试智能体，请勿用于生产用途。如有任何问题，请联系 wanghao96@ihep.ac.cn."}],
             agent_config = llm_mode_config,
-            default_config_name = "deepseek-v4-pro",
+            default_config_name = "deepseek-v4.1-flash",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
