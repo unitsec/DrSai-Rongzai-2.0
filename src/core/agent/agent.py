@@ -3349,6 +3349,9 @@ class RongZaiAgent(DrSaiAgent):
         fallback_attempted: set[str] = set()
         forced_invalid_output_once = False
         no_tool_followup_pending = False
+        skip_no_tool_followup = os.getenv("RONGZAI_SKIP_NO_TOOL_FOLLOWUP", "").lower() in {
+            "1", "true", "yes", "on"
+        }
         try:
             # 正常路径下语言检测已在 run_stream 的消息预处理阶段完成。
             if not self._lang_prompt:
@@ -3522,10 +3525,15 @@ class RongZaiAgent(DrSaiAgent):
                         )
                     )
 
-                    if no_tool_followup_pending:
-                        logger.info(
-                            "[NoToolFollowup] Second consecutive no-tool output detected. Finish current turn and wait for user input."
-                        )
+                    if no_tool_followup_pending or skip_no_tool_followup:
+                        if no_tool_followup_pending:
+                            logger.info(
+                                "[NoToolFollowup] Second consecutive no-tool output detected. Finish current turn and wait for user input."
+                            )
+                        else:
+                            logger.info(
+                                "[NoToolFollowup] Disabled by RONGZAI_SKIP_NO_TOOL_FOLLOWUP; finish current turn."
+                            )
                         if not buffered_stream_events:
                             yield ModelClientStreamingChunkEvent(
                                 content=model_result.content,
