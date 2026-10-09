@@ -11,11 +11,11 @@ from iTrain import Conv1DModel_4096, predict
 from spacegroup_list import hm_to_space_group_number
 import numpy as np
 
-# 创建 FastMCP 实例，端口 50052
+# 创建 FastMCP 实例。
 mcp = FastMCP(
     name="AIndex_Tool",
     instructions="A tool for predicting the crystal system, space group and lattice parameter from the powder neutron diffraction pattern by using Neural Network.",
-    port=50053,
+    port=int(os.getenv("MCP_AINDEX_PORT", "50053")),
 )
 
 def setup_logging(output_dir):

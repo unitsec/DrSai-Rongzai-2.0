@@ -1573,7 +1573,7 @@ mcp=FastMCP(
         "across multiple tool calls; task_id identifies a sub-task/step inside that mission. "
         "Use the same mission_name for the same overall user goal, and advance task_id per step."
     ),
-    port = 42506, # for transport = "sse" to start a server-sent events (SSE) server
+    port=int(os.getenv("MCP_IRENA_REFINE_PORT", "42506")),
     )
 
 refine_tools_runner.register_mcp_tool(mcp, name="irena_size_distribution")

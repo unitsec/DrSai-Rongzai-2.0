@@ -80,8 +80,9 @@ DRSAI_UI_MODE=internal
 DRSAI_UI_INTERNAL_SRC=/path/to/rongzai-agent/src
 ```
 
-同时填写 `HEPAI_API_KEY` 等业务配置（通过aiapi.ihep.ac.cn获取）。`DRSAI_UI_MODE=internal` 表示使用仓库
-自带的 `src/drsai_ui`，前端静态文件会同步到：
+`.env.example` 与 `.env` 使用相同的变量顺序和分组；每个变量上方都有用途、取值格式和默认行为说明。
+从示例复制后，至少检查路径、`HEPAI_API_KEY`、运行模式以及服务端口。不要把 `.env` 或任何真实凭据提交到版本库。
+`DRSAI_UI_MODE=internal` 表示使用仓库自带的 `src/drsai_ui`，前端静态文件会同步到：
 
 ```text
 src/drsai_ui/ui_backend/backend/web/ui
@@ -129,6 +130,9 @@ http://服务器IP:8081/
 
 服务默认监听 `0.0.0.0:8081`。如果远程无法访问，请检查服务器防火墙和
 安全组是否放行 TCP 8081。端口可在 `.env` 中通过 `RONGZAI_UI_PORT` 修改。
+MCP 工具端口同样集中在 `.env` 的 “Service ports” 分组：Worker 使用 `42501`，
+GSAS-II、PDF、SasView、Irena 和 Z-Rietveld 分别默认使用 `42504`、`42505`、
+`42503`、`42506` 和 `42511`。修改端口后需重启对应服务。
 
 `run_ui.py` 只启动人机交互页面及其 UI 后端。要让页面中的智能体正常响应，
 还需要按第 4 节启动 RONGZAI Agent Worker。

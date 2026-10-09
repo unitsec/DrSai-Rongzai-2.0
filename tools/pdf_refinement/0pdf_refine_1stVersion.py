@@ -1510,7 +1510,7 @@ if __name__ == "__main__":
             "Mission/task rule: mission_name identifies one high-level mission and should stay the same across multiple tool calls; "
             "task_id identifies a sub-task/step inside that mission."
         ),
-        port=42502,
+        port=int(os.getenv("MCP_PDF_REFINE_PORT", "42505")),
     )
 
     initialize_runner.register_mcp_tool(mcp, name="InitializeProject")
