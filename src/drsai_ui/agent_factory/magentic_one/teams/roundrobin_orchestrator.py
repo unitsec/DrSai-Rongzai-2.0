@@ -421,10 +421,10 @@ class RoundRobinGroupChat(DrSaiBaseGroupChat, Component[RoundRobinGroupChatConfi
             AgentId(type=self._group_chat_manager_topic_type, key=self._team_id),
             type=RoundRobinGroupChatManager,
         )
-        await orchestrator.pause()
         for agent in self._participants:
             if hasattr(agent, "pause"):
                 await agent.pause()  # type: ignore
+        await orchestrator.pause()
 
     async def resume(self, cancellation_token: CancellationToken|None = None, **kwargs) -> None:
         """Resume the group chat."""

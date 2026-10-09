@@ -1336,27 +1336,41 @@ class WebSocketManager:
         Calls team.pause() under team_op_lock so any concurrent resume()
         waits until pause's remote HTTP call fully completes.
         """
-        if not self._is_run_manageable(run_id):
-            return
-        team_manager = self._team_managers.get(run_id)
-        if not team_manager:
-            return
-
-        # Update state first (dedup inside) so clients see "paused" immediately
-        # and input_handler can detect PAUSED. If already paused, this is a no-op.
-        changed = await self._update_run_status(run_id, RunStatus.PAUSED)
-        if not changed:
-            logger.info(f"Run {run_id} already paused, skipping team.pause()")
-            return
-
-        # Ensure team op lock exists
         if run_id not in self._team_op_locks:
             self._team_op_locks[run_id] = asyncio.Lock()
 
-        # Pause team inside team_op_lock so remote HTTP calls don't race
-        # with concurrent resume()
         async with self._team_op_locks[run_id]:
-            await team_manager.pause_run()
+            try:
+                if not self._is_run_manageable(run_id):
+                    raise RuntimeError("Run is no longer connected to an active team.")
+                team_manager = self._team_managers[run_id]
+                if self._is_paused(run_id):
+                    await self._update_run_status(run_id, RunStatus.PAUSED, force=True)
+                    return
+                if self._run_states.get(run_id) not in {
+                    RunStatus.ACTIVE, RunStatus.AWAITING_INPUT
+                }:
+                    raise RuntimeError("Run is no longer active.")
+                await team_manager.pause_run()
+            except Exception as exc:
+                logger.error(f"Failed to pause run {run_id}: {exc}")
+                await self._send_message(
+                    run_id,
+                    {
+                        "type": "error",
+                        "operation": "pause",
+                        "error": f"Pause failed: {exc}",
+                        "status": self._run_states.get(run_id, RunStatus.ERROR),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                return
+
+            # Do not overwrite a terminal state reached while awaiting the worker.
+            if self._run_states.get(run_id) in {
+                RunStatus.ACTIVE, RunStatus.AWAITING_INPUT
+            }:
+                await self._update_run_status(run_id, RunStatus.PAUSED)
 
     async def resume_run(self, run_id: int) -> None:
         """Resume the run.
@@ -1369,10 +1383,6 @@ class WebSocketManager:
             return
         team_manager = self._team_managers.get(run_id)
         if not team_manager:
-            return
-
-        # Skip if not paused - avoids unnecessary team.resume() HTTP calls
-        if not self._is_paused(run_id):
             return
 
         # Ensure team op lock exists

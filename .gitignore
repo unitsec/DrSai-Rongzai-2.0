@@ -85,10 +85,6 @@ tools/pdf_refinement/0cif_pdf_20250903.py
 tools/pdf_refinement/0test.py
 tools/pdf_refinement/0test.py
 
-
-
-datasets/BL16/RUNdataFiles/RUN0021905/outtput/*
-.env.example
 .env
 .env_zjj
 .env_test

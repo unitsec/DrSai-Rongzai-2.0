@@ -40,6 +40,9 @@ export const useChatWebSocket = ({
 
   const handleWebSocketMessage = React.useCallback(
     (wsMessage: WebSocketMessage) => {
+      if (wsMessage.type === "error" && wsMessage.operation === "pause") {
+        antdMessage.error(wsMessage.error || "Pause failed");
+      }
       setCurrentRun((current: Run | null) => {
         if (!current || !session?.id) return null;
 
@@ -47,6 +50,12 @@ export const useChatWebSocket = ({
 
         switch (wsMessage.type) {
           case "error":
+            if (wsMessage.operation === "pause") {
+              return {
+                ...current,
+                status: wsMessage.status ?? current.status,
+              };
+            }
             if (inputTimeoutRef.current) {
               clearTimeout(inputTimeoutRef.current);
               inputTimeoutRef.current = null;
@@ -656,4 +665,3 @@ return updatedRun;
     inputTimeoutRef,
   };
 };
-

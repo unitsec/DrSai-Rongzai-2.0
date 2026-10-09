@@ -127,6 +127,7 @@ export interface WebSocketMessage {
   input_type?: InputType;
   status?: RunStatus;
   error?: string;
+  operation?: "pause";
   timestamp?: string;
 }
 

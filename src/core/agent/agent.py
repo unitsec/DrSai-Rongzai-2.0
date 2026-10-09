@@ -1991,7 +1991,7 @@ class RongZaiAgent(DrSaiAgent):
                     model_candidates = []
                     if primary_env:
                         model_candidates.append(primary_env)
-                    for m in ("openai/gpt-5.4","openai/gpt-5","openai/gpt-4o", "minimax/minimax-m2.7"):
+                    for m in ("openai/gpt-5","openai/gpt-4o", "minimax/minimax-m2.7"):
                         if m not in model_candidates:
                             model_candidates.append(m)
 
