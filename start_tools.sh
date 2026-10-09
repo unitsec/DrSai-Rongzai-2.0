@@ -5,7 +5,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 STATE_DIR="$ROOT/tmp/tools"
 LOG_DIR="$STATE_DIR/logs"
 NAMES=(zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine)
-ENVS=(pyZrietveld gsas2_py311 sasmodels diffpy.pdffit2_env sasmodels)
+ENVS=(gsas2_py311 gsas2_py311 sasmodels diffpy.pdffit2_env sasmodels)
 SCRIPTS=(
     tools/pyZRietveld/0zrietveld_refine.py
     tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py
@@ -187,7 +187,8 @@ start_tool() {
     fi
     log="$LOG_DIR/${NAMES[$index]}.log"
     printf '\n=== %s starting %s ===\n' "$(date -Is)" "${NAMES[$index]}" >> "$log"
-    nohup "$conda" run --no-capture-output -n "${ENVS[$index]}" \
+    PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+        nohup "$conda" run --no-capture-output -n "${ENVS[$index]}" \
         python -u "$ROOT/${SCRIPTS[$index]}" </dev/null >> "$log" 2>&1 9>&- &
     pid=$!
     stamp=$(process_stamp "$pid") || fail "${NAMES[$index]} failed to start; see $log"

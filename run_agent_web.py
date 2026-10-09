@@ -57,10 +57,12 @@ def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
 _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
-    "gpt 5": "openai/gpt-5",
-    "miniMax": "minimax/minimax-m2.7",
-    "deepseek": "hepai/deepseek-v4-pro",
-    "gpt 4.1": "openai/gpt-4.1"
+    "deepseek-v4.1-flash (free)": "deepseek-ai/deepseek-v4.1-flash",
+    "deepseek-v4-flash (free)": "deepseek-ai/deepseek-v4-flash",
+    "deepseek-v4-pro (free)": "deepseek-ai/deepseek-v4-pro",
+    "gpt-5 (charge)": "openai/gpt-5",
+    "glm-5.2 (free)": "zhipu/glm-5.2",
+    "miniMax (free)": "minimax/minimax-m2.7"
 }
 
 def _load_remote_subagent_config() -> dict[str, dict]:
@@ -284,7 +286,7 @@ async def create_agent(
     SYSTEM = get_rongzai_system_prompt()
 
     return RongZaiAgent(
-        name = "RongZaiAgentDev",
+        name = "RongzaiAgentDev",
         model_client=set_model_client(defult_config_name),
         system_message=SYSTEM,
         reflect_on_tool_use=False,
@@ -317,7 +319,7 @@ if __name__ == "__main__":
     asyncio.run(
         run_worker(
             # 智能体注册信息
-            agent_name="Rongzai Agent dev",
+            agent_name="Rongzai Agent Dev",
             author="wanghao96@ihep.ac.cn",
             permission="groups: rongzai,payg,hairongzai@ihep.ac.cn; users:admin, ddf_free; owner: wanghao96@ihep.ac.cn",
             description = '{"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"}',
@@ -332,7 +334,7 @@ if __name__ == "__main__":
                       {"en":"SANS data fitting: Use the sasview tool to analyze the uploaded small-angle scattering data, use the Fit function, select the hollow cylinder model, fit the scattering curve until the chisquare is less than 10, then return the fitting results and fitting graph.",
                        "zh":"小角中子散射拟合：帮我使用sasview工具，分析上传的小角散射数据，使用Fit功能，选择空心圆柱模型，拟合散射曲线，直到chisquare小于10，才返回拟合结果和拟合图。"}],
             agent_config = llm_mode_config,
-            defult_config_name = "gpt 5",
+            default_config_name = "deepseek-v4.1-flash",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
@@ -349,4 +351,3 @@ if __name__ == "__main__":
             link_wechat = False,
         )
     )
-

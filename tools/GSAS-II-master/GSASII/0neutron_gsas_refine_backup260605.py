@@ -2660,7 +2660,7 @@ if __name__ == '__main__':
         "across multiple calls for one overall goal; task_id identifies a sub-task/step in that mission. "
         "To continue polling the same unfinished task, pass the same mission_name and task_id."
     ),
-    port=int(os.getenv("MCP_GSASII_REFINE_PORT", "42504")),
+    port=int(os.getenv("MCP_GSASII_REFINE_PORT", "42506")),
     )
 
     refine_tools_runner = ProcessPollingMcpToolBase(

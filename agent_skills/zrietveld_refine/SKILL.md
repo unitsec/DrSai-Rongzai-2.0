@@ -55,7 +55,7 @@ If you determine that the user wants you to refine the data yourself, follow the
    - You must ensure that you are connected to the Z-Rietveld MCP service and have obtained the tool descriptions (zrt_generate_project, zrt_manual_refine, zrt_export_cif) exposed by that service.
    - If no Z-Rietveld MCP tools are currently available, or you cannot confirm whether the service is connected:
       - Connect to the MCP service using the following connection information:
-         - Server address: http://127.0.0.1:42511/sse
+         - Server address: http://127.0.0.1:42510/sse
       - After successfully connecting, carefully read the tool names and descriptions returned by the MCP service to confirm usage.
    - If Z-Rietveld MCP tools are already available: proceed to the next step.
 

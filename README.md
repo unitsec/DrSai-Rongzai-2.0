@@ -131,8 +131,8 @@ http://服务器IP:8081/
 服务默认监听 `0.0.0.0:8081`。如果远程无法访问，请检查服务器防火墙和
 安全组是否放行 TCP 8081。端口可在 `.env` 中通过 `RONGZAI_UI_PORT` 修改。
 MCP 工具端口同样集中在 `.env` 的 “Service ports” 分组：Worker 使用 `42501`，
-GSAS-II、PDF、SasView、Irena 和 Z-Rietveld 分别默认使用 `42504`、`42505`、
-`42503`、`42506` 和 `42511`。修改端口后需重启对应服务。
+GSAS-II、PDF、SasView、Irena 和 Z-Rietveld 分别默认使用 `42506`、`42507`、
+`42508`、`42509` 和 `42510`。修改端口后需重启对应服务。
 
 `run_ui.py` 只启动人机交互页面及其 UI 后端。要让页面中的智能体正常响应，
 还需要按第 4 节启动 RONGZAI Agent Worker。
@@ -151,7 +151,7 @@ GSAS-II、PDF、SasView、Irena 和 Z-Rietveld 分别默认使用 `42504`、`425
 
 | 工具名称 | Conda 环境 | 入口 |
 | --- | --- | --- |
-| `zrietveld-refine` | `pyZrietveld` | `tools/pyZRietveld/0zrietveld_refine.py` |
+| `zrietveld-refine` | `gsas2_py311` | `tools/pyZRietveld/0zrietveld_refine.py` |
 | `gsas2-refine` | `gsas2_py311` | `tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py` |
 | `sasview-refine` | `sasmodels` | `tools/sasview/0sasview_refine.py` |
 | `pdf-refine` | `diffpy.pdffit2_env` | `tools/pdf_refinement/0pdf_refine.py` |
@@ -321,3 +321,6 @@ pm2 stop 0 1 2
 
 ### 删除进程
 stop替换成delete
+
+### 4.7 测试端和生产端端口的分离
+测试：42500-42510 生产：42510-42520  生产：30003 - 30010 测试：30012-30020
