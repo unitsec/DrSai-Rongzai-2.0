@@ -1,0 +1,32 @@
+{
+  "create_time": "2024-10-29 09:59:44.983613",
+  "beamline_name": "NTDS",
+  "beamline": "BL08A",
+  "first_flight_distance": 26.8,
+  "normalization_monitor": "monitor01",
+  "bank_info": {
+    "bank01": [
+      "module10101"
+    ]
+  },
+  "group_info": {
+    "group01": [
+      "bank01"
+    ]
+  },
+  "pixel_info": {
+    "monitor01": {
+      "xpixels": 64,
+      "ypixels": 64,
+      "stepbyrow": "x",
+      "start": 202000001
+    },
+    "module10101": {
+      "xpixels": 4,
+      "ypixels": 75,
+      "stepbyrow": "y",
+      "start": 101010001,
+      "pixels_per_tube": 75
+    }
+  }
+}
