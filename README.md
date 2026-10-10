@@ -134,6 +134,46 @@ MCP 工具端口同样集中在 `.env` 的 “Service ports” 分组：Worker �
 GSAS-II、PDF、SasView、Irena 和 Z-Rietveld 分别默认使用 `42506`、`42507`、
 `42508`、`42509` 和 `42510`。修改端口后需重启对应服务。
 
+### 2.5 rongzai_web Pod 的 Dr.Sai 前端构建与重启
+
+在 `rongzai_web + drsai` 的 Pod 部署中，实际运行的前端源码位于
+`drsai/apps/webui/frontend`，服务由 `rongzai_web` 的独立 PM2 实例管理。
+不要使用 `drsai/apps/webui/build_and_restart_30003.sh`：该脚本管理旧的
+30003 端口服务，且不会加载 Pod 的环境变量。
+
+使用 Pod 专用脚本重新构建、同步静态文件并重启当前环境的
+`drsai-frontend`：
+
+```shell
+cd /path/to/rongzai/rongzai_web
+RZ_ENV=dev ./build_and_restart_drsai_frontend.sh
+```
+
+生产环境使用：
+
+```shell
+cd /path/to/rongzai/rongzai_web
+RZ_ENV=prod ./build_and_restart_drsai_frontend.sh
+```
+
+该脚本会加载对应的 `.env.dev` 或 `.env.prod`，校验 `GATSBY_API_URL` 和
+`PM2_HOME`，再以 `gatsby build --prefix-paths` 构建并同步静态文件。最后它
+只重启 `drsai-frontend`，不会重启后端、数据库、Redis 或智能体 Worker。
+
+`GATSBY_API_URL` 是 Gatsby 的构建时变量。开发环境必须使用 `.env.dev` 中的
+`/drsai/api`；若未加载该变量，构建产物会回退到 `/api`，导致
+`/api/sessions/` 等请求返回 404 并显示 “Error loading sessions”。
+
+构建完成后，可检查前端进程和后端请求：
+
+```shell
+PM2_HOME=/path/to/rongzai/.pm2-dev pm2 list
+PM2_HOME=/path/to/rongzai/.pm2-dev pm2 logs run_backend --lines 50 --nostream
+```
+
+开发环境中 `drsai-frontend` 应为 `online`，并使用 `.env.dev` 配置的端口
+（当前为 30013）。浏览器需要执行一次强制刷新后再验证页面。
+
 `run_ui.py` 只启动人机交互页面及其 UI 后端。要让页面中的智能体正常响应，
 还需要按第 4 节启动 RONGZAI Agent Worker。
 

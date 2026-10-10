@@ -3,6 +3,7 @@ import asyncio
 import base64
 import fnmatch
 import json
+import mimetypes
 import os
 import platform
 import re
@@ -681,6 +682,7 @@ def get_operator_funcs_rongzai(
                     name = os.path.basename(file_path),
                     base64_content = file_base64,
                     description=description,
+                    mime_type=mimetypes.guess_type(file_path)[0] or "application/octet-stream",
                     download_method="base64"
                     )
                 base64_files.append(base64_file)

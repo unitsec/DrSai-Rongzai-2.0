@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from pathlib import Path
 from loguru import logger
 from autogen_ext.tools.mcp import McpWorkbench, SseServerParams, StdioServerParams
-
+from collections.abc import Mapping
 from drsai import CancellationToken, FunctionCall
 from drsai.modules.baseagent import (
     DrSaiAgent, 
@@ -465,6 +465,7 @@ class RongZaiAgent(DrSaiAgent):
         db_manager: DatabaseManager | None = None,
         thread_id: str | None = None,
         user_id: str | None = None,
+        user_cookies: Mapping[str, str] | None = None,
         set_model_client: Callable | None = None,
         llm_mode_config: Dict = {},
         fallback_config_names: Optional[List[str]] = None,
@@ -511,6 +512,10 @@ class RongZaiAgent(DrSaiAgent):
         self._env_fallback_config_names = self._parse_fallback_configs_from_env()
 
         self._developer_system_message = system_message
+        self._user_cookies = {
+            str(key): str(value)
+            for key, value in (user_cookies or {}).items()
+        }
 
         # === workspace for assistant ===
         if not work_dir:
@@ -562,13 +567,13 @@ class RongZaiAgent(DrSaiAgent):
         )
 
         # domas和icat文件访问权限检查工具。
-        # self._tools.append(
-        #     FunctionTool(
-        #         self.check_user_permission_for_file,
-        #         description=self.check_user_permission_for_file.__doc__ or "",
-        #         name="CheckUserPermission",
-        #     )
-        # )
+        self._tools.append(
+            FunctionTool(
+                self.check_user_permission_for_file,
+                description=self.check_user_permission_for_file.__doc__ or "",
+                name="CheckUserPermission",
+            )
+        )
 
         # === model context ===
         # 对话上下文管理器
@@ -588,11 +593,6 @@ class RongZaiAgent(DrSaiAgent):
         self._download_dir = self._work_dir / self._thread_id /"downloads"
         self._download_dir.mkdir(parents=True, exist_ok=True)
         self._delegate_file_url_cache: Dict[str, str] = {}
-
-        # 浏览器 cookie 由 drsai_ui 在 WS 握手时抓白名单快照,沿
-        # body["user"]["cookies"] 流过 drsai cores 落到 UserInput.extra_requests。
-        # 这里默认空,_load_user_cookies() 在每轮消息进来时刷新。
-        self._user_cookies: Dict[str, str] = {}
 
         # === skills ===
         # 仅加载系统级 skills，禁用用户覆盖。
@@ -2089,14 +2089,14 @@ class RongZaiAgent(DrSaiAgent):
             results = {"status": "failed"}
             
             # 每轮消息开始前,从 DB 拉一次最新 cookies(WS 重连/前端刷新后下一轮就生效)。
-            self._load_user_cookies()
+            # self._load_user_cookies()
             sso = self._user_cookies.get("sso-token", "")
             auth_provider = (self._user_cookies.get("rz-auth-provider", "") or "").strip().lower()
             ui_role = (self._user_cookies.get("rz-role", "") or "").strip().lower()
             logger.info(
                 f"[cookie-debug] user={self._user_id} thread={self._thread_id} "
                 f"cookie_keys={list(self._user_cookies.keys())} "
-                f"sso_token={ sso if sso else 'EMPTY' }"
+                f"sso_token is { 'exists' if sso else 'EMPTY' }"
             )
             # token = _get_user_token(user_id) or "Rongzai@324"
             if auth_provider == "domas":
@@ -2167,7 +2167,7 @@ class RongZaiAgent(DrSaiAgent):
                     return results
 
             # 检查found_proposal下是否有reduction文件夹
-            reduction_folder_path = f"/csns_data/{beamline}/{found_proposal}/reduction"
+            reduction_folder_path = f"/csns_data/{beamline}/{found_proposal}/reduction/dev"
             if not os.path.exists(reduction_folder_path):
                 results["error"] = f"有权限，但课题 {found_proposal} 下不存在 reduction 文件夹"
                 return results
@@ -2189,8 +2189,8 @@ class RongZaiAgent(DrSaiAgent):
 
             # 给予智能体操作权限，允许访问reduction文件夹和analysis文件夹
             self._extra_work_dirs.append(reduction_folder_path)
-            os.makedirs(f"/csns_data/{beamline}/{found_proposal}/analysis", exist_ok=True)
-            self._extra_work_dirs.append(f"/csns_data/{beamline}/{found_proposal}/analysis")
+            os.makedirs(f"/csns_data/{beamline}/{found_proposal}/analysis/dev", exist_ok=True)
+            self._extra_work_dirs.append(f"/csns_data/{beamline}/{found_proposal}/analysis/dev")
         except Exception as e:
             import traceback
             traceback_str = traceback.format_exc()
@@ -3348,6 +3348,7 @@ class RongZaiAgent(DrSaiAgent):
         fallback_candidates: List[str] = self._get_fallback_config_names()
         fallback_attempted: set[str] = set()
         forced_invalid_output_once = False
+        require_second_no_tool_confirmation = False
         no_tool_followup_pending = False
         try:
             # 正常路径下语言检测已在 run_stream 的消息预处理阶段完成。
@@ -3522,17 +3523,15 @@ class RongZaiAgent(DrSaiAgent):
                         )
                     )
 
-                    if no_tool_followup_pending:
-                        logger.info(
-                            "[NoToolFollowup] Second consecutive no-tool output detected. Finish current turn and wait for user input."
-                        )
+                    if (
+                        not require_second_no_tool_confirmation
+                        or no_tool_followup_pending
+                    ):
                         if not buffered_stream_events:
                             yield ModelClientStreamingChunkEvent(
                                 content=model_result.content,
                                 source=agent_name,
                             )
-                        # 发送一个内部可见的收尾响应，确保上层 run_stream 能产出 TaskResult，
-                        # 避免前端一直停留在 Processing。
                         yield Response(
                             chat_message=TextMessage(
                                 content="",
@@ -4700,4 +4699,3 @@ class RongZaiAgent(DrSaiAgent):
 
 
         
-

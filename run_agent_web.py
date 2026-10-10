@@ -23,7 +23,7 @@ os.environ["HOME"] = str(here.parent)
 
 import asyncio
 from drsai.backend import run_worker
-
+from collections.abc import Mapping
 from src.core.agent.agent import RongZaiAgent, normalize_thread_id
 from src.configs.system_prompt import get_rongzai_system_prompt
 import os
@@ -196,6 +196,7 @@ async def create_agent(
         user_id: str | None = None,
         db_manager: DatabaseManager | None = None,
         defult_config_name: str | None = "default",
+        user_cookies: Mapping[str, str] | None = None,
     ) -> RongZaiAgent:
 
     logger.info(
@@ -297,6 +298,7 @@ async def create_agent(
         thread_id=thread_id,
         db_manager=db_manager,
         user_id=user_id,
+        user_cookies=user_cookies,
         set_model_client=set_model_client,
         llm_mode_config=llm_mode_config,
 
