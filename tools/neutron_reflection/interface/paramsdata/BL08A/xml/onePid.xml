@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<instrument xmlns="http://www.mantidproject.org/IDF/1.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mantidproject.org/IDF/1.0 Schema/IDFSchema.xsd" name="NDTS" valid-from="2017-01-29 00:00:00" valid-to="2050-01-29 00:00:00" last-modified="2017-06-29 00:00:00">
+    <defaults>
+        <length unit="meter" />
+        <angle unit="degree" />
+        <reference-frame>
+            <along-beam axis="z" />
+            <pointing-up axis="y" />
+            <handedness val="right" />
+        </reference-frame>
+    </defaults>
+    <component type="moderator">
+        <location z="-26.8" />
+    </component>
+    <type is="Source" name="moderator" />
+    <component type="sample-position">
+        <location x="0.0" y="0.0" z="0.0" />
+    </component>
+    <type is="SamplePos" name="sample-position" />
+    <component type="Bank01">
+        <location />
+    </component>
+    <type name="Bank01">
+        <component type="panel" idfillbyfirst="x" idstart="1" idstepbyrow="1">
+            <location name="module10101" x="0.0" y="0.0" z="2.0">
+                <rot val="0" axis-x="0.0" axis-y="1.0" axis-z="0.0" />
+            </location>
+        </component>
+    </type>
+    <type is="rectangular_detector" name="panel" type="pixel" xpixels="1" xstep="0.008" xstart="-0.004" ypixels="1" ystep="0.004" ystart="0.0">
+        <properties />
+    </type>
+    <type is="detector" name="pixel">
+        <cuboid id="pixel-shape">
+            <left-front-bottom-point x="-0.004" y="-0.002" z="0.0" />
+            <left-front-top-point x="-0.004" y="0.002" z="0.0" />
+            <left-back-bottom-point x="-0.004" y="-0.002" z="-0.0001" />
+            <right-front-bottom-point x="0.004" y="-0.002" z="0.0" />
+        </cuboid>
+        <algebra val="pixel-shape" />
+    </type>
+</instrument>
