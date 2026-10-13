@@ -1,5 +1,5 @@
 [{
-        "name": "Rongzai Agent Dev",
+        "name": "Rongzai Agent",
         "url": "http://10.1.251.56:42512/apiv2",
         "apiKey": "",
         "mode": "remote",
@@ -29,7 +29,7 @@
         "announcements":[{"en":"This is a test agent for DrSai Rongzai, please do not use it for production purposes. If you have any questions, please contact wanghao96@ihep.ac.cn."},
                         {"zh":"这是DrSai Rongzai的测试智能体，请勿用于生产用途。如有任何问题，请联系 wanghao96@ihep.ac.cn."}],
         "author": "wanghao96@ihep.ac.cn",
-        "logo": "https://aiapi.ihep.ac.cn/apiv2/files/file-61518e9f7e8f45049739d7ae58abe35a/preview",
+        "logo": "https://rongzai.ihep.ac.cn/rongzai-agent-logo.png",
         "owner": "wanghao96@ihep.ac.cn",
         "id": "edf80f12"
 }]

@@ -32,11 +32,19 @@ def _patch_worker_advertise_ip() -> None:
     except Exception as e:
         logger.warning("patch drsai auto_worker_address failed: {}", e)
 
-    try:
-        from hepai.modules.haiddf.worker import utils as _hepai_utils
-        _hepai_utils.auto_worker_address = _patched
-    except Exception as e:
-        logger.warning("patch hepai auto_worker_address failed: {}", e)
+    # hepai 1.4.3 起 HWorkerConfig / worker 实体实际使用的是
+    # `hepai.components.haiddf.worker.utils`，`hepai.modules.*` 仅为旧路径的
+    # 兼容镜像。两处都 patch，避免 import 顺序变化又漏打补丁。
+    import importlib
+    for _module_path in (
+        "hepai.components.haiddf.worker.utils",
+        "hepai.modules.haiddf.worker.utils",
+    ):
+        try:
+            _hepai_utils = importlib.import_module(_module_path)
+            _hepai_utils.auto_worker_address = _patched
+        except Exception as e:
+            logger.warning("patch {}.auto_worker_address failed: {}", _module_path, e)
 
     logger.info("worker advertise IP overridden to {}", advertise_ip)
 
@@ -370,7 +378,7 @@ if __name__ == "__main__":
                 ensure_ascii=False,
             ),
             version = "0.1.0",
-            logo="https://note.ihep.ac.cn/uploads/244b9387-5eb0-425f-ad3e-0db3ab1a56f6.png",
+            logo="https://rongzai.ihep.ac.cn/rongzai-agent-logo.png",
             examples=[{"en":"Example1: Help me refine the BL16 RUN0023568 group5 diffraction spectrum using GSAS-II, the cif file is Si.cif",
                        "zh":"示例1：用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif"},
                         {"en":"Example2: Help me refine the BL09 RUN0000410 groupMA diffraction spectrum using Z-Rietveld, the cif file is zeolite.cif",

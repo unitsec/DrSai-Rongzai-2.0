@@ -55,7 +55,7 @@ const TopNav: React.FC<TopNavProps> = ({ onToggleSidebar }) => {
 
           <div className="flex items-center gap-2 px-1 lg:px-2.5 py-1 min-w-0">
             <img
-              src="https://aiapi.ihep.ac.cn/apiv2/files/file-8572b27d093f4e15913bebfac3645e20/preview"
+              src="https://opendrsai.ihep.ac.cn/static/logo-84ae8e49aab5bff45f9befe17cc9e18f.png"
               alt="Dr.Sai Logo"
               className="w-6 h-6 rounded-md object-cover flex-shrink-0"
             />

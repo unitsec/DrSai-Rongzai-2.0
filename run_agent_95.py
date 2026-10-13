@@ -329,7 +329,7 @@ if __name__ == "__main__":
                 ensure_ascii=False,
             ),
             version = "0.1.0",
-            logo="https://note.ihep.ac.cn/uploads/244b9387-5eb0-425f-ad3e-0db3ab1a56f6.png",
+            logo="https://rongzai.ihep.ac.cn/rongzai-agent-logo.png",
             examples=[{"en":"Example1: Help me refine the BL16 RUN0023568 group5 diffraction spectrum using GSAS-II, the cif file is Si.cif",
                        "zh":"示例1：用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif"},
                         {"en":"Example2: Help me refine the BL09 RUN0000410 groupMA diffraction spectrum using Z-Rietveld, the cif file is zeolite.cif",
@@ -362,4 +362,3 @@ if __name__ == "__main__":
             link_wechat = False
         )
     )
-
