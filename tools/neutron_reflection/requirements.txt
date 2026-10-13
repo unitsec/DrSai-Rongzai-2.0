@@ -1,0 +1,9 @@
+# Install the approved rongzai 4.0 package separately (see README).
+mcp>=1.15.0,<2
+numpy
+pandas
+matplotlib
+scipy
+xarray
+h5py
+redis

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+.venv/
+venv/
+interface/machine_paths.json
+interface/interface_config.json

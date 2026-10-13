@@ -362,6 +362,15 @@ pm2 stop 0 1 2
 ### 删除进程
 stop替换成delete
 
+### 重启前端服务
+pkill -f 'run_ui\.py' && nohup python run_ui.py > run_ui.log 2>&1 < /dev/null & 
+
+### 重启智能体服务
+pkill -f 'run_agent_web\.py' && nohup python run_agent_web.py > run_agent.log 2>&1 < /dev/null &
+
+
+DDF很可能无法直接访问东莞的服务器，需要有一个能直接访问的服务器做转发。
+
 ### 4.7 测试端和生产端端口的分离
 测试：42500-42510 生产：42510-42520  生产：30003 - 30010 测试：30012-30020
 

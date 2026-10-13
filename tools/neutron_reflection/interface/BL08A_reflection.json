@@ -1,0 +1,49 @@
+{
+    "_comment": "BL08A (NTDS) 反射离线规约配置",
+    "data_path": "{data_root}",
+    "save_path": "{save_root}/BL08A",
+    "param_path": "{param_root}/BL08A",
+    "module": "module10101",
+    "l2": 2.0,
+    "direct_run": [
+        "RUN0000964"
+    ],
+    "reflection_runs": [
+        {
+            "run": "RUN0000963",
+            "theta": 0.770115059392654
+        }
+    ],
+    "norm_by_pc": true,
+    "redo_direct": true,
+    "redo_reflection": true,
+    "wave_min": 0.5,
+    "wave_max": 14,
+    "wave_bins": 13500,
+    "q_rebin": [
+        0.002,
+        0.1,
+        100
+    ],
+    "rebin_mode_q": "uniform",
+    "direct_roi": {
+        "tube": 1,
+        "pixel_min": 32,
+        "pixel_max": 46
+    },
+    "direct_background": {
+        "tube": 3,
+        "pixel_min": 32,
+        "pixel_max": 46
+    },
+    "reflection_roi": {
+        "tube": 1,
+        "pixel_min": 32,
+        "pixel_max": 46
+    },
+    "reflection_background": {
+        "tube": 4,
+        "pixel_min": 32,
+        "pixel_max": 46
+    }
+}
