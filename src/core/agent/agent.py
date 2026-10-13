@@ -2167,7 +2167,10 @@ class RongZaiAgent(DrSaiAgent):
                     return results
 
             # 检查found_proposal下是否有reduction文件夹
-            reduction_folder_path = f"/csns_data/{beamline}/{found_proposal}/reduction/dev"
+            if os.getenv("SERVICE_MODE") == "PROD":
+                reduction_folder_path = f"/csns_data/{beamline}/{found_proposal}/reduction"
+            else:
+                reduction_folder_path = f"/csns_data/{beamline}/{found_proposal}/reduction/dev"
             if not os.path.exists(reduction_folder_path):
                 results["error"] = f"有权限，但课题 {found_proposal} 下不存在 reduction 文件夹"
                 return results
@@ -2189,8 +2192,12 @@ class RongZaiAgent(DrSaiAgent):
 
             # 给予智能体操作权限，允许访问reduction文件夹和analysis文件夹
             self._extra_work_dirs.append(reduction_folder_path)
-            os.makedirs(f"/csns_data/{beamline}/{found_proposal}/analysis/dev", exist_ok=True)
-            self._extra_work_dirs.append(f"/csns_data/{beamline}/{found_proposal}/analysis/dev")
+            if os.getenv("SERVICE_MODE") == "PROD":
+                os.makedirs(f"/csns_data/{beamline}/{found_proposal}/analysis", exist_ok=True)
+                self._extra_work_dirs.append(f"/csns_data/{beamline}/{found_proposal}/analysis")
+            else:
+                os.makedirs(f"/csns_data/{beamline}/{found_proposal}/analysis/dev", exist_ok=True)
+                self._extra_work_dirs.append(f"/csns_data/{beamline}/{found_proposal}/analysis/dev")
         except Exception as e:
             import traceback
             traceback_str = traceback.format_exc()
