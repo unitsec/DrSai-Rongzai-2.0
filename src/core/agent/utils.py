@@ -3,6 +3,7 @@ import asyncio
 import base64
 import fnmatch
 import json
+import mimetypes
 import os
 import platform
 import re
@@ -138,7 +139,7 @@ def show_file_to_user(model_client, file_path: str, purpose: str = "user_data") 
     return f"https://aiapi.ihep.ac.cn/apiv2/files/{file_obj.id}/preview"
 
 def publish_file_to_ui(file_path: str, user_id: str) -> str:
-    """Copy a generated file into the UI static tree and return its local URL."""
+    """Copy a generated file into the UI static tree and return its API URL."""
     source = Path(file_path).expanduser().resolve(strict=True)
     user_files_root = Path(os.environ["DRSAI_UI_USER_FILES_ROOT"]).expanduser().resolve()
     target_dir = (user_files_root / user_id / "generated").resolve()
@@ -147,7 +148,12 @@ def publish_file_to_ui(file_path: str, user_id: str) -> str:
     target_dir.mkdir(parents=True, exist_ok=True)
     target_name = f"{uuid.uuid4().hex}_{source.name}"
     shutil.copy2(source, target_dir / target_name)
-    return f"/files/user/{quote(user_id, safe='')}/generated/{quote(target_name, safe='')}"
+    ui_prefix = os.getenv("DRSAI_UI_PUBLIC_PREFIX", "").strip().strip("/")
+    prefix = f"/{ui_prefix}" if ui_prefix else ""
+    return (
+        f"{prefix}/api/generated-files/user/{quote(user_id, safe='')}"
+        f"/generated/{quote(target_name, safe='')}"
+    )
 
 
 
@@ -676,6 +682,7 @@ def get_operator_funcs_rongzai(
                     name = os.path.basename(file_path),
                     base64_content = file_base64,
                     description=description,
+                    mime_type=mimetypes.guess_type(file_path)[0] or "application/octet-stream",
                     download_method="base64"
                     )
                 base64_files.append(base64_file)

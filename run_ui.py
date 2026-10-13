@@ -20,15 +20,25 @@ def resolve_ui_entry():
 
     try:
         return importlib.import_module("drsai_ui.run_ui").ui, mode, internal_src
-    except Exception as exc:
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"drsai_ui", "drsai_ui.run_ui"}:
+            raise RuntimeError(
+                f"Failed to load {mode} drsai_ui: missing dependency '{exc.name}'. "
+                "Install the UI runtime dependencies in the current Python environment "
+                "with `python -m pip install -r requirements.txt`."
+            ) from exc
         if mode == "internal":
             raise RuntimeError(
-                "Failed to load internal drsai_ui. "
+                "Failed to find internal drsai_ui. "
                 f"Check DRSAI_UI_INTERNAL_SRC={internal_src} and ensure drsai_ui package exists under that path."
             ) from exc
         raise RuntimeError(
-            "Failed to load external drsai_ui from current Python environment. "
+            "Failed to find external drsai_ui in the current Python environment. "
             "Install drsai_ui in this environment or set DRSAI_UI_MODE=internal."
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to load {mode} drsai_ui: {type(exc).__name__}: {exc}"
         ) from exc
 
 

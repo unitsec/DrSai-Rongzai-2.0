@@ -122,7 +122,7 @@ description: PDF refinement skill for pair distribution function fitting using t
 - 你需要确保已经连接上 PDFRefinementTools MCP 服务，并且已经拿到工具说明。
 - 如果当前没有可用代理工具，使用以下连接信息：
    - type: sse
-   - url: http://127.0.0.1:42502/sse
+   - url: http://127.0.0.1:42507/sse
 - 连接成功后，应确认可用工具至少包括：
    - InitializeProject
    - UpdateNonRefineValueAndConstraintSet

@@ -10,11 +10,11 @@ import csv
 from itertools import zip_longest
 import matplotlib.pyplot as plt
 
-# 创建 FastMCP 实例，端口 50054
+# 创建 FastMCP 实例。
 mcp = FastMCP(
     name="NPD_Simulator_Tool",
     instructions="A tool for simulating the neutron powder diffraction pattern from cif/mcif file and instrument file.",
-    port=50054,
+    port=int(os.getenv("MCP_NPD_SIMULATOR_PORT", "50054")),
 )
 
 def setup_logging(output_dir):
@@ -447,7 +447,6 @@ if __name__ == '__main__':
 #         keep_gpx=False,
 #         output_dir=output_dir
 #     )
-
 
 
 

@@ -28,7 +28,7 @@ description: 使用小角散射数据分析工具SasView，对小角散射数据
    - 如果当前还没有可用的 SasViewTools MCP 代理工具，或者你无法确认该服务是否已经连接：
       - 根据下列连接信息连接 MCP 服务：
          - type: sse
-         - url: http://127.0.0.1:42503/sse
+         - url: http://127.0.0.1:42508/sse
       - 连接成功后，认真阅读该 MCP 服务返回的工具名称和 description，确认工具的用法
    - 如果已经存在可用的 SasViewTools MCP 代理工具：继续后续步骤。
 

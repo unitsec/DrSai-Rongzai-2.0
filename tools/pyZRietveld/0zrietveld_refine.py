@@ -54,7 +54,7 @@ mcp = FastMCP(
         "across multiple calls for one overall goal; task_id identifies a sub-task/step inside that mission. "
         "To continue polling the same unfinished task, pass the same mission_name and task_id."
     ),
-    port=42511,
+    port=int(os.getenv("MCP_ZRIETVELD_REFINE_PORT", "42510")),
 )
 
 

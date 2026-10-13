@@ -1,6 +1,6 @@
 [{
         "name": "Rongzai Agent",
-        "url": "http://10.1.252.95:42812/apiv2",
+        "url": "http://10.1.251.56:42512/apiv2",
         "apiKey": "",
         "mode": "remote",
         "description": {"en":"Rongzai-Your neutron scattering data analysis assistant\nby CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手\nby 中国散裂中子源数据分析组"},
@@ -32,4 +32,4 @@
         "logo": "https://aiapi.ihep.ac.cn/apiv2/files/file-61518e9f7e8f45049739d7ae58abe35a/preview",
         "owner": "wanghao96@ihep.ac.cn",
         "id": "edf80f12"
-    }]
+}]

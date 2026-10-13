@@ -471,8 +471,9 @@ class TeamManager:
 
     async def pause_run(self) -> None:
         """Pause the run"""
-        if self.team:
-            await self.team.pause()
+        if self.team is None:
+            raise RuntimeError("Cannot pause: team is not initialized.")
+        await self.team.pause()
 
     async def resume_run(self) -> None:
         """Resume the run"""
