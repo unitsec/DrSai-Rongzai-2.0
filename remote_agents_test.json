@@ -1,6 +1,6 @@
 [{
         "name": "Rongzai Agent Dev",
-  "url": "http://202.122.38.201:42501/apiv2",
+        "url": "http://10.1.251.56:42501/apiv2",
         "apiKey": "",
         "mode": "remote",
         "description": {"en":"Rongzai-Your neutron scattering data analysis assistant\nby CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手\nby 中国散裂中子源数据分析组"},

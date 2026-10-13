@@ -9,7 +9,7 @@ description: Magnetic structure analysis skill for neutron powder diffraction, u
 
 ## 工具
 
-1. MCP 服务 MagneticStructureTools（sse，`http://127.0.0.1:42512/sse`）。该服务下面有五个工具，按顺序使用：
+1. MCP 服务 MagneticStructureTools（sse，`http://127.0.0.1:${MCP_MAGNETIC_STRUCTURE_PORT}/sse`）。该服务下面有五个工具，按顺序使用：
    - `InitializeMagneticMission` — 校验输入、精修顺磁相（高温）核结构、建立低温核基线并出图；
    - `SearchPropagationVector` — 传播矢（k）分析；
    - `EnumerateMagneticCandidates` — Bilbao 磁空间群候选枚举与磁相构建；
@@ -27,7 +27,7 @@ description: Magnetic structure analysis skill for neutron powder diffraction, u
    - 把绝对路径交给工具。
 
 2. 检查并连接 MCP 工具
-   - 确认已连上 MagneticStructureTools 并拿到工具说明；没有则按 `type: "sse"`、`url: http://127.0.0.1:42512/sse` 连接，成功后阅读工具名称与 description。
+   - 确认已连上 MagneticStructureTools 并拿到工具说明；没有则按 `type: "sse"`、`url: http://127.0.0.1:${MCP_MAGNETIC_STRUCTURE_PORT}/sse` 连接，成功后阅读工具名称与 description。
    - **只用 SSE + 上面这个 URL**：不要用 `type: "stdio"` 自己启动一份实例，也不要 kill/重启/修改服务进程或它的环境（服务由运维启动，WORKDIR 等环境由服务侧提供）。
    - 如果调用返回 `WORKDIR is required`、连接被拒绝或服务未启动这类服务侧错误：明确把错误报告给用户并停止本轮，不要伪造结果，也不要自行搭环境绕过。
 
@@ -59,7 +59,7 @@ description: Magnetic structure analysis skill for neutron powder diffraction, u
       ——候选比较必须保持"同阶梯"才公平，而"把一个模型修到最好"该交给成熟工具。该工具把选定模型
       交接成 `selected_model.gpx`（含核相+磁相，磁空间群约束已烘进相里、GSAS-II 自动施加），
       返回 `handoff_gpx` 与 `handoff_note`（内含逐步精修建议）。
-      然后**用 `gsas2-refine` 的 MCP 工具**（服务 `RefineToolsGSASII`，`sse` `http://127.0.0.1:42506/sse`；
+      然后**用 `gsas2-refine` 的 MCP 工具**（服务 `RefineToolsGSASII`，`sse` `http://127.0.0.1:${MCP_GSASII_REFINE_PORT}/sse`；
       使用前先读 `gsas2-refine` skill）对该 gpx **逐步**精修，铁律是**一次只放开一组参数、每步看图、
       χ² 上升或差值谱变差就回退**：
         - 磁矩分量：`refine_config={"refine_moments":[{"phase":"<磁相名>","atom":"<磁性原子标签>",
