@@ -105,3 +105,6 @@ output/
 
 # 忽略仓内drsai_ui源码（暂不纳入git）
 # /src/drsai_ui/
+
+# 忽略底层智能体框架源码
+upstream/

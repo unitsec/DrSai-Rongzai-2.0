@@ -1662,7 +1662,7 @@ def GetPhaseData(PhaseData,RestraintDict={},rbIds={},Print=True,pFile=None,
                     # 兜底：从操作字符串的最后一段解析 x,y,z,±1
                     tail = opr.split(',')[-1].strip().replace(' ', '')
                     flip = 1 if tail == '-1' else 0
-                    newTable += ['(%2d)%s %d' % (itm + 1, opr, flip), ]
+                newTable += ['(%2d)%s %d' % (itm + 1, opr, flip), ]
             SGtable = newTable
         Atoms = PhaseData[name]['Atoms']
         if Atoms and not General.get('doPawley'):

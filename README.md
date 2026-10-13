@@ -364,3 +364,25 @@ stop替换成delete
 
 ### 4.7 测试端和生产端端口的分离
 测试：42500-42510 生产：42510-42520  生产：30003 - 30010 测试：30012-30020
+
+---
+
+## 可用能力
+
+### 磁结构分析（magnetic-structure-analysis）
+
+新增的磁结构分析能力，遵循"一个 skill + 一个独立 MCP 服务"的既有架构：
+
+| 项 | 详见 |
+|---|---|
+| Skill | [agent_skills/magnetic-structure-analysis/SKILL.md](agent_skills/magnetic-structure-analysis/SKILL.md) |
+| MCP 服务（6 个工具） | [tools/magnetic_structure_mcp.py](tools/magnetic_structure_mcp.py)，端口 42512 |
+| 引擎与配图 | [tools/GSAS-II-master/magnetic_analysis/](tools/GSAS-II-master/magnetic_analysis/) |
+| Benchmark 与验收记录 | [BenchMark/MagneticStructureAnalysis/](BenchMark/MagneticStructureAnalysis/) |
+| gsas2-refine 磁能力扩展 | [tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py](tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py)（同环境 `gsas2_py311`，端口 42506） |
+
+部署：`MCP_MAGNETIC_STRUCTURE_PORT=42512`（`.env` 内），`bash start_tools.sh start magnetic-analysis`。
+轮询类新增可选的 `progress_file` 约定：声明它的工具，每次 poll 都会带上实时步骤行（参见
+[src/core/tools/mcp_task_runner.py](src/core/tools/mcp_task_runner.py) 的 `progress_file` 参数）。
+
+流程与设计详见上述 skill 与引擎 README；近期 benchmark 实测（2026-10-12）v2 口径 PASS。

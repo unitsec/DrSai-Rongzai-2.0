@@ -288,6 +288,11 @@ def RefineCore(Controls,Histograms,Phases,restraintDict,rigidbodyDict,parmDict,v
         Ftol = Controls['min dM/M']
         Xtol = Controls['SVDtol']
         Factor = Controls['shift factor']
+        if 'Hessian' not in Controls['deriv type'] and chisq0 is None:
+            initialResidual = G2stMth.errRefine(values,
+                [Histograms,Phases,restraintDict,rigidbodyDict],parmDict,varyList,
+                calcControls,pawleyLookup,dlg)
+            chisq0 = float(np.sum(initialResidual**2))
         if 'Jacobian' in Controls['deriv type']:
             maxCyc = Controls.get('max cyc',1)
             result = so.leastsq(G2stMth.errRefine,values,Dfun=G2stMth.dervRefine,full_output=True,
@@ -350,6 +355,14 @@ def RefineCore(Controls,Histograms,Phases,restraintDict,rigidbodyDict,parmDict,v
         Rvals['converged'] = result[2].get('Converged')
         Rvals['DelChi2'] = result[2].get('DelChi2',-1.)
         Rvals['chisq'] = np.sum(result[2]['fvec']**2)
+        if 'Hessian' not in Controls['deriv type']:
+            # MINPACK returns convergence in ier, not the custom Hessian
+            # result dictionary. Preserve the actual native solver outcome.
+            Rvals['solver_status'] = int(result[4])
+            Rvals['solver_message'] = str(result[3])
+            Rvals['converged'] = bool(result[4] in (1, 2, 3, 4))
+            Rvals['DelChi2'] = ((chisq0 - Rvals['chisq']) / chisq0
+                               if chisq0 else 0.)
         G2stMth.Values2Dict(parmDict, varyList, result[0])
         G2mv.Dict2Map(parmDict)
         Rvals['Nobs'] = Histograms['Nobs']

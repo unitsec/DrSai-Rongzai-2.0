@@ -139,7 +139,13 @@ def show_file_to_user(model_client, file_path: str, purpose: str = "user_data") 
     return f"https://aiapi.ihep.ac.cn/apiv2/files/{file_obj.id}/preview"
 
 def publish_file_to_ui(file_path: str, user_id: str) -> str:
-    """Copy a generated file into the UI static tree and return its API URL."""
+    """Copy a generated file into the UI static tree and return a URL the UI serves.
+
+    The internal UI in this deployment mounts its static tree at ``/files`` and does
+    not register a ``/api/generated-files`` route, so a URL under that route returns
+    404 and the image never renders. Set ``DRSAI_UI_GENERATED_FILES_ROUTE`` when a
+    deployment serves a different route; the default matches the shipped UI.
+    """
     source = Path(file_path).expanduser().resolve(strict=True)
     user_files_root = Path(os.environ["DRSAI_UI_USER_FILES_ROOT"]).expanduser().resolve()
     target_dir = (user_files_root / user_id / "generated").resolve()
@@ -150,8 +156,11 @@ def publish_file_to_ui(file_path: str, user_id: str) -> str:
     shutil.copy2(source, target_dir / target_name)
     ui_prefix = os.getenv("DRSAI_UI_PUBLIC_PREFIX", "").strip().strip("/")
     prefix = f"/{ui_prefix}" if ui_prefix else ""
+    route = os.getenv("DRSAI_UI_GENERATED_FILES_ROUTE", "/files/user").strip().rstrip("/")
+    if not route.startswith("/"):
+        raise ValueError("DRSAI_UI_GENERATED_FILES_ROUTE must be an absolute path")
     return (
-        f"{prefix}/api/generated-files/user/{quote(user_id, safe='')}"
+        f"{prefix}{route}/{quote(user_id, safe='')}"
         f"/generated/{quote(target_name, safe='')}"
     )
 

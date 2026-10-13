@@ -982,7 +982,7 @@ def FillUnitCell(Phase,Force=True):
             result = G2spc.GenAtom(xyz,SGData,False,Uij,Force)
             for item in result:
                 item = list(item)
-                item[2] += cellj
+                item[3] += cellj
 #                if item[0][2] >= .95: item[0][2] -= 1.
                 atom[cx:cx+3] = item[0]
                 atom[cia+2:cia+8] = item[1]

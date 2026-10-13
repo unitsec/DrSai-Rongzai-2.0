@@ -35,6 +35,19 @@ load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
 TMP_DIR = Path(os.getenv("WORKDIR", ""))
 print(f"Using WORKER_SPACE: {TMP_DIR}")
 
+# 服务日志同时充当实时进度通道：一次精修可能跑数分钟，而轮询基类本身不返回进度，
+# 因此把该日志的最新几行挂到每次轮询结果上，供智能体转述给用户（与磁分析服务同一约定）。
+GSAS2_REFINE_PROGRESS_LOG = os.getenv(
+    "GSAS2_REFINE_PROGRESS_LOG",
+    str(Path(__file__).resolve().parents[3] / "tmp" / "tools" / "logs" / "gsas2-refine.log"))
+
+
+def _progress_log_path(_tool_kwargs):
+    """返回本服务的实时日志路径（不存在则返回 None）。"""
+    path = Path(GSAS2_REFINE_PROGRESS_LOG)
+    return path if path.is_file() else None
+
+
 def generate_fit_plot(hist, phases, user_id, session_id, mission_name, task_id):
     
     x_data = hist.getdata('x')
@@ -223,7 +236,8 @@ def _merge_atom_refine_flag(flag):
 def _normalize_atom_refine_flags(flag):
     s = str(flag) if flag is not None else ''
     # 仅保留 GSAS-II 原子精修支持的标志位，并按固定顺序去重
-    return ''.join(ch for ch in 'XUF' if ch in s)
+    # 注意 'M' 为磁矩开关：核原子行里不会出现该字符，因此对核路径完全等价
+    return ''.join(ch for ch in 'MXUF' if ch in s)
 
 
 def _remove_atom_refine_flags(current_flags, flags_to_close):
@@ -236,6 +250,1063 @@ def _to_gsas_atom_refine_flags(flag):
     """将规范化标志转换为 GSAS 期望格式：无标志时用单空格表示关闭。"""
     norm = _normalize_atom_refine_flags(flag)
     return norm if norm else ' '
+
+
+# ============================================================================
+# 磁结构支持（全部为新增函数，核精修路径不会进入）
+#
+# GSAS-II 中磁相原子的存储约定（与 GSASIIstrIO.GetPhaseData 展开 AMx/AMy/AMz
+# 的代码完全一致，见 GSASIIstrIO.py 中 `if 'M' in at[ct+1]` 一段）：
+#   * 原子行 = phase.data['Atoms'] 中的一行；
+#   * cx, ct, cs, cia = phase.data['General']['AtomPtrs']；
+#   * 磁矩分量 Mx,My,Mz（单位 μB，晶体轴分量）位于 atom[cx+4 : cx+7]；
+#   * 精修开关是 atom[ct+1] 这个标志字符串，'M' 表示放开磁矩，可与
+#     'X'(坐标) / 'U'(ADP) / 'F'(占有率) 并存，例如 'MXU'；
+#   * GSAS-II 展开磁矩变量时会调用 G2spc.SytSym + G2spc.GetCSpqinel，
+#     只把相自身磁对称性允许的分量放进 phaseVary，其余分量固定。
+#     因此“只放开方向受对称性约束、实际只剩幅值”这件事由 GSAS-II 自动完成，
+#     本工具只需正确设置 'M' 标志；若要再细分到某个分量，则对多出来的
+#     对称性允许分量追加 hold 约束。
+# ============================================================================
+
+# 磁矩分量的字母顺序（与 GSAS-II 原子表中的 Mx/My/Mz 列一致）
+_MOMENT_COMPONENT_LETTERS = ('x', 'y', 'z')
+# 原子精修标志字符串中的磁矩开关
+_MOMENT_FLAG = 'M'
+# 标志字符串的规范化顺序，与 GSAS-II 写出的 'MXU' 保持一致
+_ATOM_FLAG_ORDER = 'MXUF'
+# 表示“交给相自身磁对称性决定放开哪些分量”的写法，等价于 GSAS-II 的 'M' 标志
+_MOMENT_SYMMETRY_KEYWORDS = {
+    'm', 'mag', 'mags', 'moment', 'moments', 'sym', 'symmetry', 'auto',
+    'all', 'free', 'default',
+}
+# 表示“关闭磁矩精修”的写法
+_MOMENT_CLOSE_KEYWORDS = {'', 'none', 'no', 'off', 'false', 'close', 'closed',
+                          'fix', 'fixed', 'hold', '0', 'disable', 'disabled'}
+# 磁矩规格字典允许的键（用于区分“按相嵌套”写法与“单条规格”写法）
+_MOMENT_SPEC_DICT_KEYS = {'components', 'component', 'value', 'refine', 'mode', 'kind'}
+
+
+def _phase_atom_ptrs(phase):
+    """返回相原子表的 (cx, ct, cs, cia, 精修标志下标)，异常时全部返回 None。"""
+    try:
+        cx, ct, cs, cia = [int(v) for v in phase.data['General']['AtomPtrs'][:4]]
+        return cx, ct, cs, cia, ct + 1
+    except Exception:
+        return None, None, None, None, None
+
+
+def _phase_atom_has_moment_flag(phase, label):
+    """判断相里某个原子（或 'all' 覆盖的原子）当前是否已打开磁矩精修。"""
+    cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+    if cx is None:
+        return False
+    for row in (phase.data.get('Atoms') or []):
+        if not isinstance(row, list) or len(row) <= fidx:
+            continue
+        if label == 'all' or str(row[ct - 1]) == label:
+            if _MOMENT_FLAG in str(row[fidx]).upper():
+                return True
+    return False
+
+
+def _set_phase_atom_refinements(phase, updates, preserve_moment=False):
+    """按原子标签写入精修标志，自动兼容磁矩标志 'M'。
+
+    GSAS-II 的 G2AtomRecord.refinement_flags setter 只接受 ' FUX'，遇到 'M' 会抛
+    ValueError；并且它是“整体覆盖”语义，会在分步精修时把已经打开的 'M' 悄悄关掉。
+    因此这里：
+      * 不含 'M' 且不需要保护磁矩的更新，仍然走 phase.set_refinements，
+        保证核精修行为逐字节不变；
+      * 含 'M' 的更新直接改写原子行；
+      * preserve_moment=True（供 refine_atoms 使用）时，对已经打开 'M' 的磁相位点，
+        新标志与原有标志合并，避免“修核参数顺手关掉磁矩”。
+
+    Args:
+        updates: {原子标签 或 'all': 标志字符串}
+        preserve_moment: 是否保护磁相中已打开的 'M' 标志
+
+    Returns:
+        dict: 实际写入的 {标签: 标志}
+    """
+    magnetic_updates = {}
+    legacy_updates = {}
+    for label, flags in updates.items():
+        text = str(flags) if flags is not None else ''
+        explicit_moment = _MOMENT_FLAG in text.upper()
+        need_protect = preserve_moment and _phase_atom_has_moment_flag(phase, label)
+        if explicit_moment or need_protect:
+            magnetic_updates[label] = text
+        else:
+            legacy_updates[label] = flags
+
+    written = {}
+    if legacy_updates:
+        phase.set_refinements({"Atoms": legacy_updates})
+        written.update(legacy_updates)
+
+    if magnetic_updates:
+        cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+        if cx is None:
+            return written
+        for label, flags in magnetic_updates.items():
+            if label == 'all':
+                rows = [r for r in (phase.data.get('Atoms') or []) if isinstance(r, list)]
+            else:
+                atom = phase.atom(label)
+                if atom is None:
+                    continue
+                rows = [atom.data]
+            for row in rows:
+                if len(row) < cx + 7:
+                    continue
+                letters = {ch for ch in flags.upper() if ch in _ATOM_FLAG_ORDER}
+                if preserve_moment:
+                    # 合并原有标志，并保住磁矩开关
+                    letters |= {ch for ch in str(row[fidx]).upper() if ch in _ATOM_FLAG_ORDER}
+                    letters.add(_MOMENT_FLAG)
+                row[fidx] = ''.join(ch for ch in _ATOM_FLAG_ORDER if ch in letters) or ' '
+                written[label] = row[fidx]
+    return written
+
+
+def _phase_is_magnetic(phase):
+    """判断一个 GSAS-II 相是否为磁相。
+
+    判据与 GSAS-II 内部一致：General['Type'] == 'magnetic'；
+    若类型字段缺失，则回退到“原子精修标志里出现 'M'”这一特征。
+    """
+    general = phase.data.get('General', {}) or {}
+    if str(general.get('Type', '')).strip().lower() == 'magnetic':
+        return True
+    cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+    if fidx is None:
+        return False
+    for row in (phase.data.get('Atoms') or []):
+        try:
+            if _MOMENT_FLAG in str(row[fidx]):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _get_atom_moment(phase, atom_row):
+    """读取原子行的磁矩矢量 [Mx, My, Mz]（μB，晶体轴分量）；不可用时返回 None。"""
+    cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+    if cx is None or atom_row is None or len(atom_row) < cx + 7:
+        return None
+    try:
+        return [float(atom_row[cx + 4]), float(atom_row[cx + 5]), float(atom_row[cx + 6])]
+    except (TypeError, ValueError):
+        return None
+
+
+def _set_moment_flag(phase, atom_row, enabled):
+    """在原子行的精修标志字符串里加上/去掉 'M'，其余标志位保持不变。
+
+    注意：不能走 G2AtomRecord.refinement_flags，因为 GSAS-II 的 setter 只接受
+    ' FUX' 四个字符，会直接拒绝磁矩标志 'M'，因此这里直接改写原子行。
+    """
+    cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+    if fidx is None or atom_row is None:
+        return None
+    current = str(atom_row[fidx]) if atom_row[fidx] is not None else ''
+    letters = {ch for ch in current.upper() if ch in _ATOM_FLAG_ORDER}
+    if enabled:
+        letters.add(_MOMENT_FLAG)
+    else:
+        letters.discard(_MOMENT_FLAG)
+    flags = ''.join(ch for ch in _ATOM_FLAG_ORDER if ch in letters)
+    atom_row[fidx] = flags if flags else ' '
+    return atom_row[fidx]
+
+
+def _moment_cartesian_basis(phase):
+    """返回晶轴 a,b,c 的单位向量（行向量），用于磁矩模长换算。"""
+    try:
+        import GSASIIlattice as G2lat
+        cell = phase.data['General']['Cell'][1:7]
+        A = np.asarray(G2lat.cell2AB(cell)[0], dtype=float)
+        norms = np.linalg.norm(A, axis=1)
+        norms[norms <= 0] = 1.0
+        return A / norms[:, None]
+    except Exception:
+        return np.eye(3)
+
+
+def _moment_magnitude(phase, moment):
+    """磁矩大小（μB）：把晶体轴分量按晶轴合成为笛卡尔模长。
+
+    六方/单斜晶胞里晶体轴分量不正交，直接取范数会偏大，因此统一换算成笛卡尔长度。
+    """
+    if moment is None:
+        return None
+    try:
+        vec = np.asarray(moment, dtype=float)
+        if vec.shape != (3,) or not np.all(np.isfinite(vec)):
+            return None
+        return float(np.linalg.norm(vec @ _moment_cartesian_basis(phase)))
+    except Exception:
+        return None
+
+
+def _moment_free_components(phase, atom_row):
+    """用相自身的磁对称性判断该磁性位点哪些磁矩分量可以被精修。
+
+    判据与 GSASIIstrIO.GetPhaseData 中展开 AMx/AMy/AMz 的代码完全一致
+    （mId[j] > 0 的分量才会进入 phaseVary，其余分量被磁对称性固定）。
+
+    Returns:
+        (list, dict): 自由分量列表（'x'/'y'/'z' 的子集）与对称性诊断字典。
+    """
+    info = {'site_symmetry': None, 'multiplicity': None, 'moment_id': None, 'error': None}
+    try:
+        import GSASIIspc as G2spc
+        general = phase.data['General']
+        SGData = general['SGData']
+        cx = int(general['AtomPtrs'][0])
+        SytSym, Mul, Nop, dupDir = G2spc.SytSym(atom_row[cx:cx + 3], SGData)
+        mId, mCoef = G2spc.GetCSpqinel(SGData.get('SpnFlp', []), dupDir)
+        info['site_symmetry'] = SytSym
+        info['multiplicity'] = Mul
+        info['moment_id'] = [int(v) for v in mId[:3]]
+        free = [ax for ax, mid in zip(_MOMENT_COMPONENT_LETTERS, mId[:3]) if int(mid) > 0]
+        return free, info
+    except Exception as e:
+        info['error'] = str(e)
+        return list(_MOMENT_COMPONENT_LETTERS), info
+
+
+def _parse_moment_spec(spec):
+    """解析单个磁性位点的磁矩精修规格。
+
+    支持写法（大小写、空格、逗号、'-'、'_' 均可）：
+      * None / False / '' / 'none' / 'off' / 'close' -> ('close', [])，关闭磁矩精修；
+      * True / 'M' / 'mag' / 'sym' / 'symmetry' / 'auto' / 'all' / 'free'
+            -> ('sym', ...)，交给相自身磁对称性决定放开哪些分量，
+               这正是“只放开方向受约束、实际只修幅值”的常用写法；
+      * 分量字母组合 'x' / 'z' / 'xz' / 'xyz' -> ('components', ['x','z'])；
+      * 字典 {'components': 'z'} 或 {'component': 'z'} 亦可。
+
+    Returns:
+        (str, list): kind 为 'close' / 'sym' / 'components'，以及分量列表。
+    """
+    if spec is None:
+        return 'close', []
+    if isinstance(spec, bool):
+        return ('sym', list(_MOMENT_COMPONENT_LETTERS)) if spec else ('close', [])
+    if isinstance(spec, dict):
+        raw = spec.get('components', spec.get('component', spec.get('value', '')))
+        return _parse_moment_spec(raw)
+    if isinstance(spec, (list, tuple, set)):
+        text = ''.join(str(x) for x in spec)
+    else:
+        text = str(spec)
+    text = text.strip().lower()
+    if text in _MOMENT_CLOSE_KEYWORDS:
+        return 'close', []
+    if text in _MOMENT_SYMMETRY_KEYWORDS:
+        return 'sym', list(_MOMENT_COMPONENT_LETTERS)
+    comps = [ch for ch in _MOMENT_COMPONENT_LETTERS if ch in text]
+    if not comps:
+        raise ValueError(
+            f"无法识别的磁矩分量规格: {spec!r}（可用 'x'/'y'/'z'/'xz'/'xyz'/'M'/'sym'）"
+        )
+    return 'components', comps
+
+
+def _iter_moment_targets(moment_cfg):
+    """把 refine_moments / close_moments 配置展开成 (phase_ref, label, spec) 列表。
+
+    支持三种写法，可混用：
+      1. 扁平字典：{"Mn1": "z", "subgroup_000:Mn1": "M", "all": "sym"}
+         （原子标签前可加 "相名:" 前缀精确定位某个相里的同名位点）
+      2. 按相嵌套：{"subgroup_000": {"Mn1": "x"}, "all": {"Mn1": "z"}}
+      3. 列表：[{"phase": "subgroup_000", "atom": "Mn1", "components": "z"}]
+      另外也接受单值（字符串/布尔），表示对所有磁相的所有磁性位点生效。
+    """
+    targets = []
+    if moment_cfg is None or moment_cfg == {} or moment_cfg == []:
+        return targets
+
+    if isinstance(moment_cfg, list):
+        for item in moment_cfg:
+            if not isinstance(item, dict):
+                continue
+            phase_ref = item.get('phase', item.get('phase_name', item.get('phase_index', None)))
+            label = item.get('atom', item.get('label', item.get('atom_label', None)))
+            if label is None:
+                continue
+            spec = item.get('components', item.get('component', item.get('value',
+                     item.get('refine', item.get('mode', None)))))
+            targets.append((phase_ref, str(label), spec))
+        return targets
+
+    if isinstance(moment_cfg, dict):
+        for key, value in moment_cfg.items():
+            is_nested = (
+                isinstance(value, dict)
+                and not (set(value.keys()) & _MOMENT_SPEC_DICT_KEYS)
+            )
+            if is_nested:
+                for label, spec in value.items():
+                    targets.append((key, str(label), spec))
+            else:
+                targets.append((None, str(key), value))
+        return targets
+
+    # 单值：对所有磁相的所有原子生效
+    targets.append((None, 'all', moment_cfg))
+    return targets
+
+
+def _select_moment_atoms(phases, phase_ref, label):
+    """按“相名/索引 + 原子标签”精确定位磁相中的原子行。
+
+    phase_ref 为 None 时在所有磁相中按标签查找；label 为 'all' 时选中该相全部原子。
+    '相名:原子标签' 形式的前缀在 _iter_moment_targets 之后由调用方拆开。
+
+    Returns:
+        list: [(phase_obj, phase_index, atom_row), ...]
+    """
+    selected = []
+    if phase_ref is None:
+        candidates = [(i, p) for i, p in enumerate(phases) if _phase_is_magnetic(p)]
+    else:
+        try:
+            phase_obj, phase_index = _resolve_phase_obj(phases, phase_ref)
+        except Exception:
+            return selected
+        candidates = [(phase_index, phase_obj)]
+    for i, phase in candidates:
+        if not _phase_is_magnetic(phase):
+            continue
+        cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+        if cx is None:
+            continue
+        for row in (phase.data.get('Atoms') or []):
+            if not isinstance(row, list) or len(row) < cx + 7:
+                continue
+            if label == 'all' or str(row[ct - 1]) == label:
+                selected.append((phase, i, row))
+    return selected
+
+
+def _split_phase_qualified_label(phases, label):
+    """把 '相名:原子标签' 拆成 (phase_ref, atom_label)。
+
+    仅当冒号前的部分确实是项目里的相名/相索引时才拆分，否则原样返回 (None, label)，
+    以免破坏本来就含冒号的原子标签。
+    """
+    if not isinstance(label, str) or ':' not in label:
+        return None, label
+    head, tail = label.split(':', 1)
+    if not head or not tail:
+        return None, label
+    try:
+        _resolve_phase_obj(phases, head)
+        return head, tail
+    except Exception:
+        return None, label
+
+
+def _describe_magnetic_phase(phase, phase_index):
+    """汇总单个相的磁性信息，用于 initialize_project / refine 的返回。"""
+    general = phase.data.get('General', {}) or {}
+    SGData = general.get('SGData', {}) or {}
+    is_magnetic = _phase_is_magnetic(phase)
+    cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+
+    info = {
+        'phase_name': getattr(phase, 'name', f'Phase_{phase_index + 1}'),
+        'phase_index': phase_index,
+        'is_magnetic': bool(is_magnetic),
+        'space_group': SGData.get('SpGrp'),
+        'magnetic_space_group': SGData.get('MagSpGrp'),
+        'magnetic_point_group': SGData.get('MagPtGp'),
+        'bns_lattice': SGData.get('BNSlattsym'),
+        'bns': general.get('BNS', general.get('bns')),
+        'atom_labels': [],
+        'magnetic_sites': [],
+    }
+
+    if cx is None:
+        return info
+
+    for row in (phase.data.get('Atoms') or []):
+        if not isinstance(row, list) or len(row) < cx + 4:
+            continue
+        label = str(row[ct - 1])
+        info['atom_labels'].append(label)
+        moment = _get_atom_moment(phase, row)
+        if moment is None:
+            # 非磁相没有磁矩字段，只记录原子标签
+            continue
+        flags = str(row[fidx]) if row[fidx] is not None else ''
+        free, sym_info = _moment_free_components(phase, row)
+        fixed = [c for c in _MOMENT_COMPONENT_LETTERS if c not in free]
+        info['magnetic_sites'].append({
+            'label': label,
+            'type': str(row[ct]),
+            'coordinates': [float(v) for v in row[cx:cx + 3]],
+            'moment_crystalaxis': dict(zip(_MOMENT_COMPONENT_LETTERS, moment)),
+            'moment_magnitude': _moment_magnitude(phase, moment),
+            'moment_refine_enabled': _MOMENT_FLAG in flags.upper(),
+            'refine_flag': flags,
+            'free_components': free,
+            'fixed_components': fixed,
+            'site_symmetry': sym_info.get('site_symmetry'),
+            'multiplicity': sym_info.get('multiplicity'),
+            'moment_id': sym_info.get('moment_id'),
+        })
+    return info
+
+
+def _snapshot_magnetic_state(phases):
+    """记录所有磁相磁性位点在精修前的磁矩，供精修后对比。"""
+    snapshot = {}
+    for i, phase in enumerate(phases):
+        if not _phase_is_magnetic(phase):
+            continue
+        cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+        if cx is None:
+            continue
+        for row in (phase.data.get('Atoms') or []):
+            if not isinstance(row, list) or len(row) < cx + 7:
+                continue
+            moment = _get_atom_moment(phase, row)
+            snapshot[f"{getattr(phase, 'name', i)}::{row[ct - 1]}"] = {
+                'phase_name': getattr(phase, 'name', f'Phase_{i + 1}'),
+                'phase_index': i,
+                'label': str(row[ct - 1]),
+                'moment': moment,
+                'magnitude': _moment_magnitude(phase, moment),
+                'refine_flag': str(row[fidx]) if row[fidx] is not None else '',
+            }
+    return snapshot
+
+
+def _apply_moment_refinements(gpx, phases, refine_config, logger):
+    """应用 refine_config 中的 refine_moments / close_moments 配置。
+
+    直接改写磁相原子行中的 'M' 标志（不经过 G2AtomRecord.refinement_flags，
+    因为 GSAS-II 的 setter 会拒绝 'M'）；对“只放开部分分量”的写法，
+    再对多余的对称性允许分量追加 hold 约束。
+
+    Returns:
+        dict: 本次调用的执行信息，会写入 refine_config['_moment_apply_info']。
+    """
+    info = {
+        'enabled': False,
+        'applied': [],
+        'closed': [],
+        'holds': [],
+        'warnings': [],
+    }
+    open_cfg = refine_config.get('refine_moments')
+    close_cfg = refine_config.get('close_moments')
+    if not open_cfg and not close_cfg:
+        return info
+    info['enabled'] = True
+
+    if not any(_phase_is_magnetic(p) for p in phases):
+        info['warnings'].append('项目中没有磁相，refine_moments/close_moments 已忽略')
+        return info
+
+    def _handle(phase, phase_index, row, spec, closing):
+        cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+        label = str(row[ct - 1])
+        try:
+            kind, comps = _parse_moment_spec(spec)
+        except ValueError as e:
+            info['warnings'].append(str(e))
+            return
+        free, sym_info = _moment_free_components(phase, row)
+        if not free:
+            info['warnings'].append(
+                f"{phase.name}::{label} 的磁矩方向被磁对称性完全固定，无法精修"
+            )
+            return
+
+        if closing:
+            # 关闭：给出具体分量时只 hold 这些分量；否则去掉整个 'M' 标志
+            if kind == 'components':
+                targets = [c for c in comps if c in free]
+                if not targets:
+                    info['warnings'].append(
+                        f"{phase.name}::{label} 要关闭的分量 {comps} 本来就不参与精修"
+                    )
+                    return
+                if kind == 'components' and set(targets) == set(free):
+                    _set_moment_flag(phase, row, False)
+                    info['closed'].append({'phase': phase.name, 'atom': label,
+                                           'components': list(targets), 'flag': row[fidx]})
+                    return
+                _add_moment_holds(gpx, phase, label, targets, free, sym_info, info, logger)
+                info['closed'].append({'phase': phase.name, 'atom': label,
+                                       'components': list(targets), 'flag': row[fidx]})
+                return
+            _set_moment_flag(phase, row, False)
+            info['closed'].append({'phase': phase.name, 'atom': label,
+                                   'components': list(free), 'flag': row[fidx]})
+            return
+
+        # 放开
+        if kind == 'sym':
+            requested = list(free)
+            skipped = []
+        else:
+            requested = [c for c in comps if c in free]
+            skipped = [c for c in comps if c not in free]
+        if not requested:
+            info['warnings'].append(
+                f"{phase.name}::{label} 请求的分量 {comps} 均被磁对称性固定"
+                f"（可精修分量: {free}），已跳过"
+            )
+            return
+        _set_moment_flag(phase, row, True)
+        extra = [c for c in free if c not in requested]
+        if extra:
+            _add_moment_holds(gpx, phase, label, extra, free, sym_info, info, logger)
+        info['applied'].append({
+            'phase': phase.name,
+            'phase_index': phase_index,
+            'atom': label,
+            'requested_components': requested,
+            'symmetry_fixed_components': skipped,
+            'held_components': extra,
+            'flag': row[fidx],
+            'moment_before': list(_get_atom_moment(phase, row) or []),
+        })
+        if logger:
+            logger.info(
+                f"放开磁矩精修: {phase.name}::{label} 自由分量={requested}"
+                f"（磁对称性固定 {[c for c in _MOMENT_COMPONENT_LETTERS if c not in free]}）"
+                f"，标志={row[fidx]}"
+            )
+
+    # 先放开、后关闭，与 refine_atoms / close_atoms 的顺序语义保持一致
+    for phase_ref, label, spec in _iter_moment_targets(open_cfg):
+        head, atom_label = _split_phase_qualified_label(phases, label)
+        if head is not None:
+            phase_ref = head
+        for phase, phase_index, row in _select_moment_atoms(phases, phase_ref, atom_label):
+            _handle(phase, phase_index, row, spec, closing=False)
+
+    for phase_ref, label, spec in _iter_moment_targets(close_cfg):
+        head, atom_label = _split_phase_qualified_label(phases, label)
+        if head is not None:
+            phase_ref = head
+        for phase, phase_index, row in _select_moment_atoms(phases, phase_ref, atom_label):
+            _handle(phase, phase_index, row, spec, closing=True)
+
+    return info
+
+
+def _add_moment_holds(gpx, phase, atom_label, components, free, sym_info, info, logger):
+    """对指定的磁矩分量追加 hold 约束，使其在本次精修中固定不动。
+
+    只有当多个分量共享同一磁对称性编号（彼此等价）时才跳过，避免与
+    GSAS-II 自动生成的等价约束冲突。
+    """
+    moment_id = sym_info.get('moment_id') or []
+    id_of = {}
+    for ax, mid in zip(_MOMENT_COMPONENT_LETTERS, moment_id):
+        id_of[ax] = mid
+    for comp in components:
+        comp_id = id_of.get(comp)
+        if comp_id is not None and any(
+            id_of.get(other) == comp_id for other in free if other not in components
+        ):
+            info['warnings'].append(
+                f"{phase.name}::{atom_label} 的分量 {comp} 与其它自由分量被磁对称性"
+                f"绑定为等价变量，无法单独固定，已跳过"
+            )
+            continue
+        varname = 'AM' + comp
+        try:
+            var = _make_var_obj_safe(gpx, phase, varname, atom_label)
+            gpx.add_HoldConstr([var], reloadIdx=True)
+            info['holds'].append(f"{phase.name}::{varname}:{atom_label}")
+            if logger:
+                logger.info(f"为磁矩分量追加 hold 约束: {phase.name}::{varname}:{atom_label}")
+        except Exception as e:
+            info['warnings'].append(
+                f"为 {phase.name}::{atom_label} 的分量 {comp} 追加 hold 约束失败: {e}"
+            )
+
+
+def _snapshot_refinement_flags(gpx, phases):
+    """记录“会被磁矩自举精修临时收窄”的三类精修开关，供自举结束后原样恢复。
+
+    只记录相晶胞、原子行标志、各 histogram 的仪器参数开关；HAP（标度/背景）
+    不在其中，因为自举精修正需要它们提供幅度自由度。
+
+    Returns:
+        dict: {'cell': {相名: bool}, 'atoms': {相名: [标志字符串...]},
+               'inst': {hist名: [(参数名, bool)...]}}
+    """
+    snap = {'cell': {}, 'atoms': {}, 'inst': {}}
+    for phase in phases:
+        name = getattr(phase, 'name', None)
+        cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+        if name is None or cx is None:
+            continue
+        try:
+            snap['cell'][name] = phase.data['General']['Cell'][0]
+        except Exception:
+            snap['cell'][name] = None
+        snap['atoms'][name] = [
+            (str(row[fidx]) if row[fidx] is not None else '')
+            for row in (phase.data.get('Atoms') or [])
+            if isinstance(row, list) and len(row) > fidx
+        ]
+    for hist in gpx.histograms():
+        entries = []
+        inst = (hist.data.get('Instrument Parameters') or [{}])[0]
+        for key, value in inst.items():
+            if isinstance(value, list) and len(value) > 2:
+                entries.append((key, bool(value[2])))
+        snap['inst'][getattr(hist, 'name', str(id(hist)))] = entries
+    return snap
+
+
+def _restore_refinement_flags(gpx, phases, snapshot, logger=None):
+    """按 :func:`_snapshot_refinement_flags` 的记录恢复精修开关。
+
+    原子行标志会整体写回（快照是在应用 refine_moments 之后取的，因此本次请求的
+    磁矩标志 'M' 本身也包含在内），晶胞与仪器参数开关同样写回。
+    """
+    if not snapshot:
+        return
+    for phase in phases:
+        name = getattr(phase, 'name', None)
+        if name not in snapshot.get('atoms', {}):
+            continue
+        cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+        if cx is None:
+            continue
+        cell_flag = snapshot.get('cell', {}).get(name)
+        if cell_flag is not None:
+            try:
+                phase.data['General']['Cell'][0] = cell_flag
+            except Exception as e:
+                if logger:
+                    logger.warning(f"恢复相 {name} 的晶胞精修开关失败: {e}")
+        flags = snapshot['atoms'][name]
+        rows = [r for r in (phase.data.get('Atoms') or [])
+                if isinstance(r, list) and len(r) > fidx]
+        if len(rows) != len(flags):
+            if logger:
+                logger.warning(f"相 {name} 的原子行数与快照不一致，跳过原子标志恢复")
+            continue
+        for row, flag in zip(rows, flags):
+            row[fidx] = flag
+    for hist in gpx.histograms():
+        entries = snapshot.get('inst', {}).get(getattr(hist, 'name', None))
+        if not entries:
+            continue
+        inst = (hist.data.get('Instrument Parameters') or [{}])[0]
+        for key, flag in entries:
+            entry = inst.get(key)
+            if isinstance(entry, list) and len(entry) > 2:
+                entry[2] = flag
+
+
+def _bootstrap_moment_refinement(gpx, phases, logger, apply_info, cycle=None):
+    """磁矩自举/收尾精修：只放开磁矩（+各相标度/背景），把磁矩拉回极小点附近。
+
+    由 flexible_neutron_refinement 在“主精修之后”调用（见那里的 12.x 注释）。
+    为什么需要这一步（2026-10 实测结论）：把某个位点的磁矩人为扰动（例如
+    Mx 3.67 -> 5.0）后，如果精修同时开着晶胞/原子/仪器参数，最小二乘的第一步
+    会把 alpha、Uiso 等病态参数打到非法区域，残差直接返回 NaN，MINPACK 只能
+    退回到出发点并宣布收敛 —— 精修"成功"、Rwp 却停在扰动后的坏值上，磁矩一点
+    都没动（.lst 里也看不到 AMx 的任何位移）。磁分析引擎的做法正是"先只修磁矩
+    与公共标度，再逐步放开其它参数"（见 magnetic_analysis/native.py 的
+    assemble/fit 序列），本函数把这一步固化进本工具。
+
+    自举结束后所有被临时收窄的开关都会原样恢复（因此调用方看到的精修范围不变），
+    并重新落盘，保证项目状态与调用方的标志一致；核精修（未放开磁矩）不会进入。
+    """
+    info = {'performed': False, 'reason': None, 'sites': [], 'rwp_before': None,
+            'rwp_after': None}
+    applied = [e for e in (apply_info or {}).get('applied', []) if e.get('atom')]
+    if not applied and (apply_info or {}).get('enabled'):
+        # 调用方请求了精修磁矩，但磁矩标志在项目里**早已打开**（交接来的项目正是如此，
+        # 磁分析引擎建相时就设了 MXU 并落盘），此时 applied 为空。若照旧直接返回，整条
+        # "请求 → 精修磁矩"的链路会静默失效：实测把 Mx 扰动到 5.0 后精修，磁矩纹丝不动、
+        # rwp 停在坏值上。因此这里退化为"对当前已打开磁矩标志的磁相位点做自举"。
+        applied = []
+        for _phase in [p for p in phases if _phase_is_magnetic(p)]:
+            _cx, _ct, _cs, _cia, _fidx = _phase_atom_ptrs(_phase)
+            for _row in _phase.data['Atoms']:
+                if 'M' in str(_row[2]).upper():
+                    applied.append({'phase': _phase.name, 'atom': str(_row[_ct - 1]),
+                                    'already_enabled': True})
+    if not applied:
+        info['reason'] = '本次没有请求精修任何磁矩位点，跳过自举精修'
+        return info, ''
+    magnetic_phases = [p for p in phases if _phase_is_magnetic(p)]
+    if not magnetic_phases:
+        info['reason'] = '项目中没有磁相，跳过自举精修'
+        return info, ''
+
+    snapshot = _snapshot_refinement_flags(gpx, phases)
+    controls = gpx.data.get('Controls', {}).get('data', {})
+    original_max_cyc = controls.get('max cyc', None)
+    before = {}
+    for phase in magnetic_phases:
+        cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+        if cx is None:
+            continue
+        for row in (phase.data.get('Atoms') or []):
+            if not isinstance(row, list) or len(row) < cx + 7:
+                continue
+            key = f"{getattr(phase, 'name', '')}::{row[ct - 1]}"
+            if any(e.get('phase') == getattr(phase, 'name', '') and
+                   e.get('atom') == str(row[ct - 1]) for e in applied):
+                before[key] = _get_atom_moment(phase, row)
+
+    captured = io.StringIO()
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    try:
+        # 1) 把精修范围临时收窄为“磁矩 + HAP 标度/背景”
+        for phase in phases:
+            phase.set_refinements({'Cell': False})
+            phase.set_refinements({'Atoms': {'all': ' '}})
+        for hist in gpx.histograms():
+            inst = (hist.data.get('Instrument Parameters') or [{}])[0]
+            for value in inst.values():
+                if isinstance(value, list) and len(value) > 2:
+                    value[2] = False
+        # 2) 重新按本次请求打开磁矩标志（上一步的 'all': ' ' 会把它一并清掉）
+        reopened = []
+        for entry in applied:
+            pname, label = entry.get('phase'), str(entry.get('atom'))
+            for phase in magnetic_phases:
+                if getattr(phase, 'name', None) != pname:
+                    continue
+                cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+                if cx is None:
+                    continue
+                for row in (phase.data.get('Atoms') or []):
+                    if (isinstance(row, list) and len(row) > fidx
+                            and str(row[ct - 1]) == label):
+                        _set_moment_flag(phase, row, True)
+                        reopened.append(f"{pname}::{label}")
+        if not reopened:
+            info['reason'] = '未能重新打开任何磁矩位点，跳过自举精修'
+            return info, ''
+
+        info['performed'] = True
+        info['cycles'] = int(cycle) if cycle else None
+        if cycle:
+            controls['max cyc'] = int(cycle)
+        info['rwp_before'] = gpx.histograms()[0].get_wR() if gpx.histograms() else None
+        if logger:
+            logger.info(
+                f"磁矩自举精修（仅磁矩 + 标度/背景）: 放开 {reopened}"
+                f"，cycle={info['cycles']}"
+            )
+        sys.stdout = captured
+        sys.stderr = captured
+        try:
+            gpx.refine()
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+        info['rwp_after'] = gpx.histograms()[0].get_wR() if gpx.histograms() else None
+        for phase in magnetic_phases:
+            cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+            if cx is None:
+                continue
+            for row in (phase.data.get('Atoms') or []):
+                if not isinstance(row, list) or len(row) < cx + 7:
+                    continue
+                key = f"{getattr(phase, 'name', '')}::{row[ct - 1]}"
+                if key in before:
+                    info['sites'].append({
+                        'phase': getattr(phase, 'name', ''),
+                        'atom': str(row[ct - 1]),
+                        'moment_before': before[key],
+                        'moment_after': _get_atom_moment(phase, row),
+                    })
+        if logger:
+            logger.info(f"磁矩自举精修完成: Rwp {info['rwp_before']} -> {info['rwp_after']}")
+    except Exception as e:
+        info['performed'] = False
+        info['reason'] = f'磁矩自举精修失败（不阻塞主精修）: {e}'
+        if logger:
+            logger.warning(info['reason'])
+    finally:
+        sys.stdout, sys.stderr = original_stdout, original_stderr
+        try:
+            controls['max cyc'] = original_max_cyc if original_max_cyc is not None else controls.get('max cyc')
+        except Exception:
+            pass
+        try:
+            _restore_refinement_flags(gpx, phases, snapshot, logger)
+        except Exception as e:
+            if logger:
+                logger.warning(f"恢复精修标志失败: {e}")
+    return info, captured.getvalue()
+
+
+def _moment_variables_from_vary_list(vary_list, phases):
+    """从精修变量表里提取真正进入精修的磁矩变量。
+
+    Returns:
+        dict: {“相名::原子标签”: {分量字母: 变量名}}，例如
+              {'subgroup_006::Mn1': {'x': '1::AMx:0'}}。
+    """
+    found = {}
+    if not vary_list:
+        return found
+    for phase in phases:
+        if not _phase_is_magnetic(phase):
+            continue
+        pfx = f"{phase.data.get('pId')}::"
+        cx, ct, cs, cia, fidx = _phase_atom_ptrs(phase)
+        if cx is None:
+            continue
+        rows = [r for r in (phase.data.get('Atoms') or []) if isinstance(r, list)]
+        for name in vary_list:
+            text = str(name)
+            if not text.startswith(pfx + 'AM'):
+                continue
+            # 去掉 '<pId>::AM' 前缀，剩下 '<分量字母>:<原子序号>'
+            tail = text[len(pfx) + 2:]
+            if ':' not in tail:
+                continue
+            axis, index = tail.split(':', 1)
+            if axis not in _MOMENT_COMPONENT_LETTERS:
+                continue
+            try:
+                index = int(index)
+            except (TypeError, ValueError):
+                continue
+            if index < 0 or index >= len(rows):
+                continue
+            label = str(rows[index][ct - 1])
+            found.setdefault(f"{getattr(phase, 'name', '')}::{label}", {})[axis] = text
+    return found
+
+
+def _audit_moment_refinement(report, apply_info, vary_list, bootstrap_info=None):
+    """检查“报告成功但磁矩其实没动”的假成功，并把实际精修情况写回报告。
+
+    会做三件事：
+      1. 给每个磁性位点补上 `moment_variables` / `refined_components`，
+         即真正出现在精修变量表（AMx/AMy/AMz）里的分量；
+      2. 对请求放开、却既不在变量表里、精修后数值也没变的分量给出 warning；
+      3. 对“整个最小二乘一步都没动”的情形给出 warning。
+    """
+    warnings = report.setdefault('warnings', [])
+    applied = [e for e in (apply_info or {}).get('applied', []) if e.get('atom')]
+    variables = _moment_variables_from_vary_list(vary_list, report.get('_phases') or [])
+    if bootstrap_info and bootstrap_info.get('performed'):
+        report['moment_bootstrap'] = bootstrap_info
+
+    for pinfo in report.get('phases', []):
+        if not pinfo.get('is_magnetic'):
+            continue
+        for site in pinfo.get('magnetic_sites', []):
+            key = f"{pinfo['phase_name']}::{site['label']}"
+            names = variables.get(key, {})
+            site['moment_variables'] = names
+            site['refined_components'] = sorted(names.keys())
+            requested = []
+            for entry in applied:
+                if entry.get('phase') == pinfo['phase_name'] and entry.get('atom') == site['label']:
+                    requested.extend(entry.get('requested_components') or [])
+                    # 让 applied 条目直接反映“实际”参与精修的分量，而不是只看磁对称性推断
+                    entry['actually_refined_components'] = sorted(names.keys())
+                    entry['moment_variables'] = names
+                    entry['moment_after'] = (site.get('moment_after') or {})
+                    entry['moment_delta'] = site.get('moment_delta')
+            site['requested_components'] = sorted(set(requested))
+            if not requested:
+                continue
+            missing = [ax for ax in sorted(set(requested)) if ax not in names]
+            if missing:
+                warnings.append(
+                    f"{pinfo['phase_name']}::{site['label']} 请求放开的磁矩分量 "
+                    f"{'/'.join(missing)} 没有出现在精修变量表（AMx/AMy/AMz）中，"
+                    f"说明该分量本次并没有真正参与精修；实际进入精修的分量为 "
+                    f"{sorted(names.keys()) or '无'}"
+                )
+            after = site.get('moment_after') or {}
+            before = site.get('moment_before') or []
+            changed, unchanged = [], []
+            for axis in sorted(set(requested)):
+                idx = _MOMENT_COMPONENT_LETTERS.index(axis)
+                old = before[idx] if len(before) > idx else None
+                new = after.get(axis) if isinstance(after, dict) else None
+                if new is None or old is None:
+                    continue
+                if abs(float(new) - float(old)) > 1e-6:
+                    changed.append(axis)
+                else:
+                    unchanged.append(axis)
+            site['changed_components'] = changed
+            site['unchanged_components'] = unchanged
+            if unchanged:
+                warnings.append(
+                    f"{pinfo['phase_name']}::{site['label']} 请求放开的磁矩分量 "
+                    f"{'/'.join(unchanged)} 在精修后数值没有变化（可能已收敛到极小点，"
+                    f"也可能该分量并未真正进入精修）：实际进入精修的分量为 "
+                    f"{sorted(names.keys()) or '无'}；分量数值 "
+                    f"{ {ax: (after.get(ax) if isinstance(after, dict) else None) for ax in unchanged} }"
+                    f"（精修前 { {ax: (before[_MOMENT_COMPONENT_LETTERS.index(ax)] if len(before) > _MOMENT_COMPONENT_LETTERS.index(ax) else None) for ax in unchanged} }）"
+                )
+
+    stalled = False
+    if bootstrap_info is not None and not bootstrap_info.get('performed'):
+        rb, ra = bootstrap_info.get('rwp_before'), bootstrap_info.get('rwp_after')
+        if rb is not None and ra is not None and abs(ra - rb) < 1e-9:
+            stalled = True
+    for pinfo in report.get('phases', []):
+        for site in pinfo.get('magnetic_sites', []):
+            delta = site.get('moment_delta')
+            if delta and not any(abs(float(v)) > 1e-6 for v in delta):
+                stalled = stalled or bool(site.get('requested_components'))
+    if stalled:
+        warnings.append(
+            '本次精修结束后磁矩没有任何位移，且最小二乘没有推进：'
+            '常见原因是参与精修的参数集过大/病态（例如 alpha、Uiso 等被第一步打到非法区域'
+            '导致残差 NaN，MINPACK 只能退回出发点并宣布收敛）。'
+            '建议只放开磁矩（+标度/背景）先修一次，再逐步放开其它参数。'
+        )
+    report.pop('_phases', None)
+    return report
+
+
+def _append_moment_variables_to_lst(lst_file, gpx, moment_report, logger=None):
+    """把本次真正参与精修的磁矩变量（AMx/AMy/AMz）追加到 GSAS-II 的 .lst 末尾。
+
+    GSAS-II 自己的 .lst 只打印“Magnetic Moments”的数值与 esd，不打印变量名，
+    调用方因此无法从 .lst 判断磁矩是否真的进了变量表。这里把变量名、数值与
+    esd 明确写进 .lst（以及返回的 main_lst_content），便于核对；仅在本次确有
+    磁矩变量参与精修时追加，核精修不会产生任何变化。
+    """
+    rows = []
+    for pinfo in (moment_report or {}).get('phases', []):
+        if not pinfo.get('is_magnetic'):
+            continue
+        for site in pinfo.get('magnetic_sites', []):
+            names = site.get('moment_variables') or {}
+            if not names:
+                continue
+            after = site.get('moment_after') or {}
+            for axis in sorted(names.keys()):
+                rows.append((names[axis], pinfo['phase_name'], site['label'], axis,
+                             after.get(axis) if isinstance(after, dict) else None))
+    if not rows:
+        return []
+    cov = (gpx.data.get('Covariance', {}).get('data', {}) or {})
+    vary_list = [str(v) for v in (cov.get('varyList') or [])]
+    values = cov.get('variables')
+    sigs = cov.get('sig')
+    lines = ['', '', ' Refined magnetic moment variables (AMx/AMy/AMz):',
+             '   variable                 phase            atom   comp        value        esd',
+             ' ' + '-' * 100]
+    for name, phase_name, label, axis, moment in rows:
+        value = esd = None
+        if name in vary_list:
+            index = vary_list.index(name)
+            if values is not None and index < len(values):
+                value = values[index]
+            if sigs is not None and index < len(sigs):
+                esd = sigs[index]
+        if value is None:
+            value = moment
+        value_text = f'{float(value):14.6f}' if isinstance(value, (int, float)) else ' ' * 14
+        esd_text = f'{float(esd):11.6f}' if isinstance(esd, (int, float)) else ' ' * 11
+        lines.append('   %-24s %-16s %-6s %-5s %s %s' % (
+            name, phase_name, label, axis, value_text, esd_text))
+    text = '\n'.join(lines) + '\n'
+    try:
+        with open(lst_file, 'a', encoding='utf-8') as handle:
+            handle.write(text)
+    except Exception as e:
+        if logger:
+            logger.warning(f"向 .lst 追加磁矩变量表失败（不影响精修结果）: {e}")
+        return []
+    if logger:
+        logger.info(f"已在 .lst 中登记本次精修的磁矩变量: "
+                    f"{[r[0] for r in rows]}")
+    return [r[0] for r in rows]
+
+
+def _summarize_refined_moments(moment_report):
+    """把磁结构报告压缩成“相名 -> 位点标签 -> 磁矩前后值”的紧凑字典。"""
+    summary = {}
+    for pinfo in (moment_report or {}).get('phases', []):
+        if not pinfo.get('is_magnetic'):
+            continue
+        sites = {}
+        for site in pinfo.get('magnetic_sites', []):
+            sites[site.get('label')] = {
+                'moment_crystalaxis_before': site.get('moment_before'),
+                'moment_crystalaxis_after': site.get('moment_after'),
+                'magnitude_before_uB': site.get('magnitude_before'),
+                'magnitude_after_uB': site.get('magnitude_after'),
+                'moment_delta': site.get('moment_delta'),
+                'refine_flag_after': site.get('refine_flag'),
+                'moment_refine_enabled': site.get('moment_refine_enabled'),
+                'free_components': site.get('free_components'),
+                'fixed_components': site.get('fixed_components'),
+            }
+        summary[pinfo.get('phase_name')] = {
+            'space_group': pinfo.get('space_group'),
+            'magnetic_space_group': pinfo.get('magnetic_space_group'),
+            'magnetic_point_group': pinfo.get('magnetic_point_group'),
+            'bns_lattice': pinfo.get('bns_lattice'),
+            'bns': pinfo.get('bns'),
+            'sites': sites,
+        }
+    return summary
+
+
+def _build_magnetic_report(phases, before_snapshot=None, apply_info=None,
+                           vary_list=None, bootstrap_info=None):
+    """构建返回给智能体的磁结构报告（核项目返回 has_magnetic_phase=False）。"""
+    phase_infos = [_describe_magnetic_phase(p, i) for i, p in enumerate(phases)]
+    magnetic_phase_infos = [p for p in phase_infos if p['is_magnetic']]
+
+    report = {
+        'has_magnetic_phase': bool(magnetic_phase_infos),
+        'phases': phase_infos,
+        'applied_moment_refinements': (apply_info or {}).get('applied', []),
+        'closed_moment_refinements': (apply_info or {}).get('closed', []),
+        'moment_holds': (apply_info or {}).get('holds', []),
+        'warnings': list((apply_info or {}).get('warnings', [])),
+        # 供 _audit_moment_refinement 反查变量名 -> 位点；审计结束后会被移除
+        '_phases': phases if vary_list is not None else None,
+    }
+
+    before_snapshot = before_snapshot or {}
+    for pinfo in magnetic_phase_infos:
+        for site in pinfo['magnetic_sites']:
+            key = f"{pinfo['phase_name']}::{site['label']}"
+            before = before_snapshot.get(key, {})
+            after = site.get('moment_crystalaxis')
+            site['moment_before'] = before.get('moment')
+            site['magnitude_before'] = before.get('magnitude')
+            site['moment_after'] = after
+            site['magnitude_after'] = site.get('moment_magnitude')
+            if isinstance(before.get('moment'), list) and isinstance(after, dict):
+                after_list = [after.get(c) for c in _MOMENT_COMPONENT_LETTERS]
+                if all(v is not None for v in after_list):
+                    site['moment_delta'] = [round(a - b, 10) for a, b in
+                                            zip(after_list, before['moment'])]
+    if report.get('_phases') is not None:
+        _audit_moment_refinement(report, apply_info, vary_list, bootstrap_info)
+    elif bootstrap_info:
+        report['moment_bootstrap'] = bootstrap_info
+    report.pop('_phases', None)
+    return report
 
 
 def _resolve_initial_atom_value(init_values, phase, phase_idx, atom_idx, atom_label):
@@ -613,6 +1684,10 @@ def flexible_neutron_refinement(gpx, hist, phases, user_id, session_id, mission_
         'close_atoms': {},
         'initial_atom_uiso': None,  # 原子热无序因子初始值
         'initial_atom_occupancy': None,  # 原子占有率初始值
+
+        # 磁结构参数（仅对含磁相的项目生效，核精修不受影响）
+        'refine_moments': {},
+        'close_moments': {},
 
         # 高级参数
         'refine_limits': False,
@@ -1214,20 +2289,19 @@ def flexible_neutron_refinement(gpx, hist, phases, user_id, session_id, mission_
         ref_dict["set"]["Sample Parameters"].append("Absorption")
 
     # 7. 原子参数精修 (支持灵活控制)
+    #    含 'M'(磁矩) 的写法会直接改写原子行，绕开 GSAS-II setter 对 'M' 的限制；
+    #    不含 'M' 的写法完全走原来的 phase.set_refinements 分支。
     if refine_config.get('refine_atoms', False) and refine_config['refine_atoms']:
         logger.info("添加原子参数到精修字典")
         if 'all' in refine_config['refine_atoms']:
             for phase in phases:
-                phase.set_refinements({
-                    "Atoms": {
-                        "all": refine_config['refine_atoms']['all']  # 例如 "XUF"
-                    }
-                })
+                _set_phase_atom_refinements(phase, {
+                    "all": refine_config['refine_atoms']['all']  # 例如 "XUF" 或 "MXU"
+                }, preserve_moment=True)
         else:
             for phase in phases:
-                phase.set_refinements({
-                    "Atoms": refine_config['refine_atoms']  # 例如 {"Fe1": "XU", "O2": "F"}
-                })
+                _set_phase_atom_refinements(
+                    phase, refine_config['refine_atoms'], preserve_moment=True)
 
     # 7.1 关闭原子参数精修 (按指定标志位从当前状态中移除)
     if refine_config.get('close_atoms', False) and refine_config['close_atoms']:
@@ -1246,7 +2320,7 @@ def flexible_neutron_refinement(gpx, hist, phases, user_id, session_id, mission_
                     if new_norm != current_norm:
                         atom_updates[atom.label] = _to_gsas_atom_refine_flags(new_norm)
                 if atom_updates:
-                    phase.set_refinements({"Atoms": atom_updates})
+                    _set_phase_atom_refinements(phase, atom_updates)
 
         # 支持按原子标签关闭（可与 all 同时使用，后者先执行）
         for atom_label, flags_to_close in close_cfg.items():
@@ -1262,9 +2336,31 @@ def flexible_neutron_refinement(gpx, hist, phases, user_id, session_id, mission_
                 current_norm = _normalize_atom_refine_flags(current_flags)
                 new_norm = _remove_atom_refine_flags(current_flags, flags_to_close)
                 if new_norm != current_norm:
-                    phase.set_refinements({"Atoms": {atom_label: _to_gsas_atom_refine_flags(new_norm)}})
+                    _set_phase_atom_refinements(
+                        phase, {atom_label: _to_gsas_atom_refine_flags(new_norm)})
             if not found:
                 logger.warning(f"close_atoms 指定的原子不存在，已跳过: {atom_label}")
+
+    # 7.2 磁矩分量精修（仅对含磁相的项目生效；核精修不会进入）
+    #     磁矩精修开关是原子行中的 'M' 标志，不能用 G2AtomRecord.refinement_flags 设置
+    #     （GSAS-II 的 setter 只接受 ' FUX'），因此这里直接改写原子行。
+    #     refine_moments 的值可以是 'M'/'sym'（交给磁对称性决定，即只放开幅值），
+    #     也可以是分量字母组合如 'x'/'xz'/'xyz'（多出来的分量用 hold 约束固定）。
+    moment_before_snapshot = _snapshot_magnetic_state(phases)
+    moment_apply_info = _apply_moment_refinements(gpx, phases, refine_config, logger)
+    refine_config['_moment_apply_info'] = moment_apply_info
+    if moment_apply_info.get('enabled'):
+        logger.info(
+            f"磁矩精修配置已应用: 放开={len(moment_apply_info.get('applied', []))}, "
+            f"关闭={len(moment_apply_info.get('closed', []))}, "
+            f"hold={len(moment_apply_info.get('holds', []))}"
+        )
+
+    # 7.3 磁矩自举精修（仅当本次真的放开了磁矩位点时才进入；核精修不会进入）
+    #     只放开磁矩（+各相标度/背景）先修一轮，把磁矩拉回极小点附近，再按调用方
+    # 7.3 磁矩自举/收尾精修：真正执行位置在“主精修之后”（见下方 12.x 注释），
+    #     这里只初始化占位信息，保证核精修路径不进入。
+    moment_bootstrap_info = {'performed': False, 'reason': '未请求磁矩精修'}
 
     # 8. 晶粒尺寸精修
     if refine_config.get('refine_size', False):
@@ -1368,8 +2464,70 @@ def flexible_neutron_refinement(gpx, hist, phases, user_id, session_id, mission_
         logger.error(f"精修执行失败: {str(e)}")
         raise
 
+    # 12. 磁矩自举/收尾精修（仅当本次真的放开了磁矩位点时进入；核精修完全不进入）
+    #     放在主精修之后的原因：
+    #       (a) 主精修仍按调用方原有标志与参数执行，行为不变；
+    #       (b) 若主精修的参数集过大/病态（常见），最小二乘第一步会把 alpha、Uiso 等
+    #           打到非法区域（残差 NaN），MINPACK 只能退回出发点并宣布收敛 ——
+    #           精修“成功”但没有任何参数移动（磁矩自然也不动）。此时用一个
+    #           “只放开磁矩 + 各相标度/背景”的小参数集收尾，就能把磁矩修到极小点；
+    #       (c) 收尾这一轮结束时的项目状态是自洽的，文件里的 wR 才与真实模型相符。
+    rwp_after_main = final_rwp
+    # 只要调用方**请求**精修磁矩（refine_moments 非空）就应进入收尾精修，而不能只看
+    # moment_apply_info['applied']（那表示“本次新打开了标志”）。交接场景下磁矩标志往往
+    # 早已打开（磁引擎建相时就设了），applied 为空 → 收尾精修被跳过 → 磁矩根本不动：
+    # 实测把 Mx 扰动到 5.0 后精修，磁矩仍为 5.0、rwp 不降，正是这个条件造成的。
+    _moment_requested = bool(refine_config.get('refine_moments'))
+    if moment_apply_info.get('applied') or _moment_requested:
+        moment_bootstrap_info, polish_output = _bootstrap_moment_refinement(
+            gpx, phases, logger, moment_apply_info,
+            cycle=min(int(refine_config.get('refine_cycle') or 3), 6),
+        )
+        moment_bootstrap_info['rwp_after_main'] = rwp_after_main
+        if polish_output:
+            logger.info(f"磁矩收尾精修输出:\n{polish_output}\n输出结束")
+        try:
+            # 收尾精修期间临时收窄的标志已经恢复，需要落盘，保证调用方看到的是原范围
+            gpx.save()
+        except Exception as e:
+            logger.warning(f"保存磁矩收尾精修后的项目失败: {e}")
+        final_rwp = hist.get_wR()
+        if final_rwp is not None:
+            logger.info(f"磁矩收尾精修后最终Rwp: {final_rwp:.2f}%")
+    refine_config['_moment_bootstrap_info'] = moment_bootstrap_info
+
+    # 磁结构报告（仅当项目含磁相时才有内容；核项目返回 has_magnetic_phase=False）
+    try:
+        moment_report = _build_magnetic_report(
+            phases,
+            before_snapshot=moment_before_snapshot,
+            apply_info=moment_apply_info,
+            vary_list=(gpx.data.get('Covariance', {}).get('data', {}) or {}).get('varyList'),
+            bootstrap_info=moment_bootstrap_info,
+        )
+        refine_config['_moment_report'] = moment_report
+        for warning in moment_report.get('warnings', []):
+            logger.warning(f"磁矩精修提示: {warning}")
+        if moment_report.get('has_magnetic_phase'):
+            for pinfo in moment_report.get('phases', []):
+                if not pinfo.get('is_magnetic'):
+                    continue
+                for site in pinfo.get('magnetic_sites', []):
+                    logger.info(
+                        f"磁矩位点 {pinfo['phase_name']}::{site['label']}: "
+                        f"{site.get('moment_before')} -> {site.get('moment_after')}"
+                        f" (|m| {site.get('magnitude_before')} -> {site.get('magnitude_after')} μB)"
+                    )
+    except Exception as e:
+        logger.warning(f"构建磁结构报告失败（不影响精修结果）: {e}")
+        refine_config['_moment_report'] = {'has_magnetic_phase': False, 'error': str(e)}
+
     logger.info("一次性精修流程结束")
-    return hist.get_wR(), captured_output
+    if moment_bootstrap_info.get('performed') and polish_output:
+        captured_output = (
+            "\nMoment bootstrap refinement output:\n" + polish_output + "\n" + (captured_output or '')
+        )
+    return final_rwp, captured_output
 
 def safe_float(value, default=0.0):
     """安全地将值转换为浮点数"""
@@ -1725,6 +2883,10 @@ def _map_param_to_gsas_var(param_name):
         'x': 'dAx',
         'y': 'dAy',
         'z': 'dAz',
+        # 磁矩分量约束作用在 GSAS-II 的 AMx/AMy/AMz 变量上
+        'moment_x': 'AMx', 'momentx': 'AMx', 'momx': 'AMx', 'mx': 'AMx', 'amx': 'AMx',
+        'moment_y': 'AMy', 'momenty': 'AMy', 'momy': 'AMy', 'my': 'AMy', 'amy': 'AMy',
+        'moment_z': 'AMz', 'momentz': 'AMz', 'momz': 'AMz', 'mz': 'AMz', 'amz': 'AMz',
     }
     if p in mapping:
         return mapping[p]
@@ -1801,6 +2963,13 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
             'main_lst_content': 精修生成的lst文件内容文本,
             'lst_path': 精修生成的lst文件路径,
             'reflection_table_path': 导出的反射表CSV文件路径,
+            'phases': 每个相的摘要列表，每项包含 phase_name/phase_index/is_magnetic/
+                      space_group/magnetic_space_group/magnetic_point_group/bns_lattice/
+                      atom_labels/magnetic_sites；磁相的 magnetic_sites 会给出每个位点的
+                      标签、坐标、当前磁矩分量 moment_crystalaxis{x,y,z}、磁矩大小
+                      moment_magnitude、精修标志 refine_flag、可精修分量 free_components
+                      与受磁对称性固定的分量 fixed_components。核项目下 is_magnetic 均为 False、
+                      magnetic_sites 为空列表。
             'execution_time_sec': initialize_project 总执行时长（秒）,
             "error":字符串，错误信息（仅当status为'failed'时存在）
     '''
@@ -2124,6 +3293,12 @@ def initialize_project(neutron_data, neutron_inst, cif_files, task_id, user_id=N
 
     result['status'] = "success"
     result['gpx_path'] = str(save_dir / f'{task_id}.gpx')
+    # 相/磁性位点摘要：告诉智能体每个相是否为磁相、有哪些可精修的磁性位点
+    # （核项目下 is_magnetic 全为 False、magnetic_sites 为空，不影响既有键）
+    try:
+        result['phases'] = [_describe_magnetic_phase(p, i) for i, p in enumerate(phases)]
+    except Exception as e:
+        print(f"生成相摘要失败（不影响初始化结果）: {e}")
     result['plot_path'] = generate_fit_plot(hist,phases, user_id,session_id, mission_name, task_id)
     result['refinement_log'] = captured_output
     result['lst_path'] = str(save_dir / f'{task_id}.lst')
@@ -3160,6 +4335,22 @@ def refine(
             'main_lst_content': 精修生成的lst文件内容文本,
             'lst_path': 精修生成的lst文件路径,
             'reflection_table_path': 精修生成的反射表格文件路径（csv格式）,
+            'has_magnetic_phase': 布尔值，项目里是否存在磁相（核项目为 False）,
+            'magnetic_phases': 磁相列表，每项包含 phase_name/space_group/magnetic_space_group/
+                      magnetic_point_group/bns_lattice/bns 以及 magnetic_sites（精修后的每个
+                      磁性位点：标签、坐标、moment_crystalaxis、moment_magnitude、
+                      moment_before/moment_after、magnitude_before/magnitude_after、
+                      free_components/fixed_components/refine_flag）,
+            'magnetic_moments': 紧凑字典 {相名: {位点标签: {磁矩前后值与大小}}}，便于快速读取,
+            'moment_refinement': 本次磁矩精修的执行情况。applied 里每个被放开的位点会给出：
+                      requested_components（请求的、且磁对称性允许的分量）、
+                      symmetry_fixed_components（因磁群约束被固定的分量）、
+                      actually_refined_components（**实际**进入精修变量 AMx/AMy/AMz 的分量）、
+                      moment_variables（分量 -> 变量名，如 {'x': '1::AMx:0'}）、
+                      moment_before/moment_after/moment_delta；bootstrap 为磁矩收尾精修
+                      的前后 Rwp 与磁矩（见下文）；warnings 为警告列表——请求放开的分量
+                      若没进变量表、或精修后数值一点没变，都会在这里明确报出,
+            'moment_variables_in_lst': 本次真正进入精修的磁矩变量名列表（同时已追加写入 .lst）,
              "error":字符串，错误信息（仅当status为'failed'时存在）
         }
 
@@ -3190,6 +4381,9 @@ def refine(
         | `refine_atoms` | dict | {} | 要精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'},一定注意参数打开后不会自动关闭，关闭需要你手动传 `close_atoms` |
         | `close_atoms` | dict | {} | 要关闭精修的原子标签字典, 例如: {'Fe1':'XU' , 'O2': 'XUF'}或{'all': 'XU'}|
         注意：'X' 为位置，'U' 为等效各向同性温度因子，'F' 为占位率。例如 'XU' 表示同时精修位置和 U。
+        磁相中还可使用 'M' 表示磁矩（见下方 `refine_moments`）。
+        | `refine_moments` | dict/list | {} | 要精修的磁矩位点及分量，详见下文说明 |
+        | `close_moments` | dict/list | {} | 要关闭（或只固定部分分量）的磁矩位点，详见下文说明 |
         | `refine_size` | bool | False | 晶粒尺寸,一般不修,除非你有特殊需求 |
         | `refine_mustrain` | bool | False | 微应变,一般不修,除非你有特殊需求|
         | `refine_preferred_orientation` | bool | False | 择优取向精修开关（对应 HAP 的 `Pref.Ori.`） |
@@ -3271,6 +4465,69 @@ def refine(
             - 行为：切换后会自动按新空间群更新每个原子的 `site sym` 与 `mult`，避免元数据不一致。
 
 
+        参数 `refine_moments` / `close_moments` 的配置格式与使用方法（磁结构精修）：
+            - 目的：对含磁相（GSAS-II 中 General['Type'] == 'magnetic' 的相）的项目，
+              放开或关闭原子磁矩分量 (Mx,My,Mz) 的精修。核项目里这两个参数完全无效，
+              核精修行为不受影响。
+            - 磁矩分量存在原子行的 cx+4..cx+6 位置（cx = General['AtomPtrs'][0]），
+              单位为 μB，是晶体轴分量；精修开关是原子精修标志字符串里的 'M'
+              （例如 'MXU' 表示同时修磁矩、坐标和 ADP）。
+            - 重要：磁矩分量之间的对称性约束由相自身的磁对称性自动施加，本工具不需要
+              也不应该自己实现约束。GSAS-II 只会把磁对称性允许的分量放进待精修变量列表，
+              其余分量保持不动。因此“方向被对称性锁死、只剩幅值可修”这种常见情形，
+              直接把分量写成 'M'（或 'sym'）即可。
+
+            规格写法（键是磁性位点，值是分量规格）：
+              1. 扁平字典：`{"Mn1": "M"}`、`{"Mn1": "z"}`、`{"Mn1": "xz"}`；
+                 同名位点分布在多个磁相时，可用 `"相名:原子标签"` 精确定位，
+                 例如 `{"subgroup_006:Mn1": "x"}`。
+              2. 按相嵌套：`{"subgroup_006": {"Mn1": "x"}, "all": {"Mn1": "z"}}`。
+              3. 列表（最显式）：`[{"phase": "subgroup_006", "atom": "Mn1", "components": "x"}]`。
+              `"all"` 作为位点标签表示该相（或所有磁相）的全部磁性位点。
+
+            分量规格取值：
+              * `'M'` / `'mag'` / `'sym'` / `'symmetry'` / `'auto'` / `'all'` / `'free'` / `true`
+                    -> 交给磁对称性决定放开哪些分量（推荐，等价于 GSAS-II 的 'M' 标志）。
+                       这就是“只放开幅值方向受对称性约束的分量”的写法；
+                       实际可用分量请读返回里的 `free_components`。
+              * `'x'` / `'y'` / `'z'` / `'xz'` / `'xyz'`（大小写、空格、逗号、'-' 均可）
+                    -> 只放开列出的分量。若列出的分量多于磁对称性允许的分量，
+                       工具会自动忽略被对称性固定的分量并给出 warning；
+                       若少于允许的分量，工具会对多出来的分量追加 hold 约束固定住。
+              * `'none'` / `'close'` / `'off'` / `false` / `0` -> 关闭该位点磁矩精修。
+
+            `close_moments` 的写法与 `refine_moments` 完全一致，语义是“先放开、后关闭”
+            （与 refine_atoms / close_atoms 的顺序一致）：
+              * 值为 `'M'`/`true`/`'close'` -> 去掉该位点的 'M' 标志，完全不修磁矩；
+              * 值为具体分量（如 `'z'`）-> 保留 'M' 标志，但用 hold 约束固定这些分量，
+                用于“只想减小自由度”的场景。
+
+            典型分步用法（每步只放开一组参数，可随时回退到上一步的 gpx）：
+              第1步（只修幅值）：`{"refine_moments": {"Mn1": "M"}, "refine_cycle": 3}`
+              第2步（再修核相位置/ADP）：
+                  `{"refine_atoms": {"Mn1": "XU"}, "refine_cycle": 3}`
+              第3步（再修晶胞）：`{"refine_cell": true, "refine_cycle": 3}`
+              回退：不传 refine_moments，改为
+                  `{"close_moments": {"Mn1": "M"}}` 可确认磁矩已停止变化。
+
+            提示：磁矩是否真的动了，看返回里的 `magnetic_moments`
+            （moment_crystalaxis_before/after、magnitude_before/after）、`moment_refinement`
+            （applied[*].actually_refined_components / moment_variables / moment_delta）
+            与 `refinement_log`；对应的精修变量名为 AMx/AMy/AMz，工具会把本次
+            真正参与精修的磁矩变量表追加到 .lst 末尾（也可从
+            `moment_variables_in_lst` 直接读取）。
+
+            关于磁矩精修的数值可靠性（2026-10 实测）：
+              放开磁矩时，主精修仍按你原有的标志/参数执行；随后工具会自动追加一轮
+              “只放开磁矩 + 各相标度/背景”的收尾精修（返回里的 moment_refinement.bootstrap，
+              含 rwp_before/rwp_after 与磁矩前后值）。这是因为当晶胞/原子/仪器参数一起
+              放开时，最小二乘第一步常把 alpha、Uiso 等病态参数打到非法区域（残差 NaN），
+              MINPACK 只能退回出发点并宣布收敛——精修"成功"但一步未动、磁矩也不动。
+              收尾精修用极小参数集把磁矩拉到极小点，并让项目文件状态自洽（文件里的 wR
+              与真实模型一致）。若请求放开的分量精修后数值仍未变化，或没有出现在
+              变量表里，warnings 会明确告警，不要把它当作精修成功。
+
+
     """
     print("精修配置 (展开):\n" + pprint.pformat(refine_config, width=120))
 
@@ -3327,9 +4584,44 @@ def refine(
             results['new_gpx_path'] = str(dst)
             lst_file = dst.with_name(f"{task_id}.lst")
             results['lst_path'] = str(lst_file)
+            # 磁矩变量登记（仅在本次确有 AMx/AMy/AMz 进入精修时写入 .lst）
+            _moment_report_for_lst = refine_config.get('_moment_report')
+            if isinstance(_moment_report_for_lst, dict) and lst_file.exists():
+                try:
+                    results['moment_variables_in_lst'] = _append_moment_variables_to_lst(
+                        lst_file, gpx, _moment_report_for_lst)
+                except Exception as e:
+                    print(f"向 .lst 追加磁矩变量表失败: {e}")
+                    results['moment_variables_in_lst'] = []
             results['main_lst_content'] = prune_lst_keep_main(lst_file) if lst_file.exists() else ''
             refl_csv, refl_rows = export_reflection_table(gpx, user_id, session_id, mission_name, task_id)
             results['reflection_table_path'] = refl_csv
+
+            # 磁结构结果（核项目下 has_magnetic_phase 为 False，其余键为空）
+            moment_report = refine_config.get('_moment_report')
+            if not isinstance(moment_report, dict):
+                moment_report = _build_magnetic_report(phases)
+            results['has_magnetic_phase'] = bool(moment_report.get('has_magnetic_phase'))
+            results['magnetic_phases'] = [
+                {
+                    'phase_name': p.get('phase_name'),
+                    'space_group': p.get('space_group'),
+                    'magnetic_space_group': p.get('magnetic_space_group'),
+                    'magnetic_point_group': p.get('magnetic_point_group'),
+                    'bns_lattice': p.get('bns_lattice'),
+                    'bns': p.get('bns'),
+                    'magnetic_sites': p.get('magnetic_sites', []),
+                }
+                for p in moment_report.get('phases', []) if p.get('is_magnetic')
+            ]
+            results['magnetic_moments'] = _summarize_refined_moments(moment_report)
+            results['moment_refinement'] = {
+                'applied': moment_report.get('applied_moment_refinements', []),
+                'closed': moment_report.get('closed_moment_refinements', []),
+                'holds': moment_report.get('moment_holds', []),
+                'bootstrap': moment_report.get('moment_bootstrap', {}),
+                'warnings': moment_report.get('warnings', []),
+            }
 
         except Exception as e:
             print(f"导出结果时遇到问题: {str(e)}")
@@ -3369,12 +4661,14 @@ if __name__ == '__main__':
     )
 
     initialize_runner = ProcessPollingMcpToolBase(
+    progress_file=_progress_log_path,
     timeout_sec=60.0,
     poll_interval=1.0,
     target_func=initialize_project,
     )
     
     refine_runner = ProcessPollingMcpToolBase(
+    progress_file=_progress_log_path,
     timeout_sec=60.0,
     poll_interval=1.0,
     target_func=refine,
