@@ -101,6 +101,39 @@ from src.core.auth.domas_permission_provider import DomasPermissionProvider
 
 _USER_THREAD_ID_CACHE: Dict[tuple[str, str], str] = {}
 _ACTIVE_THREAD_IDS: Set[str] = set()
+_MCP_SKILL_PORT_DEFAULTS = {
+    "MCP_GSASII_REFINE_PORT": "42506",
+    "MCP_PDF_REFINE_PORT": "42507",
+    "MCP_SASVIEW_REFINE_PORT": "42508",
+    "MCP_IRENA_REFINE_PORT": "42509",
+    "MCP_ZRIETVELD_REFINE_PORT": "42510",
+    "MCP_NEUTRON_REFLECTION_PORT": "42520",
+}
+
+
+def resolve_mcp_skill_endpoints(skill_content: str) -> str:
+    """Resolve configured MCP ports in skill content before it reaches the model."""
+
+    def replace_port(match: re.Match[str]) -> str:
+        variable = match.group(1)
+        default = _MCP_SKILL_PORT_DEFAULTS.get(variable)
+        if default is None:
+            return match.group(0)
+
+        value = os.getenv(variable, default).strip()
+        try:
+            port = int(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"{variable} must be an integer between 1 and 65535; got {value!r}."
+            ) from exc
+        if not 1 <= port <= 65535:
+            raise ValueError(
+                f"{variable} must be an integer between 1 and 65535; got {value!r}."
+            )
+        return str(port)
+
+    return re.sub(r"\$\{([A-Z][A-Z0-9_]*)\}", replace_port, skill_content)
 
 
 def normalize_thread_id(thread_id: str | None, user_id: str | None) -> str:
@@ -2306,6 +2339,7 @@ class RongZaiAgent(DrSaiAgent):
         if skill_content is None:
             available = ", ".join(skills_loader.list_skills()) or "none"
             return f"Cannot promote skill '{skill_name}': not found. Available skills: {available}."
+        skill_content = resolve_mcp_skill_endpoints(skill_content)
 
         core_rules = self._extract_core_skill_rules(skill_content=skill_content, focus=focus)
         if not core_rules.strip():
@@ -4044,7 +4078,9 @@ class RongZaiAgent(DrSaiAgent):
                             if skills_loader is None:
                                 skill_content = "No system skill is loaded."
                             else:
-                                skill_content = skills_loader.run_skill(argument["skill"])
+                                skill_content = resolve_mcp_skill_endpoints(
+                                    skills_loader.run_skill(argument["skill"])
+                                )
                             pending_tool_results.append(
                                 FunctionExecutionResult(
                                     content=f"Skill for {argument['skill']}:\n\n {skill_content}",

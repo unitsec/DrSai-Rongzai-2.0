@@ -46,7 +46,7 @@ description: Rietveld refinement skill for neutron powder diffraction using the 
    - 如果当前还没有可用的 GSAS-II MCP 代理工具，或者你无法确认该服务是否已经连接：
       - 根据下列连接信息连接 MCP 服务：
          - type: sse
-         - url: http://127.0.0.1:42506/sse
+         - url: http://127.0.0.1:${MCP_GSASII_REFINE_PORT}/sse
       - 连接成功后，认真阅读该 MCP 服务返回的工具名称和 description，确认工具的用法
    - 如果已经存在可用的 GSAS-II MCP 代理工具：继续后续步骤。
 

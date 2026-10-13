@@ -26,12 +26,15 @@ interface/paramsdata 的服务器绝对路径。save_root 仅用于接口的直�
 MCP 调用使用每次生成的独立输出目录。
 
     export WORKDIR=/absolute/path/to/agentWorkSpace
+    export MCP_NEUTRON_REFLECTION_PORT=42520
     /absolute/path/to/reflection-venv/bin/python tools/neutron_reflection/reflection_mcp.py
 
 入口默认导入本目录 interface 下的处理代码。
 如需兼容外部接口部署，可设置 NEUTRON_REFLECTION_INTERFACE_DIR 覆盖默认目录。
 工具与 Agent 需共享同一结果工作区。
-服务监听 127.0.0.1:42520，SSE 地址为 http://127.0.0.1:42520/sse。
+服务监听 127.0.0.1:${MCP_NEUTRON_REFLECTION_PORT}，SSE 地址为
+http://127.0.0.1:${MCP_NEUTRON_REFLECTION_PORT}/sse。也可以在仓库根目录 `.env`
+中设置 `MCP_NEUTRON_REFLECTION_PORT`；入口会在启动时加载该文件。
 当前按 Agent 与工具在同一台机器、同一网络环境部署。
 
 ## 调用与身份信息

@@ -2,12 +2,15 @@ import os
 import re
 import threading
 import uuid
+from pathlib import Path
 
 os.environ["MPLBACKEND"] = "Agg"
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 import sys
-from pathlib import Path
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=True)
 
 # Use the bundled interface unless deployment explicitly overrides it.
 interface_dir = os.environ.get("NEUTRON_REFLECTION_INTERFACE_DIR")
@@ -25,7 +28,7 @@ from agent_interface import process_reflection
 mcp = FastMCP(
     "BL08A Neutron Reflection",
     host="127.0.0.1",
-    port=42520,
+    port=int(os.getenv("MCP_NEUTRON_REFLECTION_PORT", "42520")),
 )
 
 processing_lock = threading.Lock()
