@@ -2095,13 +2095,26 @@ class RongZaiAgent(DrSaiAgent):
         """
         如果用户要求处理某个谱仪的某个RUN号的数据，先检查用户是否有权限访问该RUN号对应的课题，并检查该课题下的reduction文件夹中是否有包含runNumber的文件夹。数据就在这些文件夹中。
         该工具会返回检查结果，包含用户是否有权限访问该RUN号对应的课题，以及reduction文件夹中是否有包含runNumber的文件夹。
-        一旦检查通过，你会直接获得访问reduction文件夹的权限和同级目录下的analysis文件夹的权限。
+        一旦检查通过，你会直接获得访问reduction文件夹的权限、同级目录下的analysis文件夹的权限、对应谱仪的info文件夹的权限。
         
-        注意，一旦你调用这个工具并检查通过，你就有一个必须做的事情：在数据分析得到一个更好结果后，将数据分析结果保存到analysis文件夹中。
+        注意，一旦你调用这个工具并检查通过，你就有一个必须做的事情：在数据分析得到一个更好结果后，在analysis文件夹中新建一个以“RUN号_当前年月日_当前时分秒”命名的文件夹（例如“RUN0000001_20240605_153045”），将数据分析结果保存到该文件夹中。
             分析结果具体指：
                 1.一个你生成的md文件，用于系统描述分析结果。
                 2.这个分析产生的重要数据文件。
             你可能在分析过程中保存多次，注意必须覆盖保存，同类文件不能保存成不同名字也不能保存到其他地方。
+        注意，一旦你将分析结果文件写入了analysis下，你接下来就必须在对应谱仪的info文件夹（例如“BL09_info”）下写一个以“analysis_RUN号_当前年月日_当前时分秒”命名的json文件（例如“analysis_RUN0000001_20240605_153045.json”），用于记录分析结果的元信息。
+            该json文件格式严格按照下面的结构：
+            {
+                "proposal编号": {
+                    "analysis_RUN号_当前年月日_当前时分秒": {
+                        "分析结果文件1的绝对路径":"分析结果文件1内容的一句话描述",
+                        "分析结果文件2的绝对路径":"分析结果文件2内容的一句话描述",
+                        ...
+                        "分析结果文件n的绝对路径":"分析结果文件n内容的一句话描述",
+                    }
+                }
+            }
+            确保analysis文件夹中的每个分析结果文件夹和info文件夹中的json元信息文件一一对应，确保元信息文件中的内容与分析结果文件夹中的实际文件保持一致。
             
         
         Args:
@@ -2116,6 +2129,8 @@ class RongZaiAgent(DrSaiAgent):
                 - proposal: proposal编号（如果检查成功）
                 - reduction_folder_path: reduction文件夹路径（如果检查成功）
                 - run_folders_path: reduction目录下包含runNumber的文件夹名称列表（如果检查成功）
+                - analysis_folder_path: analysis文件夹路径（如果检查成功）
+                - info_folder_path: info文件夹路径（如果检查成功）
         """
         
         try:
@@ -2199,11 +2214,14 @@ class RongZaiAgent(DrSaiAgent):
                     results["error"] = f"用户 {user_id} 无权访问 {runNumber} 对应的课题 {found_proposal}"
                     return results
 
+            is_production = os.getenv("SERVICE_MODE") == "PROD"
+            environment_suffix = "" if is_production else "/dev"
+            proposal_root = f"/csns_data/{beamline}/{found_proposal}"
+            reduction_folder_path = f"{proposal_root}/reduction{environment_suffix}"
+            analysis_folder_path = f"{proposal_root}/analysis{environment_suffix}"
+            info_folder_path = f"/csns_data/{beamline}/{beamline}_info{environment_suffix}"
+
             # 检查found_proposal下是否有reduction文件夹
-            if os.getenv("SERVICE_MODE") == "PROD":
-                reduction_folder_path = f"/csns_data/{beamline}/{found_proposal}/reduction"
-            else:
-                reduction_folder_path = f"/csns_data/{beamline}/{found_proposal}/reduction/dev"
             if not os.path.exists(reduction_folder_path):
                 results["error"] = f"有权限，但课题 {found_proposal} 下不存在 reduction 文件夹"
                 return results
@@ -2225,12 +2243,10 @@ class RongZaiAgent(DrSaiAgent):
 
             # 给予智能体操作权限，允许访问reduction文件夹和analysis文件夹
             self._extra_work_dirs.append(reduction_folder_path)
-            if os.getenv("SERVICE_MODE") == "PROD":
-                os.makedirs(f"/csns_data/{beamline}/{found_proposal}/analysis", exist_ok=True)
-                self._extra_work_dirs.append(f"/csns_data/{beamline}/{found_proposal}/analysis")
-            else:
-                os.makedirs(f"/csns_data/{beamline}/{found_proposal}/analysis/dev", exist_ok=True)
-                self._extra_work_dirs.append(f"/csns_data/{beamline}/{found_proposal}/analysis/dev")
+            os.makedirs(analysis_folder_path, exist_ok=True)
+            self._extra_work_dirs.extend([analysis_folder_path, info_folder_path])
+            results["analysis_folder_path"] = analysis_folder_path
+            results["info_folder_path"] = info_folder_path
         except Exception as e:
             import traceback
             traceback_str = traceback.format_exc()

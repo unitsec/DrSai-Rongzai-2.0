@@ -325,7 +325,7 @@ async def create_agent(
     SYSTEM = get_rongzai_system_prompt()
 
     return RongZaiAgent(
-        name = "RongzaiAgentDev",
+        name = "RongzaiAgent",
         model_client=set_model_client(defult_config_name),
         system_message=SYSTEM,
         reflect_on_tool_use=False,
@@ -359,7 +359,7 @@ if __name__ == "__main__":
     asyncio.run(
         run_worker(
             # 智能体注册信息
-            agent_name="Rongzai Agent Dev",
+            agent_name="Rongzai Agent",
             author="wanghao96@ihep.ac.cn",
             permission="groups: rongzai,payg,hairongzai@ihep.ac.cn; users:admin, ddf_free; owner: wanghao96@ihep.ac.cn",
             description=json.dumps(
@@ -393,7 +393,7 @@ if __name__ == "__main__":
             port = int(os.getenv('RZ_PORT_AGENT_WEB', '42501')),
             # 是否注册到HepAI智能体平台
             no_register=False,
-            drsai_dir = "/dg_workfs/domassy/rongzai/rongzai-agent/tmp",
+            drsai_dir = appdir,
             # 是否注册为OpenWebUI的pipeline
             enable_openwebui_pipeline=False, 
             history_mode = "backend",
