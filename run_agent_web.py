@@ -3,6 +3,44 @@ import asyncio, os
 import json
 from loguru import logger
 
+
+def _patch_worker_advertise_ip() -> None:
+    """
+    让 worker 向 HepAI controller 注册时使用显式指定的 IP。
+
+    Why: 默认的 auto_worker_address 用 `socket.connect(("10.255.255.255", 1))`
+    的 trick 猜本机 IP，拿到的是默认出口网卡的地址。本机默认路由走公网 NIC，
+    结果注册地址变成公网 IP（如 202.122.38.201），而不是内网宿主机 IP
+    （如 10.1.251.56）。
+    How to apply: 设置环境变量 RZ_WORKER_ADVERTISE_IP=10.1.251.56 即可。
+    未设置时保持原行为。
+    """
+    advertise_ip = os.getenv("RZ_WORKER_ADVERTISE_IP", "").strip()
+    if not advertise_ip:
+        return
+
+    def _patched(worker_address, host, port):
+        if worker_address != "auto":
+            return worker_address
+        if host in ("localhost", "127.0.0.1"):
+            return f"http://{host}:{port}"
+        return f"http://{advertise_ip}:{port}"
+
+    try:
+        from drsai.utils import utils as _drsai_utils
+        _drsai_utils.auto_worker_address = _patched
+    except Exception as e:
+        logger.warning("patch drsai auto_worker_address failed: {}", e)
+
+    try:
+        from hepai.modules.haiddf.worker import utils as _hepai_utils
+        _hepai_utils.auto_worker_address = _patched
+    except Exception as e:
+        logger.warning("patch hepai auto_worker_address failed: {}", e)
+
+    logger.info("worker advertise IP overridden to {}", advertise_ip)
+
+
 from drsai.modules.components.model_client import  HepAIChatCompletionClient, ModelFamily
 
 from drsai.modules.components.model_client.anthropic import (
@@ -29,6 +67,7 @@ from src.configs.system_prompt import get_rongzai_system_prompt
 import os
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(here, ".env"), override=True)
+_patch_worker_advertise_ip()
 os.environ.setdefault("RONGZAI_DEBUG_SYSTEM_PROMPT", "0")
 # 打开后会把每轮模型完整输出（含流式文本与最终结构化内容）写入日志。
 os.environ.setdefault("RONGZAI_DEBUG_LLM_OUTPUT", "1")
