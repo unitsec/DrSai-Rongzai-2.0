@@ -4,14 +4,15 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 STATE_DIR="$ROOT/tmp/tools"
 LOG_DIR="$STATE_DIR/logs"
-NAMES=(zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine)
-ENVS=(gsas2_py311 gsas2_py311 sasmodels diffpy.pdffit2_env sasmodels)
+NAMES=(zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine magnetic-analysis)
+ENVS=(gsas2_py311 gsas2_py311 sasmodels diffpy.pdffit2_env sasmodels gsas2_py311)
 SCRIPTS=(
     tools/pyZRietveld/0zrietveld_refine.py
     tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py
     tools/sasview/0sasview_refine.py
     tools/pdf_refinement/0pdf_refine.py
     tools/Irena/0Irena_fit.py
+    tools/magnetic_structure_mcp.py
 )
 
 usage() {
@@ -19,7 +20,7 @@ usage() {
 Usage: bash start_tools.sh [start|restart|stop|status|logs] [all|TOOL ...]
 
 Default: start all
-Tools: zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine
+Tools: zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine magnetic-analysis
 start   Start missing tools; leave existing processes untouched.
 restart Stop existing tools (including manually started ones), then start them.
 stop    Stop selected tools and their current child processes.
@@ -47,7 +48,7 @@ esac
 
 selected=()
 if (($# == 0)) || [[ "$*" == all ]]; then
-    selected=(0 1 2 3 4)
+    selected=(0 1 2 3 4 5)
 else
     for name in "$@"; do
         found=false

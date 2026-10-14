@@ -217,7 +217,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent, onEdit }) => {
       </div>
 
       {/* 描述区 */}
-      <p className="mt-2 line-clamp-2 text-left text-[clamp(8px,0.94vw,12px)] leading-[1.42] text-[#404e67] dark:text-[#c7d0e6] mb-2">
+      <p className="mt-2 line-clamp-2 whitespace-pre-line text-left text-[clamp(8px,0.94vw,12px)] leading-[1.42] text-[#404e67] dark:text-[#c7d0e6] mb-2">
         {agent.description}
       </p>
 

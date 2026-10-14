@@ -1,9 +1,23 @@
 import { getServerUrl } from "../components/utils";
+import { useSettingsStore } from "../components/store";
 import { ENABLE_SSO } from "./authConfig";
 
 const TOKEN_KEY = "token";
 const USER_EMAIL_KEY = "user_email";
 const LEGACY_KEYS = ["username", "user_name"] as const;
+const USER_SCOPED_KEYS = [
+  "drsai_settings",
+  "drsai-mode-config",
+  "drsai.recentAgents",
+  "current_session_id",
+] as const;
+
+function clearUserScopedStorage(): void {
+  for (const key of USER_SCOPED_KEYS) {
+    window.localStorage.removeItem(key);
+  }
+  useSettingsStore.getState().resetToDefaults();
+}
 
 export function getAuthToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -48,6 +62,10 @@ export function scheduleAuthRefresh(accessToken: string): void {
 }
 
 export function saveAuthSession(accessToken: string, userEmail: string): void {
+  const previousUserEmail = getUserEmail();
+  if (previousUserEmail && previousUserEmail !== userEmail) {
+    clearUserScopedStorage();
+  }
   window.localStorage.setItem(TOKEN_KEY, accessToken);
   window.localStorage.setItem(USER_EMAIL_KEY, userEmail);
   for (const key of LEGACY_KEYS) {
@@ -58,6 +76,7 @@ export function saveAuthSession(accessToken: string, userEmail: string): void {
 
 export function clearAuthSession(): void {
   cancelAuthRefreshSchedule();
+  clearUserScopedStorage();
   window.localStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(USER_EMAIL_KEY);
   for (const key of LEGACY_KEYS) {

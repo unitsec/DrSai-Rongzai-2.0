@@ -3,6 +3,7 @@ import multiprocessing
 import time
 import traceback
 import uuid
+from pathlib import Path
 from queue import Empty
 from typing import Any, Dict, Optional, Tuple
 
@@ -43,6 +44,7 @@ class ProcessPollingMcpToolBase:
         target_func: Any = None,
         param_mapping: Dict[str, str] = None,
         task_namespace_param: str = "mission_name",
+        progress_file: Any = None,
     ):
         if target_func is None:
             raise ValueError("target_func is required")
@@ -56,8 +58,13 @@ class ProcessPollingMcpToolBase:
             param_mapping = {p: p for p in sig.parameters}
         self.param_mapping: Dict[str, str] = dict(param_mapping)
         self.task_namespace_param = task_namespace_param
+        # Optional: a callable that maps a task's tool kwargs to the progress log the task
+        # keeps. When a tool declares it, every poll of a still-running task carries the
+        # newest step lines, so a long stage never looks silent to the user.
+        self.progress_file = progress_file
         self.id_to_task: Dict[Tuple[str, str], multiprocessing.Process] = {}
         self.id_to_result: Dict[Tuple[str, str], multiprocessing.Queue] = {}
+        self.id_to_kwargs: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     def build_process_kwargs(self, **tool_kwargs: Any) -> Dict[str, Any]:
         return {
@@ -108,6 +115,10 @@ class ProcessPollingMcpToolBase:
         # is_alive() so such tasks can complete instead of polling forever.
         if info is None and proc.is_alive():
             snapshot["state"] = "running"
+            progress = self._read_progress(task_key)
+            if progress:
+                # Relay what the task is doing right now, not just that it is alive.
+                snapshot["progress"] = progress
             return snapshot
 
         if info is None and resq is not None:
@@ -125,6 +136,7 @@ class ProcessPollingMcpToolBase:
 
         # Cleanup completed task so the same task_id can start a new task later.
         self.id_to_task.pop(task_key, None)
+        self.id_to_kwargs.pop(task_key, None)
         q = self.id_to_result.pop(task_key, None)
         if q is not None:
             try:
@@ -160,8 +172,33 @@ class ProcessPollingMcpToolBase:
             },
         )
         self.id_to_task[task_key] = proc
+        self.id_to_kwargs[task_key] = dict(process_kwargs)
         proc.start()
         return task_id
+
+    def _read_progress(self, task_key: Tuple[str, str], max_lines: int = 6) -> Optional[Dict[str, Any]]:
+        """Newest progress lines a live task published, when it declared a progress file."""
+        if self.progress_file is None:
+            return None
+        kwargs = self.id_to_kwargs.get(task_key)
+        if not kwargs:
+            return None
+        try:
+            resolved = self.progress_file(dict(kwargs))
+            path = Path(resolved) if resolved else None
+        except Exception:
+            return None
+        if path is None or not path.is_file():
+            return None
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            age = max(0.0, time.time() - path.stat().st_mtime)
+        except OSError:
+            return None
+        lines = [line for line in text if line.strip()][-max(1, int(max_lines)):]
+        if not lines:
+            return None
+        return {"path": str(path), "lines": lines, "age_seconds": round(age, 1)}
 
     def register_mcp_tool(self, mcp_server, name: str = None, doc: str = None):
         """Register target_func as an MCP tool reusing its own signature.

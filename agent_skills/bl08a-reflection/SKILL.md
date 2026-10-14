@@ -6,7 +6,7 @@ description: 处理CSNS BL08A单组或多组中子反射数据；缺少直通身
 # BL08A 中子反射处理
 
 1. 获取用户明确给出的分组，不能将不同直通/实验的数据混组。每组必须包含一个直通RUN和至少一个反射RUN。没有说清分组时先问清，不猜测编号、分组、身份或角度。
-2. 连接MCP：type=sse，url=http://127.0.0.1:42520/sse。阅读工具schema，优先使用process_neutron_reflection_groups（单组也可使用）。原process_neutron_reflection仅兼容元数据完整的旧单组调用。
+2. 连接MCP：type=sse，url=http://127.0.0.1:${MCP_NEUTRON_REFLECTION_PORT}/sse。阅读工具schema，优先使用process_neutron_reflection_groups（单组也可使用）。原process_neutron_reflection仅兼容元数据完整的旧单组调用。
 3. groups每项使用runs编号列表；用户明确指定直通时传direct_run，明确提供反射角时传angles_deg（RUN到数值的映射，单位度）。禁止把缺失Rz当成0，禁止修改原始JSON。统一数据目录部署时省略data_source，工具使用管理员data_root配置对应的default数据源。只有用户或管理员明确提供其他已配置别名时才使用，不猜测别名、不传任意路径、不自动搜索其他目录。
 4. 不知道元数据是否完整时，可以不填direct_run及angles_deg，先调用工具预检。返回needs_input时还没有计算：按questions询问用户本组哪个RUN是直通、其余各反射RUN的角度分别是多少度。用户已明确回答的值不要重复询问。收到补充后保留原分组和其他已知参数，重新提交完整groups。
 5. 元数据与用户输入冲突时，向用户展示冲突值，只有用户明确确认后才能设置confirm_metadata_override=true。不能为通过校验自行确认。缺字段、文件不存在、数据源未配置、计算失败是不同问题；不能用编造角度掩盖文件错误。

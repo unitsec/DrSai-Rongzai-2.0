@@ -169,7 +169,7 @@ export default function NewChatView({
                             {displayName}
                         </h1>
                         {description ? (
-                            <p className="mt-3 max-w-md text-[15px] leading-relaxed text-secondary sm:text-base">
+                            <p className="mt-3 max-w-md whitespace-pre-line text-[15px] leading-relaxed text-secondary sm:text-base">
                                 {description}
                             </p>
                         ) : (

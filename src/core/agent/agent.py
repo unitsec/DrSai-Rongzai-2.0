@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from pathlib import Path
 from loguru import logger
 from autogen_ext.tools.mcp import McpWorkbench, SseServerParams, StdioServerParams
-
+from collections.abc import Mapping
 from drsai import CancellationToken, FunctionCall
 from drsai.modules.baseagent import (
     DrSaiAgent, 
@@ -101,6 +101,39 @@ from src.core.auth.domas_permission_provider import DomasPermissionProvider
 
 _USER_THREAD_ID_CACHE: Dict[tuple[str, str], str] = {}
 _ACTIVE_THREAD_IDS: Set[str] = set()
+_MCP_SKILL_PORT_DEFAULTS = {
+    "MCP_GSASII_REFINE_PORT": "42506",
+    "MCP_PDF_REFINE_PORT": "42507",
+    "MCP_SASVIEW_REFINE_PORT": "42508",
+    "MCP_IRENA_REFINE_PORT": "42509",
+    "MCP_ZRIETVELD_REFINE_PORT": "42510",
+    "MCP_NEUTRON_REFLECTION_PORT": "42520",
+}
+
+
+def resolve_mcp_skill_endpoints(skill_content: str) -> str:
+    """Resolve configured MCP ports in skill content before it reaches the model."""
+
+    def replace_port(match: re.Match[str]) -> str:
+        variable = match.group(1)
+        default = _MCP_SKILL_PORT_DEFAULTS.get(variable)
+        if default is None:
+            return match.group(0)
+
+        value = os.getenv(variable, default).strip()
+        try:
+            port = int(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"{variable} must be an integer between 1 and 65535; got {value!r}."
+            ) from exc
+        if not 1 <= port <= 65535:
+            raise ValueError(
+                f"{variable} must be an integer between 1 and 65535; got {value!r}."
+            )
+        return str(port)
+
+    return re.sub(r"\$\{([A-Z][A-Z0-9_]*)\}", replace_port, skill_content)
 
 
 def normalize_thread_id(thread_id: str | None, user_id: str | None) -> str:
@@ -465,6 +498,7 @@ class RongZaiAgent(DrSaiAgent):
         db_manager: DatabaseManager | None = None,
         thread_id: str | None = None,
         user_id: str | None = None,
+        user_cookies: Mapping[str, str] | None = None,
         set_model_client: Callable | None = None,
         llm_mode_config: Dict = {},
         fallback_config_names: Optional[List[str]] = None,
@@ -511,6 +545,10 @@ class RongZaiAgent(DrSaiAgent):
         self._env_fallback_config_names = self._parse_fallback_configs_from_env()
 
         self._developer_system_message = system_message
+        self._user_cookies = {
+            str(key): str(value)
+            for key, value in (user_cookies or {}).items()
+        }
 
         # === workspace for assistant ===
         if not work_dir:
@@ -562,13 +600,13 @@ class RongZaiAgent(DrSaiAgent):
         )
 
         # domas和icat文件访问权限检查工具。
-        # self._tools.append(
-        #     FunctionTool(
-        #         self.check_user_permission_for_file,
-        #         description=self.check_user_permission_for_file.__doc__ or "",
-        #         name="CheckUserPermission",
-        #     )
-        # )
+        self._tools.append(
+            FunctionTool(
+                self.check_user_permission_for_file,
+                description=self.check_user_permission_for_file.__doc__ or "",
+                name="CheckUserPermission",
+            )
+        )
 
         # === model context ===
         # 对话上下文管理器
@@ -588,11 +626,6 @@ class RongZaiAgent(DrSaiAgent):
         self._download_dir = self._work_dir / self._thread_id /"downloads"
         self._download_dir.mkdir(parents=True, exist_ok=True)
         self._delegate_file_url_cache: Dict[str, str] = {}
-
-        # 浏览器 cookie 由 drsai_ui 在 WS 握手时抓白名单快照,沿
-        # body["user"]["cookies"] 流过 drsai cores 落到 UserInput.extra_requests。
-        # 这里默认空,_load_user_cookies() 在每轮消息进来时刷新。
-        self._user_cookies: Dict[str, str] = {}
 
         # === skills ===
         # 仅加载系统级 skills，禁用用户覆盖。
@@ -2062,13 +2095,26 @@ class RongZaiAgent(DrSaiAgent):
         """
         如果用户要求处理某个谱仪的某个RUN号的数据，先检查用户是否有权限访问该RUN号对应的课题，并检查该课题下的reduction文件夹中是否有包含runNumber的文件夹。数据就在这些文件夹中。
         该工具会返回检查结果，包含用户是否有权限访问该RUN号对应的课题，以及reduction文件夹中是否有包含runNumber的文件夹。
-        一旦检查通过，你会直接获得访问reduction文件夹的权限和同级目录下的analysis文件夹的权限。
+        一旦检查通过，你会直接获得访问reduction文件夹的权限、同级目录下的analysis文件夹的权限、对应谱仪的info文件夹的权限。
         
-        注意，一旦你调用这个工具并检查通过，你就有一个必须做的事情：在数据分析得到一个更好结果后，将数据分析结果保存到analysis文件夹中。
+        注意，一旦你调用这个工具并检查通过，并且你做了数据分析，得到有价值或更好的结果，你就有一个必须做的事情：在analysis文件夹中新建一个以“RUN号_当前年月日_当前时分秒”命名的文件夹（例如“RUN0000001_20240605_153045”），将数据分析结果保存到该文件夹中。
             分析结果具体指：
                 1.一个你生成的md文件，用于系统描述分析结果。
                 2.这个分析产生的重要数据文件。
             你可能在分析过程中保存多次，注意必须覆盖保存，同类文件不能保存成不同名字也不能保存到其他地方。
+        注意，一旦你将分析结果文件写入了analysis下，你接下来就必须在对应谱仪的info文件夹（例如“BL09_info”）下写一个以“analysis_RUN号_当前年月日_当前时分秒”命名的json文件（例如“analysis_RUN0000001_20240605_153045.json”），用于记录分析结果的元信息。
+            该json文件格式严格按照下面的结构：
+            {
+                "proposal编号": {
+                    "analysis_RUN号_当前年月日_当前时分秒": {
+                        "分析结果文件1的绝对路径":"分析结果文件1内容的一句话描述",
+                        "分析结果文件2的绝对路径":"分析结果文件2内容的一句话描述",
+                        ...
+                        "分析结果文件n的绝对路径":"分析结果文件n内容的一句话描述",
+                    }
+                }
+            }
+            确保analysis文件夹中的每个分析结果文件夹和info文件夹中的json元信息文件一一对应，确保元信息文件中的内容与分析结果文件夹中的实际文件保持一致。
             
         
         Args:
@@ -2083,20 +2129,22 @@ class RongZaiAgent(DrSaiAgent):
                 - proposal: proposal编号（如果检查成功）
                 - reduction_folder_path: reduction文件夹路径（如果检查成功）
                 - run_folders_path: reduction目录下包含runNumber的文件夹名称列表（如果检查成功）
+                - analysis_folder_path: analysis文件夹路径（如果检查成功）
+                - info_folder_path: info文件夹路径（如果检查成功）
         """
         
         try:
             results = {"status": "failed"}
             
             # 每轮消息开始前,从 DB 拉一次最新 cookies(WS 重连/前端刷新后下一轮就生效)。
-            self._load_user_cookies()
+            # self._load_user_cookies()
             sso = self._user_cookies.get("sso-token", "")
             auth_provider = (self._user_cookies.get("rz-auth-provider", "") or "").strip().lower()
             ui_role = (self._user_cookies.get("rz-role", "") or "").strip().lower()
             logger.info(
                 f"[cookie-debug] user={self._user_id} thread={self._thread_id} "
                 f"cookie_keys={list(self._user_cookies.keys())} "
-                f"sso_token={ sso if sso else 'EMPTY' }"
+                f"sso_token is { 'exists' if sso else 'EMPTY' }"
             )
             # token = _get_user_token(user_id) or "Rongzai@324"
             if auth_provider == "domas":
@@ -2166,8 +2214,14 @@ class RongZaiAgent(DrSaiAgent):
                     results["error"] = f"用户 {user_id} 无权访问 {runNumber} 对应的课题 {found_proposal}"
                     return results
 
+            is_production = os.getenv("SERVICE_MODE") == "PROD"
+            environment_suffix = "" if is_production else "/dev"
+            proposal_root = f"/csns_data/{beamline}/{found_proposal}"
+            reduction_folder_path = f"{proposal_root}/reduction{environment_suffix}"
+            analysis_folder_path = f"{proposal_root}/analysis{environment_suffix}"
+            info_folder_path = f"/csns_data/{beamline}/{beamline}_info{environment_suffix}"
+
             # 检查found_proposal下是否有reduction文件夹
-            reduction_folder_path = f"/csns_data/{beamline}/{found_proposal}/reduction"
             if not os.path.exists(reduction_folder_path):
                 results["error"] = f"有权限，但课题 {found_proposal} 下不存在 reduction 文件夹"
                 return results
@@ -2189,8 +2243,10 @@ class RongZaiAgent(DrSaiAgent):
 
             # 给予智能体操作权限，允许访问reduction文件夹和analysis文件夹
             self._extra_work_dirs.append(reduction_folder_path)
-            os.makedirs(f"/csns_data/{beamline}/{found_proposal}/analysis", exist_ok=True)
-            self._extra_work_dirs.append(f"/csns_data/{beamline}/{found_proposal}/analysis")
+            os.makedirs(analysis_folder_path, exist_ok=True)
+            self._extra_work_dirs.extend([analysis_folder_path, info_folder_path])
+            results["analysis_folder_path"] = analysis_folder_path
+            results["info_folder_path"] = info_folder_path
         except Exception as e:
             import traceback
             traceback_str = traceback.format_exc()
@@ -2299,6 +2355,7 @@ class RongZaiAgent(DrSaiAgent):
         if skill_content is None:
             available = ", ".join(skills_loader.list_skills()) or "none"
             return f"Cannot promote skill '{skill_name}': not found. Available skills: {available}."
+        skill_content = resolve_mcp_skill_endpoints(skill_content)
 
         core_rules = self._extract_core_skill_rules(skill_content=skill_content, focus=focus)
         if not core_rules.strip():
@@ -3348,7 +3405,11 @@ class RongZaiAgent(DrSaiAgent):
         fallback_candidates: List[str] = self._get_fallback_config_names()
         fallback_attempted: set[str] = set()
         forced_invalid_output_once = False
+        require_second_no_tool_confirmation = False
         no_tool_followup_pending = False
+        skip_no_tool_followup = os.getenv("RONGZAI_SKIP_NO_TOOL_FOLLOWUP", "").lower() in {
+            "1", "true", "yes", "on"
+        }
         try:
             # 正常路径下语言检测已在 run_stream 的消息预处理阶段完成。
             if not self._lang_prompt:
@@ -3522,17 +3583,28 @@ class RongZaiAgent(DrSaiAgent):
                         )
                     )
 
-                    if no_tool_followup_pending:
-                        logger.info(
-                            "[NoToolFollowup] Second consecutive no-tool output detected. Finish current turn and wait for user input."
-                        )
+                    if (
+                        not require_second_no_tool_confirmation
+                        or no_tool_followup_pending
+                        or skip_no_tool_followup
+                    ):
+                        if no_tool_followup_pending:
+                            logger.info(
+                                "[NoToolFollowup] Second consecutive no-tool output detected. Finish current turn and wait for user input."
+                            )
+                        elif skip_no_tool_followup:
+                            logger.info(
+                                "[NoToolFollowup] Disabled by RONGZAI_SKIP_NO_TOOL_FOLLOWUP; finish current turn."
+                            )
+                        else:
+                            logger.info(
+                                "[NoToolFollowup] Second confirmation is disabled; finish current turn."
+                            )
                         if not buffered_stream_events:
                             yield ModelClientStreamingChunkEvent(
                                 content=model_result.content,
                                 source=agent_name,
                             )
-                        # 发送一个内部可见的收尾响应，确保上层 run_stream 能产出 TaskResult，
-                        # 避免前端一直停留在 Processing。
                         yield Response(
                             chat_message=TextMessage(
                                 content="",
@@ -4022,7 +4094,9 @@ class RongZaiAgent(DrSaiAgent):
                             if skills_loader is None:
                                 skill_content = "No system skill is loaded."
                             else:
-                                skill_content = skills_loader.run_skill(argument["skill"])
+                                skill_content = resolve_mcp_skill_endpoints(
+                                    skills_loader.run_skill(argument["skill"])
+                                )
                             pending_tool_results.append(
                                 FunctionExecutionResult(
                                     content=f"Skill for {argument['skill']}:\n\n {skill_content}",
@@ -4700,4 +4774,3 @@ class RongZaiAgent(DrSaiAgent):
 
 
         
-

@@ -43,11 +43,12 @@ reflection_config.py保留原配置合并方式，只对实际引用的字符串
 
 ```bash
 export WORKDIR=/absolute/path/to/agentWorkSpace
+export MCP_NEUTRON_REFLECTION_PORT=42520
 /absolute/path/to/reflection-venv/bin/python tools/neutron_reflection/reflection_mcp.py
 ```
 
-Agent和工具需共享结果工作区，当前按同机部署设计。监听127.0.0.1:42520，
-SSE地址http://127.0.0.1:42520/sse。可用NEUTRON_REFLECTION_INTERFACE_DIR覆盖默认内置接口目录。
+Agent和工具需共享结果工作区，当前按同机部署设计。监听127.0.0.1:${MCP_NEUTRON_REFLECTION_PORT}，
+SSE地址http://127.0.0.1:${MCP_NEUTRON_REFLECTION_PORT}/sse。可用NEUTRON_REFLECTION_INTERFACE_DIR覆盖默认内置接口目录。
 
 ## 分组输入与缺参交互
 
@@ -145,3 +146,7 @@ RUN0000963使用元数据，RUN0000216～218使用用户提供的1.22度与RUN00
 MCP保持进程内串行计算；目录隔离不等于账号认证或原始数据授权。
 日志仍为接口共享BL08A.log；失败可能留下部分文件；未提供自动重启/开机启动。
 服务器路径配置、key、数据、结果和部署备份不应进入MR。
+
+## MCP 端口配置
+
+MCP_NEUTRON_REFLECTION_PORT 默认42520，也可在仓库根目录 .env 中配置；入口启动时加载该文件。Agent会解析skill地址中的端口占位符。工具端口与Agent解析后的连接端口必须一致。

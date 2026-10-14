@@ -6,23 +6,27 @@ fixture=$(mktemp -d /tmp/rongzai-tools-test.XXXXXXXX)
 cp "$ROOT/start_tools.sh" "$fixture/start_tools.sh"
 mkdir -p "$fixture/bin" "$fixture/tools/pyZRietveld" \
     "$fixture/tools/GSAS-II-master/GSASII" "$fixture/tools/sasview" \
-    "$fixture/tools/pdf_refinement" "$fixture/tools/Irena"
+    "$fixture/tools/pdf_refinement" "$fixture/tools/Irena" \
+    "$fixture/tools/neutron_reflection"
 
 cleanup() {
     bash "$fixture/start_tools.sh" stop all >/dev/null || return
-    rm -f -- "$fixture/bin/conda" "$fixture/start_tools.sh" \
+    rm -f -- "$fixture/bin/conda" "$fixture/bin/reflection-python" "$fixture/start_tools.sh" \
         "$fixture/tools/pyZRietveld/0zrietveld_refine.py" \
         "$fixture/tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py" \
         "$fixture/tools/sasview/0sasview_refine.py" \
         "$fixture/tools/pdf_refinement/0pdf_refine.py" \
-        "$fixture/tools/Irena/0Irena_fit.py" "$fixture/tmp/tools/manager.lock"
+        "$fixture/tools/Irena/0Irena_fit.py" \
+        "$fixture/tools/neutron_reflection/reflection_mcp.py" \
+        "$fixture/tmp/tools/manager.lock"
     local name
-    for name in zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine; do
+    for name in zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine neutron-reflection; do
         rm -f -- "$fixture/tmp/tools/logs/$name.log" "$fixture/tmp/tools/$name.pid"
     done
     rmdir "$fixture/bin" "$fixture/tools/pyZRietveld" \
         "$fixture/tools/GSAS-II-master/GSASII" "$fixture/tools/GSAS-II-master" \
         "$fixture/tools/sasview" "$fixture/tools/pdf_refinement" "$fixture/tools/Irena" \
+        "$fixture/tools/neutron_reflection" \
         "$fixture/tools" "$fixture/tmp/tools/logs" "$fixture/tmp/tools" \
         "$fixture/tmp" "$fixture"
 }
@@ -44,10 +48,22 @@ EOF
 chmod +x "$fixture/bin/conda"
 export CONDA_EXE="$fixture/bin/conda"
 
+cat > "$fixture/bin/reflection-python" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == -c ]]; then exit 0; fi
+[[ "$1" == -u ]]
+shift
+bash "$@" &
+wait "$!"
+EOF
+chmod +x "$fixture/bin/reflection-python"
+export NEUTRON_REFLECTION_PYTHON="$fixture/bin/reflection-python"
+
 for entry in tools/pyZRietveld/0zrietveld_refine.py \
     tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py \
     tools/sasview/0sasview_refine.py tools/pdf_refinement/0pdf_refine.py \
-    tools/Irena/0Irena_fit.py; do
+    tools/Irena/0Irena_fit.py tools/neutron_reflection/reflection_mcp.py; do
     cat > "$fixture/$entry" <<'EOF'
 #!/usr/bin/env bash
 trap 'exit 0' TERM

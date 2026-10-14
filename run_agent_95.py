@@ -50,6 +50,7 @@ def _safe_add_usage(usage1: RequestUsage, usage2: RequestUsage) -> RequestUsage:
 _openai_client_patch_target._add_usage = _safe_add_usage
 
 llm_mode_config = {
+    "deepseek-v4.1-flash (free)": "deepseek-ai/deepseek-v4.1-flash",
     "deepseek-v4-flash (free)": "deepseek-ai/deepseek-v4-flash",
     "deepseek-v4-pro (free)": "deepseek-ai/deepseek-v4-pro",
     "gpt-5 (charge)": "openai/gpt-5",
@@ -320,9 +321,15 @@ if __name__ == "__main__":
             agent_name="Rongzai Agent",
             author="wanghao96@ihep.ac.cn",
             permission="groups: rongzai,payg,hairongzai@ihep.ac.cn; users:admin, ddf_free; owner: wanghao96@ihep.ac.cn",
-            description = '{"en":"Rongzai-Your neutron scattering data analysis assistant by CSNS data analysis group","zh":"蓉仔——你的中子散射数据分析助手  by中国散裂中子源数据分析组"}',
+            description=json.dumps(
+                {
+                    "en": "Rongzai-Your neutron scattering data analysis assistant\nby CSNS data analysis group",
+                    "zh": "蓉仔——你的中子散射数据分析助手\nby 中国散裂中子源数据分析组",
+                },
+                ensure_ascii=False,
+            ),
             version = "0.1.0",
-            logo="https://note.ihep.ac.cn/uploads/244b9387-5eb0-425f-ad3e-0db3ab1a56f6.png",
+            logo="https://rongzai.ihep.ac.cn/rongzai-agent-logo.png",
             examples=[{"en":"Example1: Help me refine the BL16 RUN0023568 group5 diffraction spectrum using GSAS-II, the cif file is Si.cif",
                        "zh":"示例1：用GSAS-II帮我把BL16的RUN0023568的group5的衍射谱精修好，cif文件是Si.cif"},
                         {"en":"Example2: Help me refine the BL09 RUN0000410 groupMA diffraction spectrum using Z-Rietveld, the cif file is zeolite.cif",
@@ -338,7 +345,7 @@ if __name__ == "__main__":
             announcements=[{"en":"This is a test agent for DrSai Rongzai, please do not use it for production purposes. If you have any questions, please contact wanghao96@ihep.ac.cn."},
                         {"zh":"这是DrSai Rongzai的测试智能体，请勿用于生产用途。如有任何问题，请联系 wanghao96@ihep.ac.cn."}],
             agent_config = llm_mode_config,
-            default_config_name = "deepseek-v4-pro",
+            default_config_name = "deepseek-v4.1-flash",
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
@@ -355,4 +362,3 @@ if __name__ == "__main__":
             link_wechat = False
         )
     )
-

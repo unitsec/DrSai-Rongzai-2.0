@@ -374,7 +374,18 @@ async def create_agent(
     )
 
 if __name__ == "__main__":
-    
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Run the RongZai worker.")
+    parser.add_argument("--local-test", action="store_true",
+                        help="Bind localhost and disable platform registration.")
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--runtime-dir", default=None,
+                        help="Override the worker database/runtime directory.")
+    cli_args, worker_args = parser.parse_known_args()
+    sys.argv = [sys.argv[0], *worker_args]
+
     asyncio.run(
         run_worker(
             # 智能体注册信息
@@ -401,10 +412,11 @@ if __name__ == "__main__":
             # 智能体实体
             agent_factory=create_agent, 
             # 后端服务配置
-            port = 42812, 
+            port = cli_args.port or int(os.getenv("RONGZAI_AGENT_PORT", 42812)),
+            host = "127.0.0.1" if cli_args.local_test else None,
             # 是否注册到HepAI智能体平台
-            no_register=False,
-            drsai_dir = "/home/wangh/rongzai-agent/tmp",
+            no_register=cli_args.local_test,
+            drsai_dir = cli_args.runtime_dir or "/home/wangh/rongzai-agent/tmp",
             # 是否注册为OpenWebUI的pipeline
             enable_openwebui_pipeline=False, 
             history_mode = "backend",
@@ -414,4 +426,3 @@ if __name__ == "__main__":
             link_wechat = False
         )
     )
-

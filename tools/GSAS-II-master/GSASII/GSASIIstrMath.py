@@ -1426,7 +1426,7 @@ def MagStructureFactor2(refDict,G,hfx,pfx,SGData,calcControls,parmDict):
     ainv = np.sqrt(np.diag(g))
     GS = G/np.outer(ast,ast)
     Ginv = g/np.outer(ainv,ainv)
-    uAmat = G2lat.Gmat2AB(GS)[0]
+    uAmat = G2lat.Gmat2AB(G)[0]/ainv
     Bmat = G2lat.Gmat2AB(G)[1]
     Mast = twopisq*np.multiply.outer(ast,ast)
     SGMT = np.array([ops[0].T for ops in SGData['SGOps']])
@@ -1507,7 +1507,7 @@ def MagStructureFactor2(refDict,G,hfx,pfx,SGData,calcControls,parmDict):
         mphase = np.concatenate(mphase,axis=1)              #Nref,full Nop,Natm
         sinm = np.sin(mphase)                               #ditto - match magstrfc.for
         cosm = np.cos(mphase)                               #ditto
-        HM = np.inner(Bmat,H)                             #put into cartesian space
+        HM = np.inner(Bmat.T,H)                           #reciprocal covectors into Cartesian
         HM = HM/np.sqrt(np.sum(HM**2,axis=0))               #Kdata = MAGS & HM = UVEC in magstrfc.for both OK
         eDotK = np.sum(HM[:,:,nxs,nxs]*Kdata[:,nxs,:,:],axis=0)
         Q = HM[:,:,nxs,nxs]*eDotK[nxs,:,:,:]-Kdata[:,nxs,:,:] #xyz,Nref,Nop,Natm = BPM in magstrfc.for OK
@@ -1588,7 +1588,7 @@ def MagStructureFactorDerv(refDict,G,hfx,pfx,SGData,calcControls,parmDict):
     ainv = np.sqrt(np.diag(g))
     GS = G/np.outer(ast,ast)
     Ginv = g/np.outer(ainv,ainv)
-    uAmat = G2lat.Gmat2AB(GS)[0]
+    uAmat = G2lat.Gmat2AB(G)[0]/ainv
     Mast = twopisq*np.multiply.outer(ast,ast)
     SGMT = np.array([ops[0].T for ops in SGData['SGOps']])
     SGT = np.array([ops[1] for ops in SGData['SGOps']])

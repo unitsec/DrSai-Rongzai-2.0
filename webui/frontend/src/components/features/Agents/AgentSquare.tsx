@@ -706,7 +706,7 @@ const AgentSquare: React.FC<AgentSquareProps> = ({
                       <div className="mt-0.5 truncate text-[12px] text-[#8f98ac] dark:text-[#9fa8bf]">
                         {defaultAgent.owner}
                       </div>
-                      <p className="mt-1 line-clamp-2 text-[13px] leading-snug text-[#404e67] dark:text-[#c7d0e6]">
+                      <p className="mt-1 line-clamp-2 whitespace-pre-line text-[13px] leading-snug text-[#404e67] dark:text-[#c7d0e6]">
                         {defaultAgent.description}
                       </p>
                     </div>

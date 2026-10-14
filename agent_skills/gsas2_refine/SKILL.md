@@ -46,7 +46,7 @@ description: Rietveld refinement skill for neutron powder diffraction using the 
    - 如果当前还没有可用的 GSAS-II MCP 代理工具，或者你无法确认该服务是否已经连接：
       - 根据下列连接信息连接 MCP 服务：
          - type: sse
-         - url: http://127.0.0.1:42506/sse
+         - url: http://127.0.0.1:${MCP_GSASII_REFINE_PORT}/sse
       - 连接成功后，认真阅读该 MCP 服务返回的工具名称和 description，确认工具的用法
    - 如果已经存在可用的 GSAS-II MCP 代理工具：继续后续步骤。
 
@@ -81,7 +81,7 @@ description: Rietveld refinement skill for neutron powder diffraction using the 
 
 6. 结束精修
    - 当用户认为精修已经完成，或者你认为已经无法继续优化精修结果时，就可以结束精修。
-   - 在结束前，你可以总结一下整个精修过程，包括每次迭代的参数调整和结果变化，以及最终的精修结果和你的评价。
+   - 在结束前，你需要总结整个精修过程，输出从第一轮到最后一轮的rwp（每次迭代的参数调整和结果变化，以表格形式展示），然后画一个趋势图给用户，然后给出你的评价。
    - 最后，你需要将最终的精修结果（.gpx文件和.cif文件）提供给用户下载；使用系统提供的文件交付能力传递最终可下载文件。
 
 ## 专家知识
