@@ -207,11 +207,15 @@ def calculate_mr_results(results):
 
     mr_results = {}
 
+    method = os.environ.get("NEUTRON_REFLECTION_MR_METHOD", "phits")
+    if method not in ("phits", "local_edge"):
+        raise ValueError("NEUTRON_REFLECTION_MR_METHOD必须为phits或local_edge")
     for run, dataset in results.items():
-
-        mr_results[run] = (
-            calculate_mr_from_dataset(dataset)
-        )
+        if method == "phits":
+            from supermirror_fit import fit_supermirror_from_dataset
+            mr_results[run] = fit_supermirror_from_dataset(dataset)
+        else:
+            mr_results[run] = calculate_mr_from_dataset(dataset)
 
     return mr_results
 
@@ -222,6 +226,12 @@ def plot_results(
 ):
 
     for run, dataset in results.items():
+
+        if mr_results[run].get("method") == "phits_3_37_tanh_fit_v1":
+            from supermirror_fit import plot_model_result
+            plot_model_result(dataset, mr_results[run], run,
+                              os.path.join(save_root, "plot", run))
+            continue
 
         run_dir = os.path.join(
             save_root,
@@ -440,6 +450,10 @@ def plot_results(
         ax_d.set_ylabel("Normalized derivative")
         ax_d.set_ylim(-1.1, 1.1)
 
+        if "analysis_q_end" in mr:
+            ax_r.axvline(mr["analysis_q_end"], color="gray", linestyle="-.",
+                         label="End of local derivative analysis")
+
         # -----------------------------
         # 标Segment2和Qm
         # -----------------------------
@@ -525,6 +539,20 @@ def build_summary(
             row["m"] = mr_results[run]["m"]
             row["r(%)"] = mr_results[run]["r"]*100
 
+        for key in ("method", "status", "Q_start", "Q_end", "platform_q_start",
+                    "platform_q_end", "analysis_q_end", "smoothing_window"):
+            row["mr_" + key] = mr_results.get(run, {}).get(key)
+
+        estimate = mr_results.get(run, {})
+        for column, key, scale in (("r_envelope(%)", "r_envelope", 100), ("R_center(%)", "r_center", 100),
+                                    ("R0(%)", "R0", 100), ("alpha_A", "alpha", 1),
+                                    ("W_A^-1", "W", 1), ("width_90_10_A^-1", "width_90_10", 1),
+                                    ("width_99_01_A^-1", "width_99_01", 1), ("Qc_Ni_A^-1", "Qc_Ni", 1)):
+            row[column] = estimate[key] * scale if key in estimate else None
+        for key in ("r_definition", "fit_q_min", "fit_q_max", "fit_points", "error_floor_fraction",
+                    "weighted_rms_with_error_floor", "edge_weighted_rms_with_error_floor", "reference", "fit_window_policy"):
+            row[key] = estimate.get(key)
+
         summary.append(row)
 
     return summary
@@ -581,18 +609,5 @@ if __name__ == "__main__":
     for row in summary:
         print(row)
 
-    df = pd.DataFrame(summary)
-
-    df["Rz"] = df["Rz"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "")
-    df["Qm"] = df["Qm"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "")
-    df["m"] = df["m"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "")
-    df["r(%)"] = df["r(%)"].map(lambda x: f"{x:.1f}" if pd.notna(x) else "")
-
-
-    df.to_csv(
-        os.path.join(
-            paths["save_root"],
-            "summary.csv"
-        ),
-        index=False
-    )
+    from summary_export import write_public_summary
+    write_public_summary(os.path.join(paths["save_root"], "summary.csv"), summary)
