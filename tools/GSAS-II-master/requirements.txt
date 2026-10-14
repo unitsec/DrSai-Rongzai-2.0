@@ -6,3 +6,8 @@ PyOpenGL==3.1.9
 matplotlib==3.7.5
 dotenv
 mcp
+ase
+spglib
+seekpath
+threadpoolctl
+requests

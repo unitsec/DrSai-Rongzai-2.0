@@ -32,7 +32,7 @@ rongzai 智能体已有的五大能力（核 Rietveld、PDF、小角、Irena、z
 
 | 组件 | 位置 | 端口 |
 |---|---|---|
-| MCP 服务（6 个工具） | `tools/magnetic_structure_mcp.py` | 42512 |
+| MCP 服务（6 个工具） | `tools/magnetic_structure_mcp.py` | 42511 |
 | Skill | `agent_skills/magnetic-structure-analysis/SKILL.md` | — |
 | 引擎（核心逻辑） | `tools/GSAS-II-master/magnetic_analysis/mission.py` + `native.py` + `present.py` | — |
 | 配图模块 | `tools/GSAS-II-master/magnetic_analysis/present.py` | — |
@@ -45,7 +45,7 @@ rongzai 智能体已有的五大能力（核 Rietveld、PDF、小角、Irena、z
         │
         ▼
 ┌─────────────────────────────────────────────────────┐
-│  MCP 服务 (42512)                                    │
+│  MCP 服务 (42511)                                    │
 │  六个工具按序调用，每个在独立子进程中跑               │
 │  返回 JSON + 绝对路径的 PNG 图 + 表格                │
 └──────────┬──────────────────────────────────────────┘

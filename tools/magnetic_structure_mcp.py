@@ -416,7 +416,7 @@ def build_server() -> FastMCP:
             "step in that mission. To continue polling the same unfinished task, pass the same "
             "mission_name and task_id."
         ),
-        port=int(os.getenv("MCP_MAGNETIC_STRUCTURE_PORT", "42512")),
+        port=int(os.getenv("MCP_MAGNETIC_STRUCTURE_PORT", "42511")),
     )
     runners = (
         (initialize_magnetic_mission, "InitializeMagneticMission", 60.0),

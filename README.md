@@ -187,7 +187,7 @@ PM2_HOME=/path/to/rongzai/.pm2-dev pm2 logs run_backend --lines 50 --nostream
 
 ### 3.1 在后台启动mcp工具
 
-使用仓库根目录的 `start_tools.sh` 管理以下 5 个工具：
+使用仓库根目录的 `start_tools.sh` 管理以下 6 个工具：
 
 | 工具名称 | Conda 环境 | 入口 |
 | --- | --- | --- |
@@ -196,6 +196,7 @@ PM2_HOME=/path/to/rongzai/.pm2-dev pm2 logs run_backend --lines 50 --nostream
 | `sasview-refine` | `sasmodels` | `tools/sasview/0sasview_refine.py` |
 | `pdf-refine` | `diffpy.pdffit2_env` | `tools/pdf_refinement/0pdf_refine.py` |
 | `Irena-refine` | `sasmodels` | `tools/Irena/0Irena_fit.py` |
+| `magnetic-analysis` | `gsas2_py311` | `tools/magnetic_structure_mcp.py` |
 
 ```shell
 bash start_tools.sh                 # 后台启动全部工具，跳过已运行的工具
@@ -385,12 +386,12 @@ DDF很可能无法直接访问东莞的服务器，需要有一个能直接访�
 | 项 | 详见 |
 |---|---|
 | Skill | [agent_skills/magnetic-structure-analysis/SKILL.md](agent_skills/magnetic-structure-analysis/SKILL.md) |
-| MCP 服务（6 个工具） | [tools/magnetic_structure_mcp.py](tools/magnetic_structure_mcp.py)，端口 42512 |
+| MCP 服务（6 个工具） | [tools/magnetic_structure_mcp.py](tools/magnetic_structure_mcp.py)，端口 42511 |
 | 引擎与配图 | [tools/GSAS-II-master/magnetic_analysis/](tools/GSAS-II-master/magnetic_analysis/) |
 | Benchmark 与验收记录 | [BenchMark/MagneticStructureAnalysis/](BenchMark/MagneticStructureAnalysis/) |
 | gsas2-refine 磁能力扩展 | [tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py](tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py)（同环境 `gsas2_py311`，端口 42506） |
 
-部署：`MCP_MAGNETIC_STRUCTURE_PORT=42512`（`.env` 内），`bash start_tools.sh start magnetic-analysis`。
+部署：`MCP_MAGNETIC_STRUCTURE_PORT=42511`（`.env` 内），`bash start_tools.sh start magnetic-analysis`。
 轮询类新增可选的 `progress_file` 约定：声明它的工具，每次 poll 都会带上实时步骤行（参见
 [src/core/tools/mcp_task_runner.py](src/core/tools/mcp_task_runner.py) 的 `progress_file` 参数）。
 
