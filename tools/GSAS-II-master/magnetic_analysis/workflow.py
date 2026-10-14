@@ -994,8 +994,13 @@ def _insert_magnetic(project, parent, candidates, mode):
     return phase
 
 
-def _symmetry_mcif(path, parent, magnetic):
-    """Export the full structure and validated axial/time-reversal operations."""
+def _symmetry_mcif(path, parent, magnetic, parent_cell=None, bns_transform=None):
+    """Export the full structure and validated axial/time-reversal operations.
+
+    If ``parent_cell`` is present, the cell written into the output references the
+    parent setting (not the magnetic subcell), consistent with the way the Bilbao
+    server writes ``_space_group_magn.transform_BNS_Pp_abc``.
+    """
     from fractions import Fraction
     _, lat, _, _, _ = _modules()
     if not np.allclose(parent["General"]["Cell"][1:7],
@@ -1040,10 +1045,16 @@ def _symmetry_mcif(path, parent, magnetic):
             if distance[j] > 1e-4 or not np.allclose(transformed, cart[j], atol=1e-4):
                 raise RuntimeError("Candidate moments incompatible with exported magnetic symmetry")
             covered.add(j)
-    lines = ["data_refined_magnetic", f"_space_group_magn.number_BNS '{group.bns_number}'",
-             "# Operations and cell use the original parent setting, not a standardized BNS setting."]
+    cell_to_write = list(parent_cell[1:7]) if parent_cell is not None else parent["General"]["Cell"][1:7]
+    lines = ["data_refined_magnetic", f"_space_group_magn.number_BNS '{group.bns_number}'"]
+    if bns_transform:
+        lines.append(f"_space_group_magn.transform_BNS_Pp_abc {bns_transform}")
+    if parent_cell is not None:
+        lines.append("# Cell: parent (paramagnetic) setting; transform recorded above.")
+    else:
+        lines.append("# Cell: magnetic cell (operations below are expressed in this basis).")
     for key, value in zip(("length_a", "length_b", "length_c", "angle_alpha", "angle_beta", "angle_gamma"),
-                          parent["General"]["Cell"][1:7]):
+                          cell_to_write):
         lines.append(f"_cell_{key} {value:.12g}")
     lines.extend(["loop_", "_space_group_symop_magn_operation.id",
                   "_space_group_symop_magn_operation.xyz"])

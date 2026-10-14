@@ -315,8 +315,41 @@ def assemble(project, parent, candidate, magnetic_phase, *, refine_cell=True):
     return nuclear, magnetic
 
 
-def export_full(path, nuclear, magnetic):
-    """Expand native magnetic symmetry for validated full-composition MCIF."""
+def _bns_string(matrix):
+    """Turn a parent->magnetic transformation matrix into Bilbao abc notation.
+
+    ``[[1,1,0],[-1,1,0],[0,0,1]]`` becomes ``'a+b,-a+b,c'``.
+    """
+    axes = "abc"
+    parts = []
+    for row in matrix:
+        bits = []
+        for coef, axis in zip(row, axes):
+            coef = int(round(float(coef)))
+            if coef == 0:
+                continue
+            if coef == 1:
+                bits.append(f"+{axis}")
+            elif coef == -1:
+                bits.append(f"-{axis}")
+            elif coef > 0:
+                bits.append(f"+{coef}{axis}")
+            else:
+                bits.append(f"{coef}{axis}")
+        if not bits:
+            parts.append("0")
+            continue
+        text = "".join(bits).lstrip("+")
+        parts.append(text)
+    return ",".join(parts)
+
+
+def export_full(path, nuclear, magnetic, parent_cell=None, bns_transform=None):
+    """Expand native magnetic symmetry for validated full-composition MCIF.
+
+    ``parent_cell`` and ``bns_transform`` feed through to the MCIF writer so the output
+    cell is expressed in the parent setting, matching Bilbao's own MCIF convention.
+    """
     from . import workflow as w
     _, lat, spc, _, _ = w._modules()
     phase = copy.deepcopy(magnetic)
@@ -344,7 +377,7 @@ def export_full(path, nuclear, magnetic):
             atoms.append(expanded)
     phase["Atoms"] = atoms
     phase["General"]["SGData"] = spc.SpcGroup("P 1")[1]
-    return w._symmetry_mcif(path, nuclear, phase)
+    return w._symmetry_mcif(path, nuclear, phase, parent_cell=parent_cell, bns_transform=bns_transform)
 
 
 def export_fit_evidence(project, output_dir, identity, nuclear_control=None):
@@ -637,6 +670,7 @@ def refine_native(input_dir, output_dir, *, cycles=24, max_models=256,
             persist()
             _note(progress_log, f"核基线就绪，开始磁精修：共 {len(selected)} 个候选，每个候选走"
                                 f"固定阶梯（先磁矩分量→再峰型/ADP/晶胞）")
+            _parent_cell_original = list(nuclear.data["General"]["Cell"])  # parent setting, before any candidate transforms it
             for candidate in selected:
                 model = {"id": candidate["id"], "bns_number": candidate["bns_number"],
                          "native_magnetic_space_group": candidate["magnetic_space_group"],
@@ -706,7 +740,9 @@ def refine_native(input_dir, output_dir, *, cycles=24, max_models=256,
                     nuclear = project.phase("nuclear")
                     magnetic = project.phase(candidate["id"])
                     mcif = output / f"{candidate['id']}.mcif"
-                    physical = export_full(mcif, nuclear.data, magnetic.data)
+                    physical = export_full(mcif, nuclear.data, magnetic.data,
+                                           parent_cell=_parent_cell_original,
+                                           bns_transform=_bns_string(transform))
                     evidence = export_fit_evidence(project, output, candidate["id"], base)
                     model.update(status="ok", quality=quality, comparison_quality=comparison_quality,
                                  deepening=None, moment_scale_stage=first_quality, physical=physical,
@@ -778,7 +814,9 @@ def refine_native(input_dir, output_dir, *, cycles=24, max_models=256,
                         nuclear = project.phase("nuclear")
                         magnetic = project.phase(candidate["id"])
                         deep_mcif = output / f"{candidate['id']}.deep.mcif"
-                        deep_physical = export_full(deep_mcif, nuclear.data, magnetic.data)
+                        deep_physical = export_full(deep_mcif, nuclear.data, magnetic.data,
+                                       parent_cell=_parent_cell_original,
+                                       bns_transform=_bns_string(transform))
                         deepening["mcif_path"] = str(deep_mcif)
                         deepening["bns_number"] = deep_physical.get("bns_number")
                         deepening["fit_evidence_paths"] = export_fit_evidence(
