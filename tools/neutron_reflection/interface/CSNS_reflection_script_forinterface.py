@@ -49,8 +49,8 @@ def run_reflection(modifications, output_dir=None):
 
 
     # Load the shared templates without writing modified JSON files.
-    from rongzai.utils import load_config
-    config = load_config(json1, json2)
+    from reflection_config import load_reflection_config
+    config = load_reflection_config(json1, json2)
     config.update(modifications)
     if output_dir is not None:
         config["save_path"] = os.path.join(os.path.abspath(output_dir), "BL08A")
