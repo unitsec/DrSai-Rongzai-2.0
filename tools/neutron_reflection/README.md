@@ -1,80 +1,147 @@
-# BL08A 中子反射 MCP 工具
+# BL08A 中子反射工具
 
-本目录包含 MCP 入口、接口处理代码、计算 m/r 的模块、算法配置和仪器参数。
-核心规约算法依赖单独安装的 rongzai 4.0 包，不包含在本目录。
+通过本机MCP接入单组或多组BL08A反射规约。各组使用一个直通RUN独立归一化，
+输出带原始dR误差棒的反射率散点总图，以及只有m和包络反射率的汇总表。
 
-## 环境与依赖
+## 运行环境
 
-使用 Python 3.12。为反射工具使用独立虚拟环境。
-先安装 requirements.txt，再从单位认可的软件源或安装包安装 rongzai 4.0。
-服务器已验证的安装包名为 rongzai-4.0-py3-none-any.whl。
-安装包不随本提交提供，部署者需要向算法维护者获取。
-不要假设公共 PyPI 上的同名包就是所需算法包。
+Python 3.12；建议使用独立环境：
 
-    python3 -m venv /absolute/path/to/reflection-venv
-    /absolute/path/to/reflection-venv/bin/python -m pip install -r tools/neutron_reflection/requirements.txt
-    /absolute/path/to/reflection-venv/bin/python -m pip install /approved/path/rongzai-4.0-py3-none-any.whl
+```bash
+python3 -m venv /absolute/path/to/reflection-venv
+/absolute/path/to/reflection-venv/bin/python -m pip install -r tools/neutron_reflection/requirements.txt
+/absolute/path/to/reflection-venv/bin/python -m pip install /approved/path/rongzai-4.0-py3-none-any.whl
+```
 
-## 配置与启动
+rongzai 4.0须从算法维护者或认可的软件源获取，不随代码交付，不能假定公共PyPI同名包可用。
 
-在仓库根目录执行：
+## 管理员配置
 
-    cp tools/neutron_reflection/interface/machine_paths.json.example tools/neutron_reflection/interface/machine_paths.json
+在框架仓库根目录执行：
 
-编辑新配置，将 data_root 设置为原始数据目录，param_root 设置为本目录
-interface/paramsdata 的服务器绝对路径。save_root 仅用于接口的直接调用；
-MCP 调用使用每次生成的独立输出目录。
+```bash
+cp tools/neutron_reflection/interface/machine_paths.json.example tools/neutron_reflection/interface/machine_paths.json
+```
 
-    export WORKDIR=/absolute/path/to/agentWorkSpace
-    /absolute/path/to/reflection-venv/bin/python tools/neutron_reflection/reflection_mcp.py
+machine_paths.json为本机配置，不提交版本库。正式统一目录部署只需：
 
-入口默认导入本目录 interface 下的处理代码。
-如需兼容外部接口部署，可设置 NEUTRON_REFLECTION_INTERFACE_DIR 覆盖默认目录。
-工具与 Agent 需共享同一结果工作区。
-服务监听 127.0.0.1:42520，SSE 地址为 http://127.0.0.1:42520/sse。
-当前按 Agent 与工具在同一台机器、同一网络环境部署。
+```json
+{
+  "data_root": "/absolute/path/to/raw_data",
+  "save_root": "/absolute/path/to/manual_results",
+  "param_root": "/absolute/path/to/repository/tools/neutron_reflection/interface/paramsdata"
+}
+```
 
-## 调用与身份信息
+data_root下每个RUN有同名元数据文件及算法需要的探测器数据，例如RUN0000001/RUN0000001。
+可选data_sources对象仅供多目录测试/部署，键为管理员别名、值为数据根目录。
+省略调用参数data_source时使用default，即data_root；不会自动搜索其他目录。
+reflection_config.py保留原配置合并方式，只对实际引用的字符串路径替换模板，
+避免rongzai 4.0旧加载器把data_sources字典传入str.replace的问题；不修改安装的算法包。
 
-工具名：process_neutron_reflection。
-参数：runs、user_id、session_id、mission_name，全部必填。
-示例：
+启动：
 
-    {"runs": ["RUN0000963", "RUN0000964"], "user_id": "laiyy", "session_id": "session1", "mission_name": "reflection"}
+```bash
+export WORKDIR=/absolute/path/to/agentWorkSpace
+/absolute/path/to/reflection-venv/bin/python tools/neutron_reflection/reflection_mcp.py
+```
 
-框架通过 ConnectMcpServer 连接工具，新增技能位于
-agent_skills/bl08a-reflection/SKILL.md。
-沿用现有 PDF 工具方式，通过框架提示词及技能说明要求模型传入当前用户、会话。
-尚未修改公共 Agent 代理自动注入身份，也没有在 MCP 服务中认证账号。
-身份字段及任务名支持英文、数字、下划线、@、点、加号和连字符，最长 128 字符；
-拒绝路径分隔符及 .、..。部署前需确认实际框架标识与此格式兼容。
+Agent和工具需共享结果工作区，当前按同机部署设计。监听127.0.0.1:42520，
+SSE地址http://127.0.0.1:42520/sse。可用NEUTRON_REFLECTION_INTERFACE_DIR覆盖默认内置接口目录。
+
+## 分组输入与缺参交互
+
+新增工具process_neutron_reflection_groups，必填groups、user_id、session_id、mission_name。
+groups每项字段：
+
+|字段|说明|
+|---|---|
+|runs|必填，至少一个直通与一个反射RUN，格式RUN加七位数字；组内不能重复|
+|group_name|可选显示名称；输出目录使用自动生成group_001等标识|
+|data_source|可选管理员别名，默认default|
+|direct_run|用户明确提供直通身份时填写，必须属于本组|
+|angles_deg|反射RUN到角度数值的映射，单位度，不能填直通RUN|
+|confirm_metadata_override|默认false，仅用户明确确认元数据冲突覆盖后为true|
+
+用户必须明确哪些RUN属于一组，Agent不得猜测分组。元数据角度读取
+summary.json.devices.Rz（按嵌套JSON键summary→json→devices→Rz）。
+缺少devices/Rz时不视为零；返回needs_input/questions，由Agent询问直通编号和
+每个反射角后重新提交完整分组。预检所有组通过前不执行任何规约，不创建任务输出目录。
+元数据与用户指定身份或角度冲突时需明确确认；原始JSON不修改。
+文件不存在或JSON损坏属于数据错误，不冒充缺少角度。
+
+旧工具process_neutron_reflection(runs,user_id,session_id,mission_name)保留，
+仅用于元数据完整、恰好一个直通的旧单组输入；新流程优先使用分组工具。
+身份必须来自框架当前用户和会话，不猜测。当前通过框架提示词/skill传入，
+未实现公共代理自动注入身份，也未在MCP内认证user_id。
 
 ## 输出
 
-数据、图片和汇总 CSV 放在：
+每次实际计算创建唯一task_id：
 
-    WORKDIR/user_id/session_id/mission_name/task_id/
+```text
+WORKDIR/user_id/session_id/mission_name/task_id/
+  combined_reflectivity.png
+  summary.csv
+  summary_row_order.json
+  resolved_groups.json
+  group_001/
+    summary.csv
+    summary_row_order.json
+    mr_estimates.json
+    BL08A/...
+    plot/RUNxxxxxxx/reflectivity.png
+    plot/RUNxxxxxxx/reflectivity_fit_diagnostic.png
+```
 
-每次调用自动生成唯一 task_id。同用户、同会话、同任务重复调用也不会覆盖。
-返回 status、summary_file、output_path、user_id、session_id、mission_name、task_id。
-算法配置在内存中按本次调用构建，不修改共享 JSON 模板。
+summary.csv严格只有m、r_envelope(%)两列，仅列反射RUN，按输入组和组内RUN顺序排列。
+行号与RUN对应关系另存summary_row_order.json，其他参数留内部JSON，不默认展示给用户。
+总图是各RUN的散点和原始dR误差棒，点间不连线，不拼接、不平均。
+对数纵轴不能显示的非正反射率及无效误差不用于总图，忽略数量写入warnings，不改原始数据。
+反射率.dat、各RUN图与每组CSV均保留。返回individual_plots等路径供框架文件展示工具使用，
+服务器路径不能冒充下载URL。单独图需由框架显式展示，MCP返回路径不等于网页已回显。
 
-## 已验证及待验证
+返回status=needs_input时未开始计算；failed可能留下部分输出，不得宣称批次全部成功。
+success表示文件生成完成，参数质量由analysis_status及warnings另报。
 
-服务器使用 RUN0000963、RUN0000964 已验证：
-- 原接口直接调用、MCP 调用、框架 ConnectMcpServer 注册及代理调用成功。
-- 新版输出隔离：不同用户、不同会话、重复调用产生独立目录。
-- 各目录均生成反射率 .dat、两张图片及 summary.csv。
+## m与包络反射率的定义
 
-框架测试跳过模型初始化。仓库内整合部署还需复测；
-完整智能体启动及自然语言自动传参尚未验证。
+默认参考PHITS 3.37手册5.15节的公开经验模型：
+https://phits.jaea.go.jp/manual/PHITS-en/chapters/sections/supermirror.html
 
-## 当前限制
+```text
+Qc_Ni = 0.0217 Å^-1
+Q <= Qc_Ni: R(Q)=R0
+Q > Qc_Ni:
+  B(Q)=R0*[1-alpha*(Q-Qc_Ni)]
+  R(Q)=B(Q)*[1-tanh((Q-Qstar)/W)]/2
+m=Qstar/Qc_Ni
+r_envelope(%)=100*B(Qstar)
+```
 
-- 目录分离不等同于身份认证、文件访问权限或原始数据授权。
-- 保留进程内串行执行，避免 matplotlib 并发问题。
-- 失败的任务目录可能保留部分结果，失败不会返回 success。
-- 日志仍使用接口目录内共享 BL08A.log，未按会话隔离。
-- 返回服务器路径，尚未接入网页下载及图片展示。
-- 算法出现过除零警告，数据质量仍需检查。
-- 当前以前台服务运行，未配置自动重启或开机启动。
+包络值是平台/缓慢下降包络外推到拟合截止中心的高度，不是R(Qstar)；
+在此模型中R(Qstar)=B(Qstar)/2，但中心反射率不在用户CSV中输出。
+自动窗口、1%包络尺度误差下限、soft_l1稳健损失、多初值及质量阈值是本项目分析约定，
+不是PHITS指定的实验算法或厂家验收规程。拟合窗口和参数写入mr_estimates.json。
+该方法不做膜层结构拟合、不卷积仪器分辨率，也不提供统计置信区间。
+R0>1、连续同向边沿大残差等情况标needs_review，不裁成看似正常的值。
+NEUTRON_REFLECTION_MR_METHOD=local_edge可切回保留的局部导数选段算法作对照。
+
+## 验证与限制
+
+```bash
+python -m unittest discover -s tools/neutron_reflection -p 'test_*.py' -v
+```
+
+34项测试；设置REFLECTION_REGRESSION_DATA为包含4条指定导出曲线的目录时运行全部测试，
+未设置时2个实际曲线回归项跳过。测试覆盖缺角度、冲突确认、独立归一化路由、
+PHITS公式与参数恢复、异常点、CSV两列以及总图不连线和原始误差棒。
+
+已在Linux服务器网页端完成两组实际数据端到端试跑，包含缺失角度用户补录。
+RUN0000963使用元数据，RUN0000216～218使用用户提供的1.22度与RUN0000219直通。
+216～218的对称截止模型残差仍需复核；216、217的R0略高于1。
+这些记录证明流程可运行，不证明科学参数或厂家指标已通过验收。
+
+MCP保持进程内串行计算；目录隔离不等于账号认证或原始数据授权。
+日志仍为接口共享BL08A.log；失败可能留下部分文件；未提供自动重启/开机启动。
+服务器路径配置、key、数据、结果和部署备份不应进入MR。

@@ -21,6 +21,7 @@ if not (interface_path / "agent_interface.py").is_file():
 sys.path.insert(0, str(interface_path))
 
 from agent_interface import process_reflection
+from batch_reflection import prepare_groups, execute_groups
 
 mcp = FastMCP(
     "BL08A Neutron Reflection",
@@ -72,6 +73,57 @@ def process_neutron_reflection(
         result = process_reflection(runs, output_dir=str(output))
         return {**result, "user_id": user_id, "session_id": session_id,
                 "mission_name": mission_name, "task_id": output.name}
+
+
+@mcp.tool()
+def process_neutron_reflection_groups(
+    groups: list[dict], user_id: str, session_id: str, mission_name: str
+) -> dict:
+    """处理用户明确划分的多组BL08A数据，输出一张反射率总图和总summary.csv。
+
+    groups 每项字段：group_name（可选名称）、runs（必填RUN编号列表）、
+    data_source（管理员数据源别名，默认default）、direct_run（用户明确指定时填写）、
+    angles_deg（反射RUN到角度的映射，单位度，如{"RUN0000216":1.22}）、
+    confirm_metadata_override（默认false，仅用户明确确认覆盖冲突元数据后为true）。
+    示例：[{"runs":["RUN0000216","RUN0000219"],"data_source":"legacy_home",
+    "direct_run":"RUN0000219","angles_deg":{"RUN0000216":1.22}}]。
+    不知道直通或角度时不要猜，先只传用户明确的参数。元数据缺失或冲突时
+    返回status=needs_input及questions，不执行计算；询问用户后补全参数再调用。
+    各组独立归一化，总图仅叠加曲线，不拼接或平均。
+    当前默认以PHITS 3.37性能经验模型拟合m及截止宽度，不是膜层结构拟合。
+    用户summary.csv只含m与r_envelope(%)，后者是平台到截止中心的包络外推值。
+    总图是带原始反射率误差的散点，不连接。其他拟合参数只留内部记录。
+    analysis_status=needs_review时需报告质量警告，不得称为厂家验收结果。
+    user_id、session_id来自当前真实会话。success不代表数据质量已验证。
+    """
+    for name, value in (("user_id", user_id), ("session_id", session_id),
+                        ("mission_name", mission_name)):
+        if (not value or len(value) > 128 or value in (".", "..")
+                or re.fullmatch(r"[A-Za-z0-9_@.+-]+", value) is None):
+            raise ValueError(f"{name} 必须是有效目录标识，不能包含路径分隔符")
+    root = Path(os.environ.get("WORKDIR", "")).expanduser()
+    if not os.environ.get("WORKDIR") or not root.is_absolute():
+        raise ValueError("WORKDIR 必须配置为结果工作区的绝对路径")
+    import json
+    with (interface_path / "machine_paths.json").open(encoding="utf-8") as f:
+        paths = json.load(f)
+    plans, questions = prepare_groups(groups, paths)
+    if questions:
+        return {"status": "needs_input", "questions": questions,
+                "message": "尚未计算。请询问用户直通RUN、各反射角（度）或冲突覆盖确认，再提交完整分组。"}
+    root = root.resolve()
+    output = (root / user_id / session_id / mission_name / uuid.uuid4().hex).resolve()
+    if not output.is_relative_to(root):
+        raise ValueError("输出目录超出 WORKDIR")
+    output.mkdir(parents=True, exist_ok=False)
+    with processing_lock:
+        try:
+            result = execute_groups(plans, paths, output)
+        except Exception as exc:
+            result = {"status": "failed", "error": str(exc), "output_path": str(output),
+                      "message": "批次未全部完成，目录可能含部分结果，不得报告总批次成功。"}
+    return {**result, "user_id": user_id, "session_id": session_id,
+            "mission_name": mission_name, "task_id": output.name}
 
 
 if __name__ == "__main__":
