@@ -1045,16 +1045,23 @@ def _symmetry_mcif(path, parent, magnetic, parent_cell=None, bns_transform=None)
             if distance[j] > 1e-4 or not np.allclose(transformed, cart[j], atol=1e-4):
                 raise RuntimeError("Candidate moments incompatible with exported magnetic symmetry")
             covered.add(j)
-    cell_to_write = list(parent_cell[1:7]) if parent_cell is not None else parent["General"]["Cell"][1:7]
+    # The cell, the operations, the atom positions and the moments below are all expressed
+    # in ONE setting — the magnetic (subgroup) setting this dataset was solved in. Writing
+    # the parent cell while keeping the subgroup operations produces a file whose symmetry
+    # does not match its metric, which validators reject outright ("symmetry operation is
+    # incompatible with the unit-cell metric"). A genuine parent-setting file needs the
+    # operations, positions and origin transformed as well; until that is implemented the
+    # parent setting is recorded as metadata so a reader can still relate the two.
     lines = ["data_refined_magnetic", f"_space_group_magn.number_BNS '{group.bns_number}'"]
     if bns_transform:
         lines.append(f"_space_group_magn.transform_BNS_Pp_abc {bns_transform}")
+    lines.append("# Cell, operations and moments are expressed in the magnetic (subgroup) setting.")
     if parent_cell is not None:
-        lines.append("# Cell: parent (paramagnetic) setting; transform recorded above.")
-    else:
-        lines.append("# Cell: magnetic cell (operations below are expressed in this basis).")
+        parent_text = " ".join(f"{float(v):.6g}" for v in parent_cell[1:7])
+        lines.append(f"# Parent (paramagnetic) setting cell for reference: {parent_text}"
+                     + (f" (transform {bns_transform})" if bns_transform else ""))
     for key, value in zip(("length_a", "length_b", "length_c", "angle_alpha", "angle_beta", "angle_gamma"),
-                          cell_to_write):
+                          parent["General"]["Cell"][1:7]):
         lines.append(f"_cell_{key} {value:.12g}")
     lines.extend(["loop_", "_space_group_symop_magn_operation.id",
                   "_space_group_symop_magn_operation.xyz"])

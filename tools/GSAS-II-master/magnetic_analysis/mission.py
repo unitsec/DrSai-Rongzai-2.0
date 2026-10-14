@@ -962,6 +962,39 @@ def present_comparison(paths: dict[str, Path], models: Sequence[dict[str, Any]])
 # --------------------------------------------------------------------------- #
 # Stage 5: final export
 # --------------------------------------------------------------------------- #
+def _parent_setting(paths: dict[str, Path], report: dict[str, Any]) -> tuple:
+    """Parent cell and Bilbao transform string for the selected model, when discoverable.
+
+    A handed-off project stores only the magnetic cell (the nuclear phase inside it has
+    already been transformed), so the parent setting has to come from the mission's own
+    records: the initial CIF for the cell, the candidate report for the transform.
+    """
+    from .native import _bns_string
+
+    transform = None
+    model = str(report.get("best_model") or "")
+    candidates_path = paths["analysis"] / "candidates_report.json"
+    if candidates_path.is_file():
+        for mode in (_read_json(candidates_path).get("modes") or []):
+            if str(mode.get("id")) == model:
+                transform = mode.get("transformation_matrix")
+                break
+    cell = None
+    cif = paths["inputs"] / "initial.cif"
+    if cif.is_file():
+        text = cif.read_text(encoding="utf-8", errors="replace")
+
+        def number(tag: str) -> float | None:
+            found = re.search(rf"^{tag}\s+([-\d.]+)", text, re.M)
+            return float(found.group(1)) if found else None
+
+        values = [number("_cell_length_a"), number("_cell_length_b"), number("_cell_length_c"),
+                  number("_cell_angle_alpha"), number("_cell_angle_beta"), number("_cell_angle_gamma")]
+        if all(value is not None for value in values):
+            cell = [True] + values
+    return cell, (_bns_string(transform) if transform is not None else None)
+
+
 def export(user_id: str, session_id: str, mission_name: str, task_id: str,
            destination: str | Path | None = None,
            gpx_path: str | None = None) -> dict[str, Any]:
@@ -985,10 +1018,14 @@ def export(user_id: str, session_id: str, mission_name: str, task_id: str,
         if gpx_path:
             from .native import export_project_mcif
 
-            exported = export_project_mcif(gpx_path, paths["analysis"] / "handoff_refined.mcif")
+            parent_cell, bns_transform = _parent_setting(paths, report)
+            exported = export_project_mcif(gpx_path, paths["analysis"] / "handoff_refined.mcif",
+                                           parent_cell=parent_cell, bns_transform=bns_transform)
             source = Path(exported["mcif_path"])
             _steps(f"  · 从交接回来的项目导出磁结构：{Path(str(gpx_path)).name}"
                    f"（磁相 {exported.get('magnetic_phase')}）")
+            if parent_cell:
+                _steps("  · 文件为自洽的磁胞设置；已附母相胞与 BNS 变换作为注释元数据")
         if not source.is_file():
             raise MissionError(f"Exported MCIF is missing: {source}")
         submission = paths["submission"]

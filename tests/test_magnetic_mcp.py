@@ -383,20 +383,41 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("no saved GSAS-II project", result["error"])
 
     def test_export_uses_a_handed_off_project_when_given(self):
+        """The handoff export must also carry the parent setting to the MCIF writer.
+
+        A project written by the refine service stores only the magnetic cell, so the parent
+        cell (initial CIF) and the Bilbao transform (candidate report) have to travel with
+        the call — otherwise the delivered MCIF is written in the magnetic setting and looks
+        like a different structure next to a Bilbao reference file.
+        """
         mission = _engine()
         paths, analysis, _ = self._comparison(mission)
+        paths["inputs"].mkdir(parents=True, exist_ok=True)
+        (paths["inputs"] / "initial.cif").write_text(
+            "_cell_length_a 4.128\n_cell_length_b 4.128\n_cell_length_c 6.66\n"
+            "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 120\n",
+            encoding="utf-8")
+        (analysis / "candidates_report.json").write_text(json.dumps({"modes": [
+            {"id": "subA", "transformation_matrix": [[1, 1, 0], [-1, 1, 0], [0, 0, 1]]}]}),
+            encoding="utf-8")
         refined = analysis / "handoff_refined.mcif"
         refined.write_text("refined-structure", encoding="utf-8")
+        seen = {}
 
-        with patch("magnetic_analysis.native.export_project_mcif",
-                   lambda gpx, target: {"mcif_path": str(refined),
-                                        "magnetic_phase": "subA"}):
+        def fake_export(gpx, target, parent_cell=None, bns_transform=None):
+            seen["parent_cell"] = parent_cell
+            seen["bns_transform"] = bns_transform
+            return {"mcif_path": str(refined), "magnetic_phase": "subA"}
+
+        with patch("magnetic_analysis.native.export_project_mcif", fake_export):
             result = mission.export("u", "s", "m", "t",
                                     gpx_path=str(analysis / "selected_model.gpx"))
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual((paths["session_submission"] / "final.mcif").read_text(),
                          "refined-structure")
+        self.assertEqual(seen["bns_transform"], "a+b,-a+b,c")
+        self.assertEqual(list(seen["parent_cell"][1:4]), [4.128, 4.128, 6.66])
 
     def test_export_delivers_the_comparison_structure_by_default(self):
         mission = _engine()

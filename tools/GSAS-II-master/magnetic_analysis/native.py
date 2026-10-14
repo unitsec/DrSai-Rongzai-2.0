@@ -37,29 +37,42 @@ def _deadline(seconds):
 TIE_RELATIVE_CHISQ = 1e-3
 
 
-def export_project_mcif(gpx_path, mcif_path):
+def _phase_type(phase) -> str:
+    """GSAS-II phase kind as recorded in the project ('magnetic' / 'nuclear')."""
+    return str((phase.data.get("General") or {}).get("Type", "")).strip().lower()
+
+
+def export_project_mcif(gpx_path, mcif_path, parent_cell=None, bns_transform=None):
     """Write the magnetic MCIF of an already-refined project (handoff completion).
 
     A selected model may be refined further by the gsas2-refine service, whose
     step-by-step, rollback-capable workflow suits pushing one structure harder than this
     engine's fixed comparison ladder. This turns that refined project back into the
     magnetic MCIF the mission delivers.
+
+    The magnetic phase is identified by ``General['Type'] == 'magnetic'``: in a magnetic
+    project the *nuclear* phase also carries a ``MagMom`` block, so selecting on that
+    alone picks the nuclear phase and its atom rows have no numeric moment components.
+    ``parent_cell`` and ``bns_transform`` let the caller write the output in the parent
+    (paramagnetic) setting, as Bilbao does.
     """
     from . import workflow as w
 
     sc = w._modules()[0]
     project = sc.G2Project(gpxfile=str(gpx_path))
     phases = list(project.phases())
-    magnetic = next((ph for ph in phases
-                     if ph.data["General"]["SGData"].get("MagMom") is not None), None)
+    magnetic = next((ph for ph in phases if _phase_type(ph) == "magnetic"), None)
     if magnetic is None:
         raise ValueError("The handed-off project contains no magnetic phase")
-    nuclear = next((ph for ph in phases if ph is not magnetic), None)
-    physical = export_full(Path(mcif_path),
-                           (nuclear or magnetic).data, magnetic.data)
+    nuclear = next((ph for ph in phases if _phase_type(ph) == "nuclear"), None)
+    if nuclear is None:
+        nuclear = next((ph for ph in phases if ph is not magnetic), None)
+    physical = export_full(Path(mcif_path), (nuclear or magnetic).data, magnetic.data,
+                           parent_cell=parent_cell, bns_transform=bns_transform)
     return {"mcif_path": str(mcif_path), "physical": physical,
             "magnetic_phase": magnetic.name,
-            "nuclear_phase": getattr(nuclear, "name", None)}
+            "nuclear_phase": getattr(nuclear, "name", None),
+            "parent_setting": bool(parent_cell)}
 
 
 def _note(progress_log, text: str) -> None:
@@ -368,7 +381,14 @@ def export_full(path, nuclear, magnetic, parent_cell=None, bns_transform=None):
             index = abs(operation) % 100 - 1
             rotation = sg["SGOps"][index][0] * (-1 if operation < 0 else 1)
             cartop = A @ rotation @ np.linalg.inv(A)
-            moment = spin * np.linalg.det(cartop) * cartop @ unit @ atom[mx+4:mx+7]
+            try:
+                moment_coeffs = np.asarray(atom[mx+4:mx+7], dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Atom {atom[0]!r} of phase {phase.get('Name')!r} has no numeric magnetic "
+                    f"moment components (found {atom[mx+4:mx+7]!r}); export_full was handed a "
+                    f"phase that is not the magnetic one") from exc
+            moment = spin * np.linalg.det(cartop) * cartop @ unit @ moment_coeffs
             expanded = copy.deepcopy(atom)
             expanded[mx:mx+3] = position.tolist()
             expanded[mx+4:mx+7] = np.linalg.solve(unit, moment).tolist()
