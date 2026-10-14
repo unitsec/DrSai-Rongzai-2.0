@@ -404,10 +404,13 @@ class HandoffTests(unittest.TestCase):
         refined.write_text("refined-structure", encoding="utf-8")
         seen = {}
 
-        def fake_export(gpx, target, parent_cell=None, bns_transform=None):
+        def fake_export(gpx, target, parent_cell=None, bns_transform=None,
+                        parent_transform=None):
             seen["parent_cell"] = parent_cell
             seen["bns_transform"] = bns_transform
-            return {"mcif_path": str(refined), "magnetic_phase": "subA"}
+            seen["parent_transform"] = parent_transform
+            return {"mcif_path": str(refined), "magnetic_phase": "subA",
+                    "parent_setting": True}
 
         with patch("magnetic_analysis.native.export_project_mcif", fake_export):
             result = mission.export("u", "s", "m", "t",
@@ -418,6 +421,9 @@ class HandoffTests(unittest.TestCase):
                          "refined-structure")
         self.assertEqual(seen["bns_transform"], "a+b,-a+b,c")
         self.assertEqual(list(seen["parent_cell"][1:4]), [4.128, 4.128, 6.66])
+        # the matrix itself must travel as well: the export rewrites ops/positions with it
+        self.assertEqual([list(row) for row in seen["parent_transform"]],
+                         [[1, 1, 0], [-1, 1, 0], [0, 0, 1]])
 
     def test_export_delivers_the_comparison_structure_by_default(self):
         mission = _engine()

@@ -994,12 +994,18 @@ def _insert_magnetic(project, parent, candidates, mode):
     return phase
 
 
-def _symmetry_mcif(path, parent, magnetic, parent_cell=None, bns_transform=None):
+def _symmetry_mcif(path, parent, magnetic, parent_cell=None, bns_transform=None,
+                   parent_transform=None):
     """Export the full structure and validated axial/time-reversal operations.
 
-    If ``parent_cell`` is present, the cell written into the output references the
-    parent setting (not the magnetic subcell), consistent with the way the Bilbao
-    server writes ``_space_group_magn.transform_BNS_Pp_abc``.
+    ``parent_transform`` (the parent->subgroup matrix, i.e. the ``a+b,-a+b,c`` transform)
+    switches the whole file into the parent setting: cell, symmetry operations, atom
+    positions and moment components are all rewritten in the parent basis, and atoms that
+    become lattice translations of one another are collapsed. That is what makes the
+    exported magnetic structure look like "the nuclear structure the user supplied, plus
+    moments" instead of a differently shaped cell. Writing only a different cell while
+    keeping subgroup operators produces a file whose symmetry contradicts its metric,
+    which validators reject, so the transform is all-or-nothing.
     """
     from fractions import Fraction
     _, lat, _, _, _ = _modules()
@@ -1026,6 +1032,60 @@ def _symmetry_mcif(path, parent, magnetic, parent_cell=None, bns_transform=None)
         if distance[i] > 1e-4:
             raise RuntimeError("Final magnetic atom does not match nuclear structure")
         moments[i] = atom[mx + 4:mx + 7]
+    subgroup_cell = list(parent["General"]["Cell"][1:7])
+    notes, parent_setting = [], False
+    if parent_transform is not None:
+        M = np.asarray(parent_transform, float)
+        try:
+            derived_full = [float(v) for v in lat.TransformCell(subgroup_cell, np.linalg.inv(M))]
+            derived = derived_full[:6]      # a,b,c,alpha,beta,gamma (GSAS-II also returns V)
+        except Exception:
+            derived = None
+        anisotropic = [a for a in atoms if a[cia] != "I"]
+        if derived is None:
+            notes.append("# Parent setting requested but the transform could not be inverted; "
+                         "written in the magnetic setting.")
+        elif anisotropic:
+            notes.append("# Anisotropic ADPs are present and would need a tensor transform; "
+                         "written in the magnetic setting.")
+        else:
+            # Snap the symmetry-implied values so the parent cell reads cleanly (a=b, 90/120).
+            def _snap(value, target, tol=1e-3):
+                return float(target) if abs(value - target) < tol else value
+            if abs(derived[0] - derived[1]) < 1e-3:
+                derived[1] = derived[0]
+            for index, target in ((3, 90.0), (4, 90.0), (5, 120.0)):
+                derived[index] = _snap(derived[index], target)
+            A_s = lat.cell2AB(subgroup_cell)[0]
+            # Build the parent axes in the SAME Cartesian frame as A_s. lat.cell2AB only
+            # realises a metric in a canonical orientation, so realising the parent cell
+            # separately would rotate the two frames against each other and silently drop a
+            # moment component. a_si = sum_j M_ij a_pj  =>  A_s = A_p M^T  =>  A_p = A_s M^-T.
+            A_p = A_s @ np.linalg.inv(M).T
+            unit_s = A_s / np.linalg.norm(A_s, axis=0)
+            unit_p = A_p / np.linalg.norm(A_p, axis=0)
+            cartesian = unit_s @ np.asarray(moments, float).T
+            pos_p = (np.asarray(positions, float) @ M) % 1.0
+            mom_p = np.linalg.solve(unit_p, cartesian).T
+            keep, kept_pos, kept_mom, kept_num = [], [], [], []
+            for i, x in enumerate(pos_p):
+                if any(numbers[i] == numbers[j] and
+                       np.allclose(((x - y + 0.5) % 1.0) - 0.5, 0.0, atol=1e-3)
+                       for j, y in zip(keep, kept_pos)):
+                    continue
+                keep.append(i)
+                kept_pos.append(x)
+                kept_mom.append(mom_p[i])
+                kept_num.append(numbers[i])
+            atoms = [atoms[i] for i in keep]
+            positions = np.asarray(kept_pos, float)
+            moments = np.asarray(kept_mom, float)
+            numbers = kept_num
+            vectors = A_p.T
+            parent_cell = [True] + derived_full
+            parent_setting = True
+            notes.append(f"# Parent (paramagnetic) setting: cell, operations, positions and "
+                         f"moments are all expressed in it (transform {bns_transform}).")
     dataset, group = _magnetic_dataset(vectors, positions, numbers, moments)
     cart = moment_to_cartesian(moments, vectors)
     representative, covered = [], set()
@@ -1055,13 +1115,15 @@ def _symmetry_mcif(path, parent, magnetic, parent_cell=None, bns_transform=None)
     lines = ["data_refined_magnetic", f"_space_group_magn.number_BNS '{group.bns_number}'"]
     if bns_transform:
         lines.append(f"_space_group_magn.transform_BNS_Pp_abc {bns_transform}")
-    lines.append("# Cell, operations and moments are expressed in the magnetic (subgroup) setting.")
-    if parent_cell is not None:
-        parent_text = " ".join(f"{float(v):.6g}" for v in parent_cell[1:7])
-        lines.append(f"# Parent (paramagnetic) setting cell for reference: {parent_text}"
-                     + (f" (transform {bns_transform})" if bns_transform else ""))
+    if parent_setting:
+        lines.extend(notes)
+        cell_written = list(parent_cell[1:7])
+    else:
+        lines.append("# Cell, operations and moments are expressed in the magnetic (subgroup) setting.")
+        lines.extend(notes)
+        cell_written = subgroup_cell
     for key, value in zip(("length_a", "length_b", "length_c", "angle_alpha", "angle_beta", "angle_gamma"),
-                          parent["General"]["Cell"][1:7]):
+                          cell_written):
         lines.append(f"_cell_{key} {value:.12g}")
     lines.extend(["loop_", "_space_group_symop_magn_operation.id",
                   "_space_group_symop_magn_operation.xyz"])
@@ -1110,7 +1172,8 @@ def _symmetry_mcif(path, parent, magnetic, parent_cell=None, bns_transform=None)
             "adp_eigenvalues": adp_eigenvalues,
             "magnetic_form_factor_types": magnetic["General"]["AtomTypes"],
             "lande_g_factors": magnetic["General"].get("Lande g"),
-            "cell": parent["General"]["Cell"][1:7], "symmetry_validated": True}
+            "cell": cell_written, "parent_setting": parent_setting,
+            "symmetry_validated": True}
 
 
 def _seed_moment_from_profile(project, magnetic):

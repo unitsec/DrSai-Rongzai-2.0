@@ -992,7 +992,7 @@ def _parent_setting(paths: dict[str, Path], report: dict[str, Any]) -> tuple:
                   number("_cell_angle_alpha"), number("_cell_angle_beta"), number("_cell_angle_gamma")]
         if all(value is not None for value in values):
             cell = [True] + values
-    return cell, (_bns_string(transform) if transform is not None else None)
+    return cell, transform
 
 
 def export(user_id: str, session_id: str, mission_name: str, task_id: str,
@@ -1016,16 +1016,21 @@ def export(user_id: str, session_id: str, mission_name: str, task_id: str,
         # A model refined further by the gsas2-refine service comes back as a project file;
         # exporting the magnetic MCIF from that project is how the handoff completes.
         if gpx_path:
-            from .native import export_project_mcif
+            from .native import _bns_string, export_project_mcif
 
-            parent_cell, bns_transform = _parent_setting(paths, report)
+            parent_cell, parent_transform = _parent_setting(paths, report)
+            bns_transform = _bns_string(parent_transform) if parent_transform else None
             exported = export_project_mcif(gpx_path, paths["analysis"] / "handoff_refined.mcif",
-                                           parent_cell=parent_cell, bns_transform=bns_transform)
+                                           parent_cell=parent_cell, bns_transform=bns_transform,
+                                           parent_transform=parent_transform)
             source = Path(exported["mcif_path"])
             _steps(f"  · 从交接回来的项目导出磁结构：{Path(str(gpx_path)).name}"
                    f"（磁相 {exported.get('magnetic_phase')}）")
-            if parent_cell:
-                _steps("  · 文件为自洽的磁胞设置；已附母相胞与 BNS 变换作为注释元数据")
+            if exported.get("parent_setting"):
+                _steps("  · 已按母相设置书写（晶胞/操作/坐标/磁矩全部在母相基下），"
+                       "与用户提供的核结构同一盒子")
+            else:
+                _steps("  · 写成自洽的磁胞设置（母相切换不可用或含各向异性 ADP）")
         if not source.is_file():
             raise MissionError(f"Exported MCIF is missing: {source}")
         submission = paths["submission"]

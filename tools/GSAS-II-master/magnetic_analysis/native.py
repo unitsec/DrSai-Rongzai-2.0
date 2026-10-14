@@ -42,7 +42,8 @@ def _phase_type(phase) -> str:
     return str((phase.data.get("General") or {}).get("Type", "")).strip().lower()
 
 
-def export_project_mcif(gpx_path, mcif_path, parent_cell=None, bns_transform=None):
+def export_project_mcif(gpx_path, mcif_path, parent_cell=None, bns_transform=None,
+                        parent_transform=None):
     """Write the magnetic MCIF of an already-refined project (handoff completion).
 
     A selected model may be refined further by the gsas2-refine service, whose
@@ -68,11 +69,12 @@ def export_project_mcif(gpx_path, mcif_path, parent_cell=None, bns_transform=Non
     if nuclear is None:
         nuclear = next((ph for ph in phases if ph is not magnetic), None)
     physical = export_full(Path(mcif_path), (nuclear or magnetic).data, magnetic.data,
-                           parent_cell=parent_cell, bns_transform=bns_transform)
+                           parent_cell=parent_cell, bns_transform=bns_transform,
+                           parent_transform=parent_transform)
     return {"mcif_path": str(mcif_path), "physical": physical,
             "magnetic_phase": magnetic.name,
             "nuclear_phase": getattr(nuclear, "name", None),
-            "parent_setting": bool(parent_cell)}
+            "parent_setting": bool(physical.get("parent_setting"))}
 
 
 def _note(progress_log, text: str) -> None:
@@ -357,7 +359,8 @@ def _bns_string(matrix):
     return ",".join(parts)
 
 
-def export_full(path, nuclear, magnetic, parent_cell=None, bns_transform=None):
+def export_full(path, nuclear, magnetic, parent_cell=None, bns_transform=None,
+                parent_transform=None):
     """Expand native magnetic symmetry for validated full-composition MCIF.
 
     ``parent_cell`` and ``bns_transform`` feed through to the MCIF writer so the output
@@ -397,7 +400,8 @@ def export_full(path, nuclear, magnetic, parent_cell=None, bns_transform=None):
             atoms.append(expanded)
     phase["Atoms"] = atoms
     phase["General"]["SGData"] = spc.SpcGroup("P 1")[1]
-    return w._symmetry_mcif(path, nuclear, phase, parent_cell=parent_cell, bns_transform=bns_transform)
+    return w._symmetry_mcif(path, nuclear, phase, parent_cell=parent_cell,
+                            bns_transform=bns_transform, parent_transform=parent_transform)
 
 
 def export_fit_evidence(project, output_dir, identity, nuclear_control=None):
@@ -762,7 +766,8 @@ def refine_native(input_dir, output_dir, *, cycles=24, max_models=256,
                     mcif = output / f"{candidate['id']}.mcif"
                     physical = export_full(mcif, nuclear.data, magnetic.data,
                                            parent_cell=_parent_cell_original,
-                                           bns_transform=_bns_string(transform))
+                                           bns_transform=_bns_string(transform),
+                                           parent_transform=transform)
                     evidence = export_fit_evidence(project, output, candidate["id"], base)
                     model.update(status="ok", quality=quality, comparison_quality=comparison_quality,
                                  deepening=None, moment_scale_stage=first_quality, physical=physical,
@@ -836,7 +841,8 @@ def refine_native(input_dir, output_dir, *, cycles=24, max_models=256,
                         deep_mcif = output / f"{candidate['id']}.deep.mcif"
                         deep_physical = export_full(deep_mcif, nuclear.data, magnetic.data,
                                        parent_cell=_parent_cell_original,
-                                       bns_transform=_bns_string(transform))
+                                       bns_transform=_bns_string(transform),
+                                       parent_transform=transform)
                         deepening["mcif_path"] = str(deep_mcif)
                         deepening["bns_number"] = deep_physical.get("bns_number")
                         deepening["fit_evidence_paths"] = export_fit_evidence(
