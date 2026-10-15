@@ -29,9 +29,11 @@ import os
 import sys
 import traceback
 from pathlib import Path
+from dotenv import load_dotenv
 
 CURRENT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = CURRENT_DIR.parent.parent
+load_dotenv(dotenv_path=REPO_ROOT / ".env", override=True)
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

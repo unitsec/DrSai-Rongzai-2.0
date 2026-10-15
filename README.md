@@ -133,6 +133,8 @@ http://服务器IP:8081/
 MCP 工具端口同样集中在 `.env` 的 “Service ports” 分组：Worker 使用 `42501`，
 GSAS-II、PDF、SasView、Irena 和 Z-Rietveld 分别默认使用 `42506`、`42507`、
 `42508`、`42509` 和 `42510`。修改端口后需重启对应服务。
+SasView 和 Irena 启动时会加载项目根目录的 `.env`，其中的配置优先于同名进程环境变量；
+Irena 使用 `MCP_IRENA_REFINE_PORT`，未配置时默认监听 `42509`。
 
 ### 2.5 rongzai_web Pod 的 Dr.Sai 前端构建与重启
 
