@@ -14,4 +14,4 @@ description: 处理CSNS BL08A单组或多组中子反射数据；缺少直通身
 7. success后读取实际返回的summary_file，在对话中展示总表；使用框架文件展示工具提供combined_plot和summary_file。summary.csv严格只有m、r_envelope(%)两列，仅含反射RUN，按用户输入的分组和RUN顺序排列。需对应编号时读取summary_row_order_file，不向CSV追加编号或其他参数。总图为带原始dR误差棒的散点，不连接数据点、不拼接/平均；图例标明组别和RUN。只用实际返回的可访问地址嵌图，不把服务器路径冒充网页链接，不编造已显示。
 8. failed不得报告全部成功；needs_input不代表完成。success只表示文件生成完成，不等于质量验证或厂家验收通过。当前默认使用PHITS 3.37性能经验模型，不是膜层结构拟合。用户可见性能指标仅m和包络反射率：m为拟合截止中心/Qc_Ni；r_envelope(%)为下降前包络外推到该中心的高度，不是中心处实际曲线反射率。其他拟合参数留在内部mr_estimates.json中，除用户明确要求外不主动展示。analysis_status=needs_review及warnings仍须简短说明，不得宣称已验收。
 9. PHITS方法的单RUN图片为reflectivity.png和reflectivity_fit_diagnostic.png（后者包含局部拟合与残差，不是导数图）。优先使用返回groups内individual_plots和mr_parameters_file，按用户要求展示单独图，不要只提供总图。宽度以截止因子相对包络的90%-10%或99%-1%定义，不是绝对反射率90%和10%。
-10. 当前MCP只用于受信框架本机调用，不认证传入user_id，目录隔离不等于访问授权。原始数据只读，结果保存在当前用户工作区。
+10. 当前MCP只用于受信框架本机调用，不认证传入user_id，目录隔离不等于访问授权。原始数据只读，MCP结果先保存在当前用户工作区；需要数据库归档时，遵循框架权限工具返回的目录与写回要求，工作区生成成功不代表数据库归档成功。

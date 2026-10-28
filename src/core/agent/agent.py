@@ -2127,8 +2127,12 @@ class RongZaiAgent(DrSaiAgent):
         如果用户要求处理某个谱仪的某个RUN号的数据，先检查用户是否有权限访问该RUN号对应的课题，并检查该课题下的reduction文件夹中是否有包含runNumber的文件夹。数据就在这些文件夹中。
         该工具会返回检查结果，包含用户是否有权限访问该RUN号对应的课题，以及reduction文件夹中是否有包含runNumber的文件夹。
         一旦检查通过，你会直接获得访问reduction文件夹的权限、同级目录下的analysis文件夹的权限、对应谱仪的info文件夹的权限。
-        ICAT 分支的 BL08A 返回原始数据 raw_data_path 和课题/年份 data_root，
-        原始数据只读，分析结果保存到当前用户工作区，不要求存在 reduction 目录。
+        ICAT 分支的 BL08A 另返回只读 raw_data_path 和 data_root，不要求已有规约结果。
+        反射规约完成后，将数据、图和参数写入返回的 reduction_folder_path/RUN号_时间戳/，
+        并在 info_folder_path 写 reduction_RUN号_时间戳.json，结构同下方分析 info，
+        第二层键改为 reduction_RUN号_时间戳。分析结果按下方规则写入返回的 analysis_folder_path。
+        规约和分析都做了就分别归档；只使用返回的目录，不写原始数据，不只留工作区副本。
+        多 RUN 按已授权课题分别归档，记录直通/反射 RUN、角度和分组；写回失败必须明确报告。
         
         注意，一旦你调用这个工具并检查通过，并且你做了数据分析，得到有价值或更好的结果，你就有一个必须做的事情：在analysis文件夹中新建一个以“RUN号_当前年月日_当前时分秒”命名的文件夹（例如“RUN0000001_20240605_153045”），将数据分析结果保存到该文件夹中。
             分析结果具体指：
@@ -2160,7 +2164,7 @@ class RongZaiAgent(DrSaiAgent):
                 - status: "success" 或 "failed"
                 - error: 错误信息（如果有）
                 - proposal: proposal编号（如果检查成功）
-                - reduction_folder_path: reduction文件夹路径（如果检查成功）
+                - reduction_folder_path: reduction文件夹路径（BL08A 也是规约结果归档目录）
                 - run_folders_path: reduction目录下包含runNumber的文件夹名称列表（如果检查成功）
                 - analysis_folder_path: analysis文件夹路径（如果检查成功）
                 - info_folder_path: info文件夹路径（如果检查成功）
@@ -2302,7 +2306,17 @@ class RongZaiAgent(DrSaiAgent):
                     results["error"] = f"用户 {user_id} 无权访问 {runNumber} 对应的课题 {found_proposal}"
                     return results
 
-            if auth_provider != "domas" and beamline.strip().upper() == "BL08A":
+            is_production = os.getenv("SERVICE_MODE") == "PROD"
+            environment_suffix = "" if is_production else "/dev"
+            is_raw_reflection = auth_provider != "domas" and beamline.strip().upper() == "BL08A"
+            if is_raw_reflection:
+                beamline = "BL08A"
+            proposal_root = f"/csns_data/{beamline}/{found_proposal}"
+            reduction_folder_path = f"{proposal_root}/reduction{environment_suffix}"
+            analysis_folder_path = f"{proposal_root}/analysis{environment_suffix}"
+            info_folder_path = f"/csns_data/{beamline}/{beamline}_info{environment_suffix}"
+
+            if is_raw_reflection:
                 runNumber = runNumber.strip().upper()
                 if re.fullmatch(r"RUN[0-9]{7}", runNumber) is None:
                     results["error"] = "RUN 编号必须为 RUN 加七位数字"
@@ -2331,21 +2345,23 @@ class RongZaiAgent(DrSaiAgent):
                 if len(run_dirs) != 1 or not run_dirs[0].is_relative_to(proposal_dir):
                     results["error"] = f"有权限，但未找到 {runNumber} 唯一的课题/年份/RUN目录"
                     return results
+                for folder in (reduction_folder_path, analysis_folder_path, info_folder_path):
+                    os.makedirs(folder, exist_ok=True)
                 raw_path = str(run_dirs[0])
-                if raw_path not in self._extra_work_dirs:
-                    self._extra_work_dirs.append(raw_path)
+                for folder in (raw_path, reduction_folder_path, analysis_folder_path, info_folder_path):
+                    if folder not in self._extra_work_dirs:
+                        self._extra_work_dirs.append(folder)
                 return {
                     "status": "success", "proposal": found_proposal,
                     "raw_data_path": raw_path, "data_root": str(run_dirs[0].parent),
-                    "description": "权限验证通过。原始数据只读，分析结果保存到当前用户工作区。",
+                    "reduction_folder_path": reduction_folder_path,
+                    "analysis_folder_path": analysis_folder_path,
+                    "info_folder_path": info_folder_path,
+                    "description": (
+                        f"用户 {user_id} 有权访问 {runNumber} 对应的课题 {found_proposal}。"
+                        "原始数据只读；规约、分析结果及对应 info 必须按本工具规则写入返回的归档目录。"
+                    ),
                 }
-
-            is_production = os.getenv("SERVICE_MODE") == "PROD"
-            environment_suffix = "" if is_production else "/dev"
-            proposal_root = f"/csns_data/{beamline}/{found_proposal}"
-            reduction_folder_path = f"{proposal_root}/reduction{environment_suffix}"
-            analysis_folder_path = f"{proposal_root}/analysis{environment_suffix}"
-            info_folder_path = f"/csns_data/{beamline}/{beamline}_info{environment_suffix}"
 
             # 检查found_proposal下是否有reduction文件夹
             if not os.path.exists(reduction_folder_path):

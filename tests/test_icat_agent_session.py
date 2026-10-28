@@ -197,11 +197,15 @@ def test_local_session_bl08a_returns_raw_paths(local_agent, monkeypatch, tmp_pat
     assert result['status'] == 'success', result
     assert result['raw_data_path'] == str(run_dir)
     assert result['data_root'] == str(run_dir.parent)
-    assert 'reduction_folder_path' not in result
+    assert result['reduction_folder_path'] == '/csns_data/BL08A/P08TEST/reduction'
+    assert result['analysis_folder_path'] == '/csns_data/BL08A/P08TEST/analysis'
+    assert result['info_folder_path'] == '/csns_data/BL08A/BL08A_info'
     assert str(run_dir) in agent._extra_work_dirs
     IcatHelper.loginIcat.assert_not_called()
     session.logout.assert_not_called()
-    mkdir.assert_not_called()
+    for key in ('reduction_folder_path', 'analysis_folder_path', 'info_folder_path'):
+        mkdir.assert_any_call(result[key], exist_ok=True)
+        assert result[key] in agent._extra_work_dirs
 
 
 def test_icat_logout_targets_session_endpoint(monkeypatch):

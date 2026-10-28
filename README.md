@@ -307,7 +307,16 @@ CONDA_EXE=/path/to/anaconda3/bin/conda bash start_tools.sh start
 磁结构服务已从此启动脚本移除，磁结构代码保留；已经运行的旧进程不会被自动停止。
 BL08A 原始数据位于 `/csnsdata/userData/BL08A/<课题>/<年份>/<RUN>`。
 权限验证沿用 `check_user_permission_for_file` 的 DoMAS/ICAT 分支，
-仅 ICAT 分支为 BL08A 返回原始数据目录 `data_root`，供反射工具使用。
+仅 ICAT 分支为 BL08A 返回原始数据目录 `data_root`，供反射工具使用，
+同时创建并授权 `/csns_data/BL08A/<课题>/reduction`、`analysis` 和
+`/csns_data/BL08A/BL08A_info`（非生产分别追加 `/dev`）。
+沿用现有智能体归档机制：权限工具返回路径和强制写回要求，由智能体在处理完成后
+归档实际文件和 info；权限检查本身不生成分析结果，也不代表已完成归档。
+规约和分析分别归档到对应目录下的 `RUNxxxxxxx_YYYYMMDD_HHMMSS/`，
+并在 info 目录写入 `reduction_RUNxxxxxxx_YYYYMMDD_HHMMSS.json` 或
+`analysis_RUNxxxxxxx_YYYYMMDD_HHMMSS.json`，结构为
+`{课题: {reduction或analysis_RUN号_时间戳: {归档文件绝对路径: 文件描述}}}`。
+同时做了两类处理必须分别归档；写回 `/csns_data`，不写回原始数据挂载 `/csnsdata`。
 MCP 不做账号认证，只服务受信本机框架。
 端口由 `.env` 中 `MCP_NEUTRON_REFLECTION_PORT` 配置；当前生产值为 42521。
 

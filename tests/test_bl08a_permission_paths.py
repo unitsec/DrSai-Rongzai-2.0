@@ -1,4 +1,5 @@
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -16,6 +17,7 @@ def permissions(tmp_path, monkeypatch):
     (root / 'P08TEST' / '2026' / 'RUN0000177').mkdir(parents=True)
     monkeypatch.setenv('BL08A_RAW_DATA_ROOT', str(root))
     monkeypatch.setenv('SERVICE_MODE', 'PROD')
+    monkeypatch.setattr('src.core.agent.agent.os.makedirs', Mock())
     login = Mock(return_value=Mock())
     logout = Mock()
     monkeypatch.setattr(IcatHelper, 'loginIcat', login)
@@ -48,11 +50,50 @@ def test_original_icat_flow_returns_raw_data_after_authorization(permissions, ro
     assert result['status'] == 'success'
     assert result['data_root'] == str(root / 'P08TEST' / '2026')
     assert result['raw_data_path'] == str(root / 'P08TEST' / '2026' / 'RUN0000177')
-    assert 'reduction_folder_path' not in result
+    assert result['reduction_folder_path'] == '/csns_data/BL08A/P08TEST/reduction'
+    assert result['analysis_folder_path'] == '/csns_data/BL08A/P08TEST/analysis'
+    assert result['info_folder_path'] == '/csns_data/BL08A/BL08A_info'
     assert result['raw_data_path'] in agent._extra_work_dirs
+    for key in ('reduction_folder_path', 'analysis_folder_path', 'info_folder_path'):
+        assert result[key] in agent._extra_work_dirs
     provider.assert_called_once_with('alice', 'token', role=role)
     login.assert_called_once_with('alice', 'token')
     logout.assert_called_once_with(login.return_value)
+
+
+@pytest.mark.parametrize('mode,suffix', [('PROD', ''), ('DEV', '/dev')])
+def test_writeback_paths_follow_domas_layout(permissions, monkeypatch, mode, suffix):
+    _, agent, _, _, _ = permissions
+    monkeypatch.setenv('SERVICE_MODE', mode)
+    mkdir = Mock()
+    monkeypatch.setattr('src.core.agent.agent.os.makedirs', mkdir)
+    for _ in range(2):
+        result = check(agent)
+        assert result['status'] == 'success', result
+        expected = (
+            f'/csns_data/BL08A/P08TEST/reduction{suffix}',
+            f'/csns_data/BL08A/P08TEST/analysis{suffix}',
+            f'/csns_data/BL08A/BL08A_info{suffix}',
+        )
+        for folder in expected:
+            mkdir.assert_any_call(folder, exist_ok=True)
+            assert agent._extra_work_dirs.count(folder) == 1
+        assert result['reduction_folder_path'] == expected[0]
+        assert result['analysis_folder_path'] == expected[1]
+        assert result['info_folder_path'] == expected[2]
+        assert '规约、分析结果及对应 info' in result['description']
+        assert '/dev' not in result['description']
+        assert 'YYYYMMDD' not in result['description']
+    assert all(call.args[0].startswith('/csns_data/') for call in mkdir.call_args_list)
+
+
+def test_unwritable_archive_returns_failure_without_granting_paths(permissions, monkeypatch):
+    _, agent, _, _, _ = permissions
+    monkeypatch.setattr('src.core.agent.agent.os.makedirs', Mock(side_effect=PermissionError('read-only archive')))
+    result = check(agent)
+    assert result['status'] == 'failed'
+    assert 'read-only archive' in result['error']
+    assert not agent._extra_work_dirs
 
 
 def test_denied_icat_permission_does_not_inspect_mount(permissions, monkeypatch):
@@ -63,6 +104,7 @@ def test_denied_icat_permission_does_not_inspect_mount(permissions, monkeypatch)
     assert result['status'] == 'failed'
     assert '无权访问' in result['error']
     assert not agent._extra_work_dirs
+    os.makedirs.assert_not_called()
 
 
 @pytest.mark.parametrize('layout', ['missing-proposal', 'missing-run', 'two-years'])
@@ -79,6 +121,7 @@ def test_unavailable_or_ambiguous_raw_path_does_not_grant_access(permissions, la
     assert result['status'] == 'failed'
     assert '有权限' in result['error']
     assert not agent._extra_work_dirs
+    os.makedirs.assert_not_called()
 
 
 def test_domas_bl08a_does_not_switch_to_icat(permissions, monkeypatch):

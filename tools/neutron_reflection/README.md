@@ -58,7 +58,13 @@ SSE地址http://127.0.0.1:${MCP_NEUTRON_REFLECTION_PORT}/sse。可用NEUTRON_REF
 数据获取和权限认证由框架现有权限工具负责，不属于反射 skill/MCP 的职责。
 分组调用可通过 `data_root` 指定所提供的课题/年份目录；同组RUN必须来自同一目录。
 MCP仅检查该路径位于管理员数据根目录内，不重复认证ICAT；这不是对外开放的数据授权接口。
-原始数据只读，输出进入 WORKDIR，不写入原始数据挂载。
+原始数据只读，MCP 输出先进入 WORKDIR，不写入原始数据挂载 `/csnsdata`。
+框架权限工具同时返回 `/csns_data/BL08A/<课题>/reduction`、`analysis` 和
+`/csns_data/BL08A/BL08A_info`（非生产追加 `/dev`），要求智能体在完成规约、
+分析后分别归档结果及对应 info JSON。结果子目录为 `RUN号_YYYYMMDD_HHMMSS`；
+info 文件及其第二层键为 `reduction_RUN号_时间戳` 或 `analysis_RUN号_时间戳`，
+第一层键为课题，第三层为归档文件绝对路径到描述的映射，与 BL09/BL16 一致。
+MCP 不承担认证或写回；工作区输出成功不等于数据库归档成功。
 
 ## 分组输入与缺参交互
 
