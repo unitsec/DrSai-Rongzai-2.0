@@ -5,7 +5,7 @@ description: 处理CSNS BL08A单组或多组中子反射数据；缺少直通身
 
 # BL08A 中子反射处理
 
-1. 用户无需手动分组。默认将提供的全部RUN置于同一groups项的runs中，调用process_neutron_reflection_groups（type=sse，url=http://127.0.0.1:${MCP_NEUTRON_REFLECTION_PORT}/sse）。数据源仅用管理员配置别名，默认default；不同数据源分项，不猜路径、不搜索其他RUN。若验证工具已提供课题/年份目录，可传data_root绝对路径；必须位于该data_source的管理员根目录内，不同目录分项；自动匹配仅限本项提供的RUN。
+1. 生产端处理BL08A数据时，必须先对全部待处理RUN（包括直通）调用CheckUserPermission（beamline=BL08A，user_id使用框架当前用户），全部检查成功后才能调用反射MCP；检查失败则停止，不得先尝试默认数据源或在失败后绕过认证。必须使用权限工具返回的课题/年份目录填写data_root，不得省略或猜测。用户无需手动分组。同一data_root的RUN默认置于同一groups项的runs中，调用process_neutron_reflection_groups（type=sse，url=http://127.0.0.1:${MCP_NEUTRON_REFLECTION_PORT}/sse）。数据源仅用管理员配置别名，默认default；不同数据源或data_root分项，不猜路径、不搜索其他RUN。data_root必须位于该data_source的管理员根目录内；非生产端若验证工具已提供课题/年份目录，也应使用该目录；自动匹配仅限本项提供的RUN。
 2. 工具先按Rz识别直通/反射，再比较lamda_min、lamda_max（波长范围）及S1H/S1W/S3H/S3W（狭缝开口）。六项均为有效正数且逐项max/min<=1.01才匹配，不按平均差异、不链式分组。唯一候选自动使用。
 3. 缺Rz时，按questions只追问未知RUN的身份和反射角。roles填写用户确认的direct/reflection；angles_deg只填用户明确提供的反射角（度）。直通明确身份即可，不伪造Rz=0、不改原始JSON。已有信息不重复询问。
 4. 多个候选直通时列出候选，询问逐条指定还是统一使用其中一个。用户选择后填direct_assignments（反射RUN到直通RUN）或direct_run（本项统一直通）。统一使用前必须对每条反射都匹配；不自行任选、不平均直通。
