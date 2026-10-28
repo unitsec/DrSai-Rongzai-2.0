@@ -67,7 +67,7 @@ class IcatException(Exception):
 
 class ICAT:
     def _check(self, r):
-        if r.status_code / 100 != 2:
+        if r.status_code // 100 != 2:
             data = r.json()
             if data.get("offset"):
                 raise IcatException(data["code"], data["message"], data["offset"])
@@ -217,7 +217,7 @@ class ICAT:
         if method == "POST":
             return requests.post(url, data=data, verify=self.cert, timeout=5)
         if method == "DELETE":
-            return requests.delete(self.uri + "entityManager", params=data, verify=self.cert, timeout=5)
+            return requests.delete(url, params=data, verify=self.cert, timeout=5)
 
         if method == "PUT":
             return requests.put(url, verify=self.cert, timeout=5)

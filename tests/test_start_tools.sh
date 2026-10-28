@@ -7,7 +7,7 @@ cp "$ROOT/start_tools.sh" "$fixture/start_tools.sh"
 mkdir -p "$fixture/bin" "$fixture/tools/pyZRietveld" \
     "$fixture/tools/GSAS-II-master/GSASII" "$fixture/tools/sasview" \
     "$fixture/tools/pdf_refinement" "$fixture/tools/Irena" \
-    "$fixture/tools"
+    "$fixture/tools/neutron_reflection"
 
 cleanup() {
     bash "$fixture/start_tools.sh" stop all >/dev/null || return
@@ -17,16 +17,16 @@ cleanup() {
         "$fixture/tools/sasview/0sasview_refine.py" \
         "$fixture/tools/pdf_refinement/0pdf_refine.py" \
         "$fixture/tools/Irena/0Irena_fit.py" \
-        "$fixture/tools/magnetic_structure_mcp.py" \
+        "$fixture/tools/neutron_reflection/reflection_mcp.py" \
         "$fixture/tmp/tools/manager.lock"
     local name
-    for name in zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine magnetic-analysis; do
+    for name in zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine neutron-reflection; do
         rm -f -- "$fixture/tmp/tools/logs/$name.log" "$fixture/tmp/tools/$name.pid"
     done
     rmdir "$fixture/bin" "$fixture/tools/pyZRietveld" \
         "$fixture/tools/GSAS-II-master/GSASII" "$fixture/tools/GSAS-II-master" \
         "$fixture/tools/sasview" "$fixture/tools/pdf_refinement" "$fixture/tools/Irena" \
-        "$fixture/tools" "$fixture/tmp/tools/logs" "$fixture/tmp/tools" \
+        "$fixture/tools/neutron_reflection" "$fixture/tools" "$fixture/tmp/tools/logs" "$fixture/tmp/tools" \
         "$fixture/tmp" "$fixture"
 }
 trap cleanup EXIT
@@ -62,7 +62,7 @@ export NEUTRON_REFLECTION_PYTHON="$fixture/bin/reflection-python"
 for entry in tools/pyZRietveld/0zrietveld_refine.py \
     tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py \
     tools/sasview/0sasview_refine.py tools/pdf_refinement/0pdf_refine.py \
-    tools/Irena/0Irena_fit.py tools/magnetic_structure_mcp.py; do
+    tools/Irena/0Irena_fit.py tools/neutron_reflection/reflection_mcp.py; do
     cat > "$fixture/$entry" <<'EOF'
 #!/usr/bin/env bash
 trap 'exit 0' TERM
@@ -77,6 +77,9 @@ pid_of() { local pid stamp; read -r pid stamp < "$fixture/tmp/tools/$1.pid"; ech
 
 cd /
 manager start all
+manager status neutron-reflection | grep -v stopped >/dev/null
+grep -q 'stdout ready' "$fixture/tmp/tools/logs/neutron-reflection.log"
+if manager start magnetic-analysis; then exit 1; fi
 first=$(pid_of pdf-refine)
 child=$(ps -o pid= --ppid "$first")
 child=${child// /}

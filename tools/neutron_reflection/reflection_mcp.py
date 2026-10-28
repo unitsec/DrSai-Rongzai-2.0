@@ -85,6 +85,7 @@ def process_neutron_reflection_groups(
     """处理用户明确划分的多组BL08A数据，输出一张反射率总图和总summary.csv。
 
     groups 每项字段：group_name（可选名称）、runs（必填RUN编号列表）、
+    data_root（可选课题/年份数据目录，其下为RUN/RUN，必须位于管理员数据根目录内）、
     data_source（管理员数据源别名，默认default）、direct_run（用户明确指定时填写）、
     angles_deg（反射RUN到角度的映射，单位度，如{"RUN0000216":1.22}）、
     confirm_metadata_override（默认false，仅用户明确确认覆盖冲突元数据后为true）。

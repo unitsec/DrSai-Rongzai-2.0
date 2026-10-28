@@ -29,7 +29,7 @@ def prepare_groups(groups, paths):
         sources.setdefault("default", paths["data_root"])
     plans, questions = [], []
     for index, group in enumerate(groups, 1):
-        allowed = {"group_name", "runs", "data_source", "direct_run", "angles_deg", "confirm_metadata_override"}
+        allowed = {"group_name", "runs", "data_source", "data_root", "direct_run", "angles_deg", "confirm_metadata_override"}
         if not isinstance(group, dict) or set(group) - allowed:
             raise ValueError("分组必须是对象且不能包含未知字段")
         name = group.get("group_name", f"group_{index:03d}")
@@ -45,6 +45,14 @@ def prepare_groups(groups, paths):
         if not isinstance(source, str) or source not in sources:
             raise ValueError(f"未配置数据源：{source!r}")
         root = Path(sources[source]).expanduser().resolve()
+        if "data_root" in group:
+            supplied = group["data_root"]
+            if not isinstance(supplied, str) or not Path(supplied).is_absolute():
+                raise ValueError("data_root 必须是验证工具返回的绝对路径")
+            candidate = Path(supplied).resolve()
+            if not candidate.is_relative_to(root):
+                raise ValueError("data_root 超出管理员配置的数据根目录")
+            root = candidate
         if not root.is_absolute() or not root.is_dir():
             raise ValueError(f"数据源目录不存在：{source}")
         metadata = {}
