@@ -1,5 +1,26 @@
 # BL08A 中子反射工具
 
+## 当前版本：自动匹配直通与完整报告
+
+本节覆盖下方历史版本中与当前行为不一致的说明。
+
+- 默认将用户提供的RUN放入同一个groups项，使用process_neutron_reflection_groups。
+- 按abs(Rz)<0.001度识别直通，正负对称；缺失Rz时询问身份及反射角。
+- 反射与直通逐项比较lamda_min、lamda_max、S1H、S1W、S3H、S3W：
+  六项均须为有效正数，且max/min<=1.01。唯一候选自动使用，多候选询问。
+- 用户指定的直通同样必须通过设置校验；缺参或不匹配时先返回needs_input，不计算。
+- 每组和总summary.csv依次包含Run、m、r_envelope(%)三列，仅列反射RUN。
+- 默认交付一张m/R代表图、总图、CSV和全部规约反射率数据ZIP。
+  ZIP内每条曲线含Q、R、dR，R与dR为小数比例。
+- 结论包含程序排序及界面质量、双层周期厚度的通用优化方向。
+  10%的m分组规则用于比较，不是设计验收容差。
+- 本次仅提交agent_skills和tools/neutron_reflection。
+  Agent/UI文件事件适配、重复图片过滤、简洁展示和隐藏Todo List不在本次提交范围；
+  完整网页交付体验需在目标框架验证。
+- 工具返回image_delivery=files_event及public_files；
+  框架需支持文件工具交付，不能仅凭工具测试通过认定网页预览正常。
+
+
 通过本机MCP接入单组或多组BL08A反射规约。各组使用一个直通RUN独立归一化，
 输出带原始dR误差棒的反射率散点总图，以及只有m和包络反射率的汇总表。
 

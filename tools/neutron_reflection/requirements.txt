@@ -1,5 +1,6 @@
 # Install the approved rongzai 4.0 package separately (see README).
 mcp>=1.15.0,<2
+python-dotenv
 numpy
 pandas
 matplotlib
