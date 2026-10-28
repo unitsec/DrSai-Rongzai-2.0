@@ -19,6 +19,8 @@ import asyncio
 from drsai.backend import run_worker
 
 from src.core.agent.agent import RongZaiAgent, normalize_thread_id
+from src.core.agent.analysis_sandbox import check_sandbox_support
+from src.configs.constants import get_datasets_dir
 from src.configs.system_prompt import get_rongzai_system_prompt
 import os
 from dotenv import load_dotenv
@@ -369,7 +371,8 @@ async def create_agent(
 
         work_dir=WORKDIR,
         only_in_workspace=True,
-        extra_work_dirs=[str((here / "datasets").resolve()),str((here / "agent_skills").resolve())],
+        extra_work_dirs=[str(get_datasets_dir()),str((here / "agent_skills").resolve())],
+        read_only_work_dirs=[str(get_datasets_dir()),str((here / "agent_skills").resolve())],
         token_limit=agent_token_limit
     )
 
@@ -386,6 +389,7 @@ if __name__ == "__main__":
     cli_args, worker_args = parser.parse_known_args()
     sys.argv = [sys.argv[0], *worker_args]
 
+    check_sandbox_support()
     asyncio.run(
         run_worker(
             # 智能体注册信息

@@ -33,6 +33,90 @@ cd tools/sasview
 pip install -r requirements.txt
 ```
 
+### 分析命令的安全隔离（必需）
+
+Worker 的 Shell、后台 Shell、文件读写、搜索和下载工具均通过 Bubblewrap
+在独立 Linux 命名空间中执行，不再直接使用宿主机权限。先安装系统依赖：
+
+```shell
+# Debian / Ubuntu
+sudo apt-get update
+sudo apt-get install bubblewrap
+# RHEL 系发行版使用：sudo dnf install bubblewrap
+```
+
+部署环境必须允许创建用户、挂载、PID 和网络命名空间。容器平台若禁止这些操作，
+需要管理员配置适当的运行策略；不要直接启用 privileged 或挂载宿主机根目录。
+使用启动 Worker 的同一账户、同一 Python 环境预检：
+
+```shell
+python -c "from src.core.agent.analysis_sandbox import check_sandbox_support; check_sandbox_support()"
+python -m pytest tests/test_workspace_permissions.py -q
+```
+
+`run_agent_web.py` 启动时也会预检。缺少依赖或隔离失败会报错，**不会回退到宿主机执行**；
+`only_in_workspace=False` 和危险命令开关也不能关闭沙箱。
+
+保留的分析能力与边界：
+
+- 当前 Python 环境、系统运行库只读挂载，支持 NumPy/Pandas/SciPy 拟合、Matplotlib
+  非交互式绘图、脚本执行、管道和工作区文件读写；后台任务仍可运行，并可通过
+  `get_bash_task` 查询状态及工作区日志。后台任务受 timeout 限制，Worker 退出时终止。
+- Web 入口的共享 `datasets`、`agent_skills` 只读挂载。工作区可写；
+  `CheckUserPermission` 成功后追加的数据目录仍按已有授权流程动态开放。
+  额外的只读数据目录应同时加入 `extra_work_dirs` 和 `read_only_work_dirs`。
+- 只向子进程传入固定的分析环境变量，不继承 Worker 的 API 密钥、Token、
+  `BASH_ENV`、`PYTHONPATH`、代理或其他服务环境。宿主机 home、SSH 文件和服务
+  `.env` 不挂载；`~` 是沙箱内临时 home，`/tmp` 也是临时目录。需持久化的产物必须写到工作区。
+- 沙箱无网络，不能直接访问外网或宿主机 localhost。SSE MCP 仍由主服务连接，
+  原有 GSAS-II/PDF/SasView 等 MCP 服务路径不变。需要联网的脚本应改用受控业务工具，
+  不要给分析沙箱共享宿主机网络或注入主服务凭据。
+- stdio MCP 启动的本地程序也进入同一沙箱，不接受自定义 `env`；
+  图片理解工具读取本地图片时同样通过沙箱，避免其他工具绕开文件隔离。
+- `/proc` 为空，避免暴露宿主机进程环境，也兼容禁止新挂载 procfs 的容器。
+  文件描述符硬上限为 65536（若原硬上限更低则保留），避免无 procfs 时 Python
+  子进程关闭过高的继承 FD 范围而长时间阻塞。依赖 procfs、GPU/特殊设备、
+  新装软件或自定义环境变量的任务需另行适配和验证。
+
+### 数据目录配置与迁移
+
+在 `.env` 配置共享数据目录（Web、95 和测试 Worker 入口共用）：
+
+```shell
+RONGZAI_DATASETS_DIR=/path/to/shared/datasets
+```
+
+不配置或留空时默认使用当前项目下的 `datasets/`，不依赖启动目录或宿主机 home。
+显式配置必须是已存在的绝对目录；无效路径会报错，不会静默回退。
+迁移时先复制数据并保持 `BLXXX/instrumentFiles`、`BLXXX/RUNdataFiles` 等结构，
+再修改此变量并重启 Worker。SSE MCP 服务必须也能读取传入的绝对文件路径；
+若 MCP 位于不同容器，需将同一数据卷挂载到相同路径。
+
+该路径会自动加入只读授权目录、系统提示和 GSAS-II/PDF/Z-Rietveld skill
+内容；分析沙箱仅在挂载该数据目录时显式传入 `RONGZAI_DATASETS_DIR`，不会因此
+继承其他服务环境变量。Shell 可使用 `"$RONGZAI_DATASETS_DIR"`，Python 可使用
+`os.environ["RONGZAI_DATASETS_DIR"]`，文件工具使用 skill 返回的绝对路径。
+数据目录只读，修改输入或生成结果时使用工作区；不要再使用
+`~/rongzai-agent/datasets/`。无需额外设置 `RONGZAI_SANDBOX_READONLY_PATHS`。
+
+### 额外分析环境
+
+如脚本确实需要其他 Conda 环境或分析程序，只配置必要的可信只读路径，例如：
+
+```shell
+RONGZAI_SANDBOX_READONLY_PATHS=["/opt/conda/envs/gsas2_py311","/opt/analysis-tools"]
+```
+
+不要配置整棵服务目录、宿主机 home 或含凭据的目录；只读挂载仍允许读取其中的内容。
+此配置仅由管理员维护，不能开放给模型或普通用户修改。额外环境中的 Python 可用绝对
+路径执行；不会读取宿主机的 Conda/Shell 启动文件。
+
+上述回归测试使用合成 CSV，验证拟合系数、PNG/CSV 导出、授权目录、文件工具、
+后台执行、超时，以及环境变量、宿主机文件和网络隔离。上线前仍须在测试部署中用真实
+业务样例完成分析回归，并核查独立 MCP/远程 Agent 自身的执行权限；本沙箱不能隔离
+另一个服务内部执行的命令。沙箱并非 CPU、内存和磁盘配额，生产部署还应配置相应资源限制。
+疑似已泄露的凭据须轮换，SSH 授权和历史登录须另行排查，代码修复不会清除已有入侵。
+
 ## 2. 构建和启动智能体人机交互端
 
 以下步骤适用于第一次在新服务器部署。前端基于 Gatsby 5，需要 Node.js 18
@@ -133,6 +217,8 @@ http://服务器IP:8081/
 MCP 工具端口同样集中在 `.env` 的 “Service ports” 分组：Worker 使用 `42501`，
 GSAS-II、PDF、SasView、Irena 和 Z-Rietveld 分别默认使用 `42506`、`42507`、
 `42508`、`42509` 和 `42510`。修改端口后需重启对应服务。
+SasView 和 Irena 启动时会加载项目根目录的 `.env`，其中的配置优先于同名进程环境变量；
+Irena 使用 `MCP_IRENA_REFINE_PORT`，未配置时默认监听 `42509`。
 
 ### 2.5 rongzai_web Pod 的 Dr.Sai 前端构建与重启
 
@@ -221,7 +307,16 @@ CONDA_EXE=/path/to/anaconda3/bin/conda bash start_tools.sh start
 磁结构服务已从此启动脚本移除，磁结构代码保留；已经运行的旧进程不会被自动停止。
 BL08A 原始数据位于 `/csnsdata/userData/BL08A/<课题>/<年份>/<RUN>`。
 权限验证沿用 `check_user_permission_for_file` 的 DoMAS/ICAT 分支，
-仅 ICAT 分支为 BL08A 返回原始数据目录 `data_root`，供反射工具使用。
+仅 ICAT 分支为 BL08A 返回原始数据目录 `data_root`，供反射工具使用，
+同时创建并授权 `/csns_data/BL08A/<课题>/reduction`、`analysis` 和
+`/csns_data/BL08A/BL08A_info`（非生产分别追加 `/dev`）。
+沿用现有智能体归档机制：权限工具返回路径和强制写回要求，由智能体在处理完成后
+归档实际文件和 info；权限检查本身不生成分析结果，也不代表已完成归档。
+规约和分析分别归档到对应目录下的 `RUNxxxxxxx_YYYYMMDD_HHMMSS/`，
+并在 info 目录写入 `reduction_RUNxxxxxxx_YYYYMMDD_HHMMSS.json` 或
+`analysis_RUNxxxxxxx_YYYYMMDD_HHMMSS.json`，结构为
+`{课题: {reduction或analysis_RUN号_时间戳: {归档文件绝对路径: 文件描述}}}`。
+同时做了两类处理必须分别归档；写回 `/csns_data`，不写回原始数据挂载 `/csnsdata`。
 MCP 不做账号认证，只服务受信本机框架。
 端口由 `.env` 中 `MCP_NEUTRON_REFLECTION_PORT` 配置；当前生产值为 42521。
 
@@ -233,8 +328,10 @@ Conda 不缓存输出，Python 使用 `-u`，因此新输出会实时写入文�
 脚本会识别当前用户在本仓库启动的同入口 Python 进程，即使它不是由脚本
 启动的，`start` 也不会重复启动。旧进程不会自动切换日志文件：
 需要执行 `restart <工具名称>` 后才会写入上述统一日志。重启/停止可能中断
-正在进行的精修任务；发送 TERM 后最多等待 15 秒，若仍未退出则报错，
-不会强制杀死进程或启动替代进程。不要同时使用 PM2/其他自动拉起服务管理
+正在进行的精修任务；发送 TERM 后最多等待 15 秒，若仍未退出则输出警告，
+仅对 PID 和启动时间仍一致的残留进程发送 KILL，再等待最多 5 秒。
+只有确认旧进程退出后才启动替代进程；强制终止可能中断未完成的请求。
+不要同时使用 PM2/其他自动拉起服务管理
 这些入口，应先停止对应管理器再使用本脚本。
 
 

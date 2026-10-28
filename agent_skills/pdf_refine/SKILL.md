@@ -101,7 +101,7 @@ description: PDF refinement skill for pair distribution function fitting using t
 - 优先使用用户当前提供或之前已提供的文件。
 - 不要去读PDF数据文件的内容，里面都是数据点，占用上下文空间，无法提供有用信息。
 - 若文件未上传，需要根据用户提供的信息去数据库寻找。
-- 数据库位置通常在：~/rongzai-agent/datasets/
+- 数据库位置：`${RONGZAI_DATASETS_DIR}/`，由部署配置解析为绝对路径，也可查看系统提示中的 Shared datasets directory。Shell 中使用 `"$RONGZAI_DATASETS_DIR"`，不要使用 `~` 推断路径。数据库只读，如需修改输入文件，先复制到工作区，结果也写入工作区。
 - 常见结构：
 
    datasets/

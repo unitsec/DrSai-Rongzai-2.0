@@ -22,7 +22,7 @@ description: Rietveld refinement skill for neutron powder diffraction using the 
       - 去数据库获取.instprm文件，需要用户提供：谱仪名称（如BL16）、探测器名称（如group5）。
       - 去数据库获取.cif文件，需要用户提供：谱仪名称（如BL16）、RUN号（如RUN0021905）。
       - 如果用户给的信息不完整，询问用户
-      - 数据库的位置：~/rongzai-agent/datasets/，数据库下的文件组织结构如下：
+      - 数据库的位置：`${RONGZAI_DATASETS_DIR}/`（由部署配置解析为绝对路径，也可查看系统提示中的 Shared datasets directory；Shell 中使用 `"$RONGZAI_DATASETS_DIR"`）。不要使用 `~` 推断数据路径。数据库只读，如需修改输入文件，先复制到工作区，结果也写入工作区。数据库下的文件组织结构如下：
          datasets/
          |--BLXXX/
          |   |--instrumentFiles/

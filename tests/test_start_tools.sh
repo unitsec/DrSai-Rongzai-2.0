@@ -132,6 +132,28 @@ if manager start unknown-tool; then exit 1; fi
 manager stop pdf-refine
 cat > "$fixture/tools/pdf_refinement/0pdf_refine.py" <<'EOF'
 #!/usr/bin/env bash
+trap '' TERM
+echo 'stubborn process ready'
+while :; do sleep 0.2; done
+EOF
+manager start pdf-refine
+stubborn=$(pid_of pdf-refine)
+stubborn_child=$(ps -o pid= --ppid "$stubborn")
+stubborn_child=${stubborn_child// /}
+[[ "$stubborn_child" =~ ^[0-9]+$ ]]
+forced_output=$(manager restart pdf-refine 2>&1)
+[[ "$forced_output" == *'sending KILL to remaining verified PIDs'* ]]
+[[ "$(pid_of pdf-refine)" != "$stubborn" ]]
+for pid in "$stubborn" "$stubborn_child"; do
+    if [[ -r "/proc/$pid/stat" ]]; then
+        state=$(ps -o stat= -p "$pid")
+        [[ "$state" == Z* ]]
+    fi
+done
+manager status pdf-refine | grep "$(pid_of pdf-refine)" >/dev/null
+manager stop pdf-refine
+cat > "$fixture/tools/pdf_refinement/0pdf_refine.py" <<'EOF'
+#!/usr/bin/env bash
 echo 'intentional startup failure' >&2
 exit 7
 EOF
@@ -139,4 +161,4 @@ if manager start pdf-refine; then exit 1; fi
 [[ ! -f "$fixture/tmp/tools/pdf-refine.pid" ]]
 grep -q 'intentional startup failure' "$fixture/tmp/tools/logs/pdf-refine.log"
 manager stop all
-echo 'PASS: background startup, idempotency, parent/child restart, stale PIDs, unmanaged adoption, live/append logs, preflight and failures'
+echo 'PASS: background startup, idempotency, parent/child restart, forced stop, stale PIDs, unmanaged adoption, live/append logs, preflight and failures'

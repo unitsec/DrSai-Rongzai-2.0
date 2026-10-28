@@ -32,6 +32,7 @@ Logs: tmp/tools/logs/<tool>.log (appended across restarts)
 CONDA_EXE may specify an absolute conda executable path.
 NEUTRON_REFLECTION_PYTHON may override the reflection Python interpreter.
 Stop/restart may interrupt active refinement tasks.
+After 15 seconds, remaining verified processes receive KILL; wait up to 5 more seconds.
 EOF
 }
 
@@ -50,7 +51,7 @@ esac
 
 selected=()
 if (($# == 0)) || [[ "$*" == all ]]; then
-    selected=(0 1 2 3 4 5)
+    selected=("${!NAMES[@]}")
 else
     for name in "$@"; do
         found=false
@@ -77,7 +78,7 @@ cd -- "$ROOT"
 process_stamp() {
     local stat rest
     [[ -r "/proc/$1/stat" ]] || return 1
-    IFS= read -r stat < "/proc/$1/stat" || return 1
+    { IFS= read -r stat < "/proc/$1/stat"; } 2>/dev/null || return 1
     rest=${stat##*) }
     local -a fields
     read -r -a fields <<< "$rest"
@@ -111,7 +112,7 @@ find_processes() {
         pid=${pid%/cmdline}
         [[ -O "/proc/$pid" && "$pid" != "$$" ]] || continue
         args=()
-        mapfile -d '' -t args 2>/dev/null < "$file" || continue
+        { mapfile -d '' -t args < "$file"; } 2>/dev/null || continue
         ((${#args[@]} >= 2)) || continue
         # Only an interpreter, not grep/editors or the conda command, can be adopted.
         case "${args[0]##*/}" in python|python[0-9]*|bash) ;; *) continue ;; esac
@@ -136,7 +137,7 @@ find_processes() {
 }
 
 stop_tool() {
-    local index=$1 pid child parent stamp deadline alive position
+    local index=$1 pid child parent stamp deadline alive position forced=false
     find_processes "$index"
     if ((${#PIDS[@]} == 0)); then
         printf '%s: already stopped\n' "${NAMES[$index]}"
@@ -172,8 +173,23 @@ stop_tool() {
             if same_process "${PIDS[$position]}" "${STAMPS[$position]}"; then alive=true; fi
         done
         "$alive" || break
-        ((SECONDS < deadline)) ||
-            fail "${NAMES[$index]} did not stop within 15 seconds; no replacement was started."
+        if ((SECONDS >= deadline)); then
+            "$forced" &&
+                fail "${NAMES[$index]} did not exit after KILL; no replacement was started."
+            printf 'WARNING: %s did not stop within 15 seconds; sending KILL to remaining verified PIDs. Active requests may be interrupted.\n' \
+                "${NAMES[$index]}" >&2
+            for position in "${!PIDS[@]}"; do
+                pid=${PIDS[$position]}
+                if same_process "$pid" "${STAMPS[$position]}"; then
+                    if ! kill -KILL "$pid" 2>/dev/null; then
+                        same_process "$pid" "${STAMPS[$position]}" &&
+                            fail "Cannot force-stop PID $pid for ${NAMES[$index]}"
+                    fi
+                fi
+            done
+            forced=true
+            deadline=$((SECONDS + 5))
+        fi
         sleep 0.2
     done
     rm -f -- "$STATE_DIR/${NAMES[$index]}.pid"

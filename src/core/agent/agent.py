@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from pathlib import Path
 from loguru import logger
 from autogen_ext.tools.mcp import McpWorkbench, SseServerParams, StdioServerParams
+from .analysis_sandbox import AnalysisSandbox
 from collections.abc import Mapping
 from drsai import CancellationToken, FunctionCall
 from drsai.modules.baseagent import (
@@ -93,6 +94,7 @@ from .utils import (
 )
 
 from src.utils.check_language import generate_prompt
+from src.configs.constants import get_datasets_dir
 import traceback
 
 from src.core.auth.icat_permission_provider import IcatPermissionProvider
@@ -135,6 +137,14 @@ def resolve_mcp_skill_endpoints(skill_content: str) -> str:
         return str(port)
 
     return re.sub(r"\$\{([A-Z][A-Z0-9_]*)\}", replace_port, skill_content)
+
+
+def resolve_skill_runtime_config(skill_content: str) -> str:
+    """Resolve only explicitly supported, non-secret skill configuration."""
+    content = resolve_mcp_skill_endpoints(skill_content)
+    if "${RONGZAI_DATASETS_DIR}" in content:
+        content = content.replace("${RONGZAI_DATASETS_DIR}", str(get_datasets_dir()))
+    return content
 
 
 def normalize_thread_id(thread_id: str | None, user_id: str | None) -> str:
@@ -454,6 +464,7 @@ class DrSaiAssistantConfig(DrSaiAgentConfig):
     work_dir: str | None
     only_in_workspace: bool
     extra_work_dirs: List[str]
+    read_only_work_dirs: List[str] | None = None
     executor: ComponentModel
     token_limit: int
     rag_flow_url: str
@@ -509,6 +520,7 @@ class RongZaiAgent(DrSaiAgent):
         work_dir: str | None = None,
         only_in_workspace: bool = True,
         extra_work_dirs: List[str] | None = None,
+        read_only_work_dirs: List[str] | None = None,
         executor: CodeExecutor | None = None,
         max_delegate_depth: int = 1,
         subagent_timeout: int = 600,
@@ -570,13 +582,20 @@ class RongZaiAgent(DrSaiAgent):
         # 将run_bash, run_read, run_write, run_edit4个函数转换为大模型能理解的FunctionTool对象并加入self._tools列表
         self._only_in_workspace = only_in_workspace
         self._extra_work_dirs = list(extra_work_dirs) if extra_work_dirs else []
+        self._read_only_work_dirs = list(read_only_work_dirs or [])
+        self._analysis_sandbox = AnalysisSandbox(
+            self._work_dir,
+            lambda: [Path(path) for path in self._extra_work_dirs],
+            [Path(path) for path in self._read_only_work_dirs],
+        )
         self._basic_funcs: List[Callable] = get_operator_funcs_rongzai(
             self._work_dir,
             thread_id=self._thread_id,
             extra_dirs=self._extra_work_dirs,
             only_in_workspace=self._only_in_workspace,
-            allolow_dangrous_cmd=True,  # rongzai智能体默认允许执行潜在危险命令，前提是用户明确提出需求。风险由用户承担。
+            allolow_dangrous_cmd=True,  # Analysis scripts run behind the OS sandbox, not a command blacklist.
             source_name=self._name,
+            read_only_dirs=self._read_only_work_dirs,
         )
         # self._basic_funcs_names = [func.__name__ for func in self._basic_funcs]
         for func in self._basic_funcs:
@@ -947,6 +966,9 @@ class RongZaiAgent(DrSaiAgent):
                 f"{enhanced_system_message}\n\n"
                 f"Allowed workspace root: {self._work_dir}, and {self._extra_work_dirs}. You are allowed to access these directories and their descendants only.\n"
                 f"User upload directory: {self._upload_dir}\n"
+                f"Shared datasets directory (read-only): {get_datasets_dir()}\n"
+                "Use this absolute dataset path, not ~/rongzai-agent/datasets. "
+                "Copy inputs into the workspace before modifying them; write outputs in the workspace.\n"
                 )
         enhanced_system_message += f"\n\n{self._core_skill_policy_prompt}"
         enhanced_system_message += f"\n\n{self._todo_policy_prompt}"
@@ -1893,7 +1915,8 @@ class RongZaiAgent(DrSaiAgent):
 
         使用规则：
         - 若是 SSE 服务，传入 type='sse' 和 url。
-                - 若是 stdio 服务，传入 type='stdio' 和 command，可选 args/env。
+        - 若是 stdio 服务，传入 type='stdio' 和 command，可选 args。
+          本地程序仅在无网络分析沙箱内运行，不接受自定义 env。
 
         返回结果：
         - 会返回该 MCP server 暴露出的远程工具列表。
@@ -1918,7 +1941,14 @@ class RongZaiAgent(DrSaiAgent):
                 server_id = (command or "").strip()
                 if not server_id:
                     return "Error: 'command' is required when type='stdio'."
-                server_params = StdioServerParams(command=server_id, args=args or [], env=env or None)
+                if env:
+                    return "Error: Custom stdio environment is disabled; use the isolated analysis runtime."
+                sandbox_command, sandbox_env = self._analysis_sandbox.command(
+                    [server_id, *(args or [])], self._work_dir,
+                )
+                server_params = StdioServerParams(
+                    command=sandbox_command[0], args=sandbox_command[1:], env=sandbox_env,
+                )
             else:
                 return "Error: 'type' must be either 'sse' or 'stdio'."
 
@@ -2039,7 +2069,8 @@ class RongZaiAgent(DrSaiAgent):
             if not api_key:
                 return "Error: missing API key for vision model."
 
-            image_ob = Image.from_file(file_path=str(p))
+            image_base64 = await asyncio.to_thread(self._analysis_sandbox.read_base64, p)
+            image_ob = Image.from_base64(image_base64)
             llm_messages: List[LLMMessage] = [
                 SystemMessage(
                     content="You are a vision sub-agent. Extract only what the user asked from the image and return concise factual text."
@@ -2097,8 +2128,12 @@ class RongZaiAgent(DrSaiAgent):
         如果用户要求处理某个谱仪的某个RUN号的数据，先检查用户是否有权限访问该RUN号对应的课题，并检查该课题下的reduction文件夹中是否有包含runNumber的文件夹。数据就在这些文件夹中。
         该工具会返回检查结果，包含用户是否有权限访问该RUN号对应的课题，以及reduction文件夹中是否有包含runNumber的文件夹。
         一旦检查通过，你会直接获得访问reduction文件夹的权限、同级目录下的analysis文件夹的权限、对应谱仪的info文件夹的权限。
-        ICAT 分支的 BL08A 返回原始数据 raw_data_path 和课题/年份 data_root，
-        原始数据只读，分析结果保存到当前用户工作区，不要求存在 reduction 目录。
+        ICAT 分支的 BL08A 另返回只读 raw_data_path 和 data_root，不要求已有规约结果。
+        反射规约完成后，将数据、图和参数写入返回的 reduction_folder_path/RUN号_时间戳/，
+        并在 info_folder_path 写 reduction_RUN号_时间戳.json，结构同下方分析 info，
+        第二层键改为 reduction_RUN号_时间戳。分析结果按下方规则写入返回的 analysis_folder_path。
+        规约和分析都做了就分别归档；只使用返回的目录，不写原始数据，不只留工作区副本。
+        多 RUN 按已授权课题分别归档，记录直通/反射 RUN、角度和分组；写回失败必须明确报告。
         
         注意，一旦你调用这个工具并检查通过，并且你做了数据分析，得到有价值或更好的结果，你就有一个必须做的事情：在analysis文件夹中新建一个以“RUN号_当前年月日_当前时分秒”命名的文件夹（例如“RUN0000001_20240605_153045”），将数据分析结果保存到该文件夹中。
             分析结果具体指：
@@ -2130,7 +2165,7 @@ class RongZaiAgent(DrSaiAgent):
                 - status: "success" 或 "failed"
                 - error: 错误信息（如果有）
                 - proposal: proposal编号（如果检查成功）
-                - reduction_folder_path: reduction文件夹路径（如果检查成功）
+                - reduction_folder_path: reduction文件夹路径（BL08A 也是规约结果归档目录）
                 - run_folders_path: reduction目录下包含runNumber的文件夹名称列表（如果检查成功）
                 - analysis_folder_path: analysis文件夹路径（如果检查成功）
                 - info_folder_path: info文件夹路径（如果检查成功）
@@ -2146,6 +2181,7 @@ class RongZaiAgent(DrSaiAgent):
             sso = self._user_cookies.get("sso-token", "")
             auth_provider = (self._user_cookies.get("rz-auth-provider", "") or "").strip().lower()
             ui_role = (self._user_cookies.get("rz-role", "") or "").strip().lower()
+            icat_session_id = self._user_cookies.get("rz-icat-session", "")
             logger.info(
                 f"[cookie-debug] user={self._user_id} thread={self._thread_id} "
                 f"cookie_keys={list(self._user_cookies.keys())} "
@@ -2177,6 +2213,59 @@ class RongZaiAgent(DrSaiAgent):
                     if not found_proposal:
                         results["error"] = f"用户 {user_id} 无权访问 run {runNumber} 对应的课题"
                         return results
+            elif icat_session_id and not sso:
+                from src.core.auth.icat.icat_helper import IcatHelper
+                from src.core.auth.icat.icat import IcatException
+
+                beamline = beamline.strip().upper()
+                runNumber = runNumber.strip().upper()
+                if not re.fullmatch(r"BL\d+[A-Z]?", beamline) or not re.fullmatch(r"RUN\d{7}", runNumber):
+                    results["error"] = "请提供有效谱仪编号和 RUN 后七位数字的运行编号"
+                    return results
+                icat_uri = os.getenv("ICAT_URI", "").strip()
+                if not icat_uri:
+                    logger.error("ICAT_URI is not configured for local agent authentication")
+                    results["error"] = "ICAT 服务未配置，请联系管理员"
+                    return results
+                helper = IcatHelper(icat_uri, cert=False)
+                icat_session = helper.getSessionById(icat_session_id)
+                try:
+                    provider = IcatPermissionProvider(icat_uri)
+                    probe = provider.get_user_permissions_from_session(
+                        icat_session, role='scientist' if ui_role == 'scientist' else 'user',
+                    )
+                    user_id = probe.username
+                    if beamline not in [b.upper() for b in probe.beamlines]:
+                        results["error"] = f"用户 {user_id} 无权访问谱仪 {beamline}"
+                        return results
+                    result = helper.getProposalByRunName(icat_session, runNumber, beamline)
+                    found_proposal = (result or {}).get("Investigation", {}).get("name", "")
+                    if not found_proposal:
+                        results["error"] = f"未找到 run {runNumber} 对应的课题"
+                        return results
+                    if found_proposal not in [
+                        p.proposal_name for p in probe.proposals if p.beamline.upper() == beamline
+                    ]:
+                        results["error"] = f"用户 {user_id} 无权访问 run {runNumber} 对应的课题"
+                        return results
+                    if found_proposal in {".", ".."} or "/" in found_proposal or "\\" in found_proposal:
+                        logger.error("ICAT returned an invalid proposal directory name")
+                        results["error"] = "课题目录信息无效，请联系管理员"
+                        return results
+                except IcatException as ex:
+                    logger.warning("Local ICAT permission check failed ({})", ex.code)
+                    results["error"] = (
+                        "数据访问认证已过期，请退出后重新使用本地账号登录"
+                        if ex.code == 'SESSION' else "ICAT 权限查询失败，请稍后重试"
+                    )
+                    return results
+                except Exception as ex:
+                    logger.error("Local ICAT permission check failed ({})", type(ex).__name__)
+                    results["error"] = "ICAT 权限服务暂时不可用，请稍后重试"
+                    return results
+            elif not sso and (self._user_id or "").startswith("rz-local-"):
+                results["error"] = "数据访问认证缺失或已过期，请退出后重新使用本地账号登录"
+                return results
             else:
                 # 根据user_id、beamline和runNumber获取proposal_name
                 from src.core.auth.icat.icat_helper import IcatHelper
@@ -2193,7 +2282,6 @@ class RongZaiAgent(DrSaiAgent):
                 print(f"Found proposal for run {runNumber}: {found_proposal}")
 
                 # 根据user_id和token获取用户可访问的所有proposal
-                from src.core.auth.icat_permission_provider import IcatPermissionProvider
                 icat_plugin = "umt" if sso else "ldap"
                 PermissionCheckTool = IcatPermissionProvider("https://data.csns.ihep.ac.cn", plugin=icat_plugin)
 
@@ -2219,50 +2307,62 @@ class RongZaiAgent(DrSaiAgent):
                     results["error"] = f"用户 {user_id} 无权访问 {runNumber} 对应的课题 {found_proposal}"
                     return results
 
-                if beamline.strip().upper() == "BL08A":
-                    runNumber = runNumber.strip().upper()
-                    if re.fullmatch(r"RUN[0-9]{7}", runNumber) is None:
-                        results["error"] = "RUN 编号必须为 RUN 加七位数字"
-                        return results
-                    if (
-                        not isinstance(found_proposal, str)
-                        or re.fullmatch(r"[A-Za-z0-9_.-]+", found_proposal) is None
-                        or found_proposal in {".", ".."}
-                    ):
-                        logger.error("ICAT returned an invalid BL08A proposal directory")
-                        results["error"] = "ICAT 课题目录信息无效"
-                        return results
-                    raw_root = Path(os.getenv(
-                        "BL08A_RAW_DATA_ROOT", "/csnsdata/userData/BL08A",
-                    )).resolve()
-                    proposal_dir = (raw_root / found_proposal).resolve()
-                    if not proposal_dir.is_relative_to(raw_root) or not proposal_dir.is_dir():
-                        results["error"] = f"有权限，但课题 {found_proposal} 的原始数据目录不存在"
-                        return results
-                    run_dirs = [
-                        (year / runNumber).resolve()
-                        for year in proposal_dir.iterdir()
-                        if re.fullmatch(r"[0-9]{4}", year.name)
-                        and year.is_dir() and (year / runNumber).is_dir()
-                    ]
-                    if len(run_dirs) != 1 or not run_dirs[0].is_relative_to(proposal_dir):
-                        results["error"] = f"有权限，但未找到 {runNumber} 唯一的课题/年份/RUN目录"
-                        return results
-                    raw_path = str(run_dirs[0])
-                    if raw_path not in self._extra_work_dirs:
-                        self._extra_work_dirs.append(raw_path)
-                    return {
-                        "status": "success", "proposal": found_proposal,
-                        "raw_data_path": raw_path, "data_root": str(run_dirs[0].parent),
-                        "description": "权限验证通过。原始数据只读，分析结果保存到当前用户工作区。",
-                    }
-
             is_production = os.getenv("SERVICE_MODE") == "PROD"
             environment_suffix = "" if is_production else "/dev"
+            is_raw_reflection = auth_provider != "domas" and beamline.strip().upper() == "BL08A"
+            if is_raw_reflection:
+                beamline = "BL08A"
             proposal_root = f"/csns_data/{beamline}/{found_proposal}"
             reduction_folder_path = f"{proposal_root}/reduction{environment_suffix}"
             analysis_folder_path = f"{proposal_root}/analysis{environment_suffix}"
             info_folder_path = f"/csns_data/{beamline}/{beamline}_info{environment_suffix}"
+
+            if is_raw_reflection:
+                runNumber = runNumber.strip().upper()
+                if re.fullmatch(r"RUN[0-9]{7}", runNumber) is None:
+                    results["error"] = "RUN 编号必须为 RUN 加七位数字"
+                    return results
+                if (
+                    not isinstance(found_proposal, str)
+                    or re.fullmatch(r"[A-Za-z0-9_.-]+", found_proposal) is None
+                    or found_proposal in {".", ".."}
+                ):
+                    logger.error("ICAT returned an invalid BL08A proposal directory")
+                    results["error"] = "ICAT 课题目录信息无效"
+                    return results
+                raw_root = Path(os.getenv(
+                    "BL08A_RAW_DATA_ROOT", "/csnsdata/userData/BL08A",
+                )).resolve()
+                proposal_dir = (raw_root / found_proposal).resolve()
+                if not proposal_dir.is_relative_to(raw_root) or not proposal_dir.is_dir():
+                    results["error"] = f"有权限，但课题 {found_proposal} 的原始数据目录不存在"
+                    return results
+                run_dirs = [
+                    (year / runNumber).resolve()
+                    for year in proposal_dir.iterdir()
+                    if re.fullmatch(r"[0-9]{4}", year.name)
+                    and year.is_dir() and (year / runNumber).is_dir()
+                ]
+                if len(run_dirs) != 1 or not run_dirs[0].is_relative_to(proposal_dir):
+                    results["error"] = f"有权限，但未找到 {runNumber} 唯一的课题/年份/RUN目录"
+                    return results
+                for folder in (reduction_folder_path, analysis_folder_path, info_folder_path):
+                    os.makedirs(folder, exist_ok=True)
+                raw_path = str(run_dirs[0])
+                for folder in (raw_path, reduction_folder_path, analysis_folder_path, info_folder_path):
+                    if folder not in self._extra_work_dirs:
+                        self._extra_work_dirs.append(folder)
+                return {
+                    "status": "success", "proposal": found_proposal,
+                    "raw_data_path": raw_path, "data_root": str(run_dirs[0].parent),
+                    "reduction_folder_path": reduction_folder_path,
+                    "analysis_folder_path": analysis_folder_path,
+                    "info_folder_path": info_folder_path,
+                    "description": (
+                        f"用户 {user_id} 有权访问 {runNumber} 对应的课题 {found_proposal}。"
+                        "原始数据只读；规约、分析结果及对应 info 必须按本工具规则写入返回的归档目录。"
+                    ),
+                }
 
             # 检查found_proposal下是否有reduction文件夹
             if not os.path.exists(reduction_folder_path):
@@ -2398,7 +2498,7 @@ class RongZaiAgent(DrSaiAgent):
         if skill_content is None:
             available = ", ".join(skills_loader.list_skills()) or "none"
             return f"Cannot promote skill '{skill_name}': not found. Available skills: {available}."
-        skill_content = resolve_mcp_skill_endpoints(skill_content)
+        skill_content = resolve_skill_runtime_config(skill_content)
 
         core_rules = self._extract_core_skill_rules(skill_content=skill_content, focus=focus)
         if not core_rules.strip():
@@ -4140,7 +4240,7 @@ class RongZaiAgent(DrSaiAgent):
                             if skills_loader is None:
                                 skill_content = "No system skill is loaded."
                             else:
-                                skill_content = resolve_mcp_skill_endpoints(
+                                skill_content = resolve_skill_runtime_config(
                                     skills_loader.run_skill(argument["skill"])
                                 )
                             pending_tool_results.append(
@@ -4753,6 +4853,7 @@ class RongZaiAgent(DrSaiAgent):
             work_dir=self._work_dir,
             only_in_workspace=self._only_in_workspace,
             extra_work_dirs=self._extra_work_dirs,
+            read_only_work_dirs=self._read_only_work_dirs,
             executor=self._local_executor.dump_component(),
             token_limit=self._token_limit,
             rag_flow_url=self._rag_flow_url,
@@ -4808,6 +4909,7 @@ class RongZaiAgent(DrSaiAgent):
             work_dir=config.work_dir,
             only_in_workspace=config.only_in_workspace,
             extra_work_dirs=config.extra_work_dirs,
+            read_only_work_dirs=config.read_only_work_dirs,
             executor=CodeExecutor.load_component(config.executor),
             token_limit = config.token_limit,
             rag_flow_url = config.rag_flow_url,
