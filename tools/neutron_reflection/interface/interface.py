@@ -120,7 +120,7 @@ def get_run_info():
 
     return result
 
-RZ_THRESHOLD = 0.0001
+RZ_THRESHOLD = 0.001
 
 
 def classify_runs(run_info):
@@ -134,7 +134,7 @@ def classify_runs(run_info):
         reflection
     """
 
-    RZ_THRESHOLD = 0.0001
+    RZ_THRESHOLD = 0.001
     classified = []
 
 
