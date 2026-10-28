@@ -1,5 +1,6 @@
 """Run: python -m unittest discover -s tools/neutron_reflection -p 'test_*.py' -v"""
 import json
+import os
 import importlib.util
 from pathlib import Path
 import sys
@@ -24,6 +25,10 @@ class DataFixture(unittest.TestCase):
         folder = self.root / run
         folder.mkdir(exist_ok=True)
         data = {} if angle is None else {"summary": {"json": {"devices": {"Rz": angle}}}}
+        # Default synthetic settings are valid; individual tests remove them explicitly.
+        info = data.setdefault("summary", {}).setdefault("json", {})
+        info.update({"lamda_min": 3., "lamda_max": 8.4})
+        info.setdefault("devices", {}).update({"S1H": .8, "S1W": 32., "S3H": .6, "S3W": 32.})
         (folder / run).write_text(json.dumps(data))
         return run
 
@@ -63,7 +68,14 @@ class PreflightTests(DataFixture):
             run = f"RUN{n:07d}"
             (run_root / run).mkdir()
             (run_root / run / run).write_text(json.dumps({
-                "summary": {"json": {"devices": {"Rz": angle}}},
+                "summary": {"json": {
+                    "lamda_min": 3.0, "lamda_max": 8.4,
+                    "devices": {
+                        "Rz": angle,
+                        "S1H": 0.8, "S1W": 32.0,
+                        "S3H": 0.6, "S3W": 32.0,
+                    },
+                }},
             }))
         plans, questions = prepare_groups([{
             "runs": ["RUN0000177", "RUN0000178"], "data_root": str(run_root),
@@ -85,9 +97,8 @@ class PreflightTests(DataFixture):
     def test_missing_devices_requests_identity_and_angles(self):
         runs = [self.write_run(n) for n in (216, 219)]
         plans, questions = prepare_groups([{"runs": runs}], self.paths)
-        self.assertIsNone(plans[0]["direct_run"])
-        self.assertTrue(any(x["field"] == "direct_run" for x in questions[0]["missing_or_conflicting"]))
-        self.assertFalse(any(x["Rz"] == 0 for x in plans[0]["classified"]))
+        self.assertEqual(plans, [])
+        self.assertTrue(any(x["field"] == "roles" for x in questions[0]["missing_or_conflicting"]))
 
     def test_user_supplied_legacy_angles(self):
         runs = [self.write_run(n) for n in (216, 217, 218, 219)]
@@ -136,7 +147,7 @@ class PreflightTests(DataFixture):
 
 
 class PublicSummaryTests(DataFixture):
-    def test_only_two_columns_and_envelope_not_center(self):
+    def test_run_and_two_metrics_preserve_identity_and_envelope(self):
         import csv
         from summary_export import write_public_summary
         path = self.root / "summary.csv"
@@ -148,7 +159,9 @@ class PublicSummaryTests(DataFixture):
         with path.open(encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
-        self.assertEqual(reader.fieldnames, ["m", "r_envelope(%)"])
+        self.assertEqual(reader.fieldnames, ["Run", "m", "r_envelope(%)"])
+        self.assertEqual([row["Run"] for row in rows], ["RUN0000963", "RUN0000216"])
+        self.assertEqual([float(row["m"]) for row in rows], [2.1, 2.6])
         self.assertEqual([float(row["r_envelope(%)"]) for row in rows], [84., 90.])
         self.assertEqual([row["run"] for row in json.loads((self.root / "summary_row_order.json").read_text())],
                          ["RUN0000963", "RUN0000216"])
@@ -184,15 +197,22 @@ class CombinedOutputTests(DataFixture):
 
         interface = types.ModuleType("interface")
         interface.build_modifications = lambda rows: {"direct_run": [x["run"] for x in rows if x["type"] == "direct"]}
-        interface.calculate_mr_results = lambda ds: {}
-        interface.plot_results = lambda *args: None
+        interface.calculate_mr_results = lambda ds: {r: {"Qm": .02, "m": 2.5, "r": .9,
+                                                         "method": "local_edge", "status": "estimated"}}
+        def internal_plots(ds, mr, output_dir):
+            for run in ds:
+                folder = Path(output_dir) / "plot" / run
+                folder.mkdir(parents=True)
+                (folder / "private.png").write_bytes(b"internal diagnostic placeholder")
+        interface.plot_results = internal_plots
         interface.build_summary = lambda rows, mr: [{"Run": x["run"], "Type": x["type"], "Rz": x["Rz"], "m": 2.5, "r(%)": 90} for x in rows]
         algorithm = types.ModuleType("CSNS_reflection_script_forinterface")
         algorithm.run_reflection = reduce
         with patch.dict(sys.modules, {"interface": interface, "CSNS_reflection_script_forinterface": algorithm}), \
+                patch.dict(os.environ, {"RONGZAI_SIMPLE_RESULTS": "1"}), \
                 patch.object(Axes, "errorbar", autospec=True, side_effect=Axes.errorbar) as errorbars:
             result = execute_groups(plans, self.paths, self.root)
-        self.assertEqual(errorbars.call_count, 2)
+        self.assertEqual(errorbars.call_count, 3)
         for call in errorbars.call_args_list:
             self.assertEqual(call.kwargs["linestyle"], "none")
             np.testing.assert_array_equal(call.kwargs["yerr"], [.02, .02, .01])
@@ -201,11 +221,35 @@ class CombinedOutputTests(DataFixture):
         with Path(result["summary_file"]).open(encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
-            self.assertEqual(reader.fieldnames, ["m", "r_envelope(%)"])
+            self.assertEqual(reader.fieldnames, ["Run", "m", "r_envelope(%)"])
         self.assertEqual(len(rows), 2)
         order = json.loads((self.root / "summary_row_order.json").read_text())
         self.assertEqual([row["run"] for row in order], [r, r])
         self.assertTrue((self.root / "resolved_groups.json").is_file())
+        self.assertNotIn("warnings", result)
+        self.assertNotIn("analysis_status", result)
+        self.assertIn("conclusion", result["presentation"])
+        self.assertTrue(Path(result["diagnostics_file"]).is_file())
+        self.assertTrue(Path(result["representative_plot"]).is_file())
+        self.assertTrue(Path(result["curve_data_zip"]).is_file())
+        self.assertEqual(result["representative_run"], r)
+        self.assertEqual(len(result["public_files"]), 4)
+        self.assertEqual(result["image_delivery"], "files_event")
+        self.assertTrue(all("individual_plots" not in group for group in result["groups"]))
+        self.assertNotIn("private.png", json.dumps(result))
+        self.assertIn("private.png", Path(result["diagnostics_file"]).read_text(encoding="utf-8"))
+        image_paths = []
+        def collect_images(value):
+            if isinstance(value, dict):
+                for item in value.values():
+                    collect_images(item)
+            elif isinstance(value, list):
+                for item in value:
+                    collect_images(item)
+            elif isinstance(value, str) and value.endswith(".png") and value not in image_paths:
+                image_paths.append(value)
+        collect_images(result)
+        self.assertEqual(image_paths, [result["representative_plot"], result["combined_plot"]])
 
 
 if __name__ == "__main__":

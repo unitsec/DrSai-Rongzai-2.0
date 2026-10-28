@@ -4,11 +4,12 @@ No numerical/algorithm imports at module import time: preflight is read-only.
 """
 import json
 import math
+import os
 import re
 from pathlib import Path
 
 RUN_PATTERN = re.compile(r"RUN[0-9]{7}")
-THRESHOLD = 0.0001
+THRESHOLD = 0.001
 
 
 def _angle(value):
@@ -21,6 +22,11 @@ def _angle(value):
 
 
 def prepare_groups(groups, paths):
+    from settings_matching import prepare_matched_groups
+    return prepare_matched_groups(groups, paths, _prepare_explicit_groups, RUN_PATTERN, _angle, THRESHOLD)
+
+
+def _prepare_explicit_groups(groups, paths):
     """Resolve only administrator-configured sources; return plans or questions."""
     if not isinstance(groups, list) or not groups:
         raise ValueError("groups 必须是非空列表；分组必须由用户明确指定")
@@ -121,10 +127,13 @@ def execute_groups(plans, paths, output):
     import matplotlib.pyplot as plt
     from interface import build_modifications, calculate_mr_results, plot_results, build_summary
     from CSNS_reflection_script_forinterface import run_reflection
+    from report_delivery import export_curve_data, zip_curve_data, plot_representative, method_markdown
 
     output = Path(output)
     summaries, group_results, warnings = [], [], []
     analysis_status = "estimated"
+    data_files, methods = [], []
+    representative = None
     fig, ax = plt.subplots(figsize=(10, 6))
     try:
         for plan in plans:
@@ -138,6 +147,10 @@ def execute_groups(plans, paths, output):
             if set(datasets) != expected:
                 raise RuntimeError(f"{plan['group_id']} 返回的反射RUN与请求不一致")
             mr = calculate_mr_results(datasets)
+            if representative is None:
+                first = next(item["run"] for item in plan["classified"] if item["type"] == "reflection")
+                representative = (plan["group_id"], first, datasets[first], mr[first])
+            methods.extend(estimate.get("method", "local_edge") for estimate in mr.values())
             for run, estimate in mr.items():
                 if estimate.get("status") == "needs_review":
                     analysis_status = "needs_review"
@@ -150,6 +163,9 @@ def execute_groups(plans, paths, output):
                 row.update({"group_id": plan["group_id"], "group_name": plan["group_name"],
                             "direct_run": plan["direct_run"], "data_source": plan["data_source"],
                             "angle_source": item["angle_source"], "role_source": item["role_source"]})
+                row["_input_order"] = [plan.get("input_group_index", 0), plan.get("original_run_order", {}).get(row["Run"], -1)]
+                if "target_m" in plan:
+                    row["target_m"] = plan["target_m"]
             _write_summary(folder / "summary.csv", rows)
             estimates_file = folder / "mr_estimates.json"
             audit = {run: {key: value for key, value in estimate.items() if not isinstance(value, np.ndarray)}
@@ -161,6 +177,7 @@ def execute_groups(plans, paths, output):
                                   "mr_parameters_file": str(estimates_file),
                                   "individual_plots": [str(p) for p in sorted((folder / "plot").glob("*/*.png"))]})
             for run, dataset in datasets.items():
+                data_files.append(export_curve_data(output, plan["group_id"], run, dataset))
                 x = np.asarray(dataset["xvalue"].values).squeeze().reshape(-1)
                 y = np.asarray(dataset["histogram"].values).squeeze().reshape(-1)
                 error = np.asarray(dataset["error"].values).squeeze().reshape(-1)
@@ -181,14 +198,38 @@ def execute_groups(plans, paths, output):
         combined = output / "combined_reflectivity.png"
         fig.savefig(combined, dpi=180)
         summary = output / "summary.csv"
+        summaries.sort(key=lambda row: row.get("_input_order", [0, 0]))
         _write_summary(summary, summaries)
+        curve_zip = zip_curve_data(output, data_files)
+        representative_group, representative_run, representative_data, representative_estimate = representative
+        representative_plot = plot_representative(output, representative_run, representative_data, representative_estimate)
         # User-provided angles and explicit overrides are retained for reproducibility.
         (output / "resolved_groups.json").write_text(json.dumps(plans, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {"status": "success", "summary_file": str(summary), "combined_plot": str(combined),
+        from result_comparison import compare_measurements
+        comparison = compare_measurements(summaries)
+        comparison["public"]["method_markdown"] = method_markdown(methods)
+        diagnostics = output / "internal_diagnostics.json"
+        diagnostics.write_text(json.dumps({"analysis_status": analysis_status, "warnings": warnings,
+                                           "comparison": comparison, "groups": group_results}, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Use file events for previews/downloads, avoiding static-URL auto images.
+        result = {"status": "success", "image_delivery": "files_event", "representative_plot": str(representative_plot),
+                "combined_plot": str(combined), "summary_file": str(summary),
                 "analysis_status": analysis_status,
                 "output_path": str(output), "groups": group_results, "warnings": warnings,
-                "reflectivity_note": "summary.csv仅含m和r_envelope(%)两列，按输入分组/RUN顺序只列反射RUN；包络为平台到截止中心的外推值，不是厂家验收值。",
+                "presentation": comparison["public"], "diagnostics_file": str(diagnostics),
+                "representative_run": representative_run,
+                "representative_group": representative_group, "curve_data_zip": str(curve_zip),
+                "curve_data_count": len(data_files),
+                "public_files": [str(representative_plot), str(combined), str(summary), str(curve_zip)],
+                "reflectivity_note": "summary.csv依次包含Run、m和r_envelope(%)三列，按输入分组/RUN顺序只列反射RUN；包络为平台到截止中心的外推值，不是厂家验收值。",
                 "summary_row_order_file": str(output / "summary_row_order.json")}
+        if os.getenv("RONGZAI_SIMPLE_RESULTS", "0").lower() in ("1", "true", "yes"):
+            for key in ("analysis_status", "warnings", "reflectivity_note"):
+                result.pop(key)
+        # Preserve detailed paths in diagnostics only, avoiding extra auto-images.
+        result["groups"] = [{key: value for key, value in group.items()
+                             if key not in ("individual_plots", "mr_parameters_file")} for group in group_results]
+        return result
     finally:
         plt.close(fig)
 
