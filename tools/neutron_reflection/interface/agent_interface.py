@@ -13,7 +13,7 @@ Output:
 
 
 import os
-import pandas as pd
+from summary_export import write_public_summary
 
 from interface import (
     load_machine_paths,
@@ -80,10 +80,7 @@ def process_reflection(runs, output_dir=None):
         "summary.csv"
     )
 
-    pd.DataFrame(summary).to_csv(
-        summary_file,
-        index=False
-    )
+    write_public_summary(summary_file, summary)
 
 
     return {
