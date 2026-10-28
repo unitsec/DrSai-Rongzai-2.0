@@ -78,6 +78,9 @@ pid_of() { local pid stamp; read -r pid stamp < "$fixture/tmp/tools/$1.pid"; ech
 
 cd /
 manager start all
+manager status neutron-reflection | grep -v stopped >/dev/null
+grep -q 'stdout ready' "$fixture/tmp/tools/logs/neutron-reflection.log"
+if manager start magnetic-analysis; then exit 1; fi
 first=$(pid_of pdf-refine)
 child=$(ps -o pid= --ppid "$first")
 child=${child// /}

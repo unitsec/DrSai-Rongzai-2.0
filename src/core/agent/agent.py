@@ -2127,6 +2127,8 @@ class RongZaiAgent(DrSaiAgent):
         如果用户要求处理某个谱仪的某个RUN号的数据，先检查用户是否有权限访问该RUN号对应的课题，并检查该课题下的reduction文件夹中是否有包含runNumber的文件夹。数据就在这些文件夹中。
         该工具会返回检查结果，包含用户是否有权限访问该RUN号对应的课题，以及reduction文件夹中是否有包含runNumber的文件夹。
         一旦检查通过，你会直接获得访问reduction文件夹的权限、同级目录下的analysis文件夹的权限、对应谱仪的info文件夹的权限。
+        ICAT 分支的 BL08A 返回原始数据 raw_data_path 和课题/年份 data_root，
+        原始数据只读，分析结果保存到当前用户工作区，不要求存在 reduction 目录。
         
         注意，一旦你调用这个工具并检查通过，并且你做了数据分析，得到有价值或更好的结果，你就有一个必须做的事情：在analysis文件夹中新建一个以“RUN号_当前年月日_当前时分秒”命名的文件夹（例如“RUN0000001_20240605_153045”），将数据分析结果保存到该文件夹中。
             分析结果具体指：
@@ -2162,8 +2164,10 @@ class RongZaiAgent(DrSaiAgent):
                 - run_folders_path: reduction目录下包含runNumber的文件夹名称列表（如果检查成功）
                 - analysis_folder_path: analysis文件夹路径（如果检查成功）
                 - info_folder_path: info文件夹路径（如果检查成功）
+                - raw_data_path: BL08A 原始 RUN 目录（ICAT 检查成功时）
+                - data_root: BL08A 课题/年份目录，供反射工具读取 RUN 数据
         """
-        
+
         try:
             results = {"status": "failed"}
             
@@ -2297,6 +2301,44 @@ class RongZaiAgent(DrSaiAgent):
                 if str(found_proposal) not in all_proposals:
                     results["error"] = f"用户 {user_id} 无权访问 {runNumber} 对应的课题 {found_proposal}"
                     return results
+
+            if auth_provider != "domas" and beamline.strip().upper() == "BL08A":
+                runNumber = runNumber.strip().upper()
+                if re.fullmatch(r"RUN[0-9]{7}", runNumber) is None:
+                    results["error"] = "RUN 编号必须为 RUN 加七位数字"
+                    return results
+                if (
+                    not isinstance(found_proposal, str)
+                    or re.fullmatch(r"[A-Za-z0-9_.-]+", found_proposal) is None
+                    or found_proposal in {".", ".."}
+                ):
+                    logger.error("ICAT returned an invalid BL08A proposal directory")
+                    results["error"] = "ICAT 课题目录信息无效"
+                    return results
+                raw_root = Path(os.getenv(
+                    "BL08A_RAW_DATA_ROOT", "/csnsdata/userData/BL08A",
+                )).resolve()
+                proposal_dir = (raw_root / found_proposal).resolve()
+                if not proposal_dir.is_relative_to(raw_root) or not proposal_dir.is_dir():
+                    results["error"] = f"有权限，但课题 {found_proposal} 的原始数据目录不存在"
+                    return results
+                run_dirs = [
+                    (year / runNumber).resolve()
+                    for year in proposal_dir.iterdir()
+                    if re.fullmatch(r"[0-9]{4}", year.name)
+                    and year.is_dir() and (year / runNumber).is_dir()
+                ]
+                if len(run_dirs) != 1 or not run_dirs[0].is_relative_to(proposal_dir):
+                    results["error"] = f"有权限，但未找到 {runNumber} 唯一的课题/年份/RUN目录"
+                    return results
+                raw_path = str(run_dirs[0])
+                if raw_path not in self._extra_work_dirs:
+                    self._extra_work_dirs.append(raw_path)
+                return {
+                    "status": "success", "proposal": found_proposal,
+                    "raw_data_path": raw_path, "data_root": str(run_dirs[0].parent),
+                    "description": "权限验证通过。原始数据只读，分析结果保存到当前用户工作区。",
+                }
 
             is_production = os.getenv("SERVICE_MODE") == "PROD"
             environment_suffix = "" if is_production else "/dev"

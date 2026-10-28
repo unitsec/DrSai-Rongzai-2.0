@@ -50,6 +50,16 @@ export MCP_NEUTRON_REFLECTION_PORT=42520
 Agent和工具需共享结果工作区，当前按同机部署设计。监听127.0.0.1:${MCP_NEUTRON_REFLECTION_PORT}，
 SSE地址http://127.0.0.1:${MCP_NEUTRON_REFLECTION_PORT}/sse。可用NEUTRON_REFLECTION_INTERFACE_DIR覆盖默认内置接口目录。
 
+### 当前生产部署
+
+`bash start_tools.sh start neutron-reflection` 使用现有 rongzai-agent Python 3.12 环境
+（rongzai 4.1），解释器可用 `NEUTRON_REFLECTION_PYTHON` 覆盖。生产 `.env` 端口为42521。
+`machine_paths.json` 的 data_root 为 `/csnsdata/userData/BL08A`。
+数据获取和权限认证由框架现有权限工具负责，不属于反射 skill/MCP 的职责。
+分组调用可通过 `data_root` 指定所提供的课题/年份目录；同组RUN必须来自同一目录。
+MCP仅检查该路径位于管理员数据根目录内，不重复认证ICAT；这不是对外开放的数据授权接口。
+原始数据只读，输出进入 WORKDIR，不写入原始数据挂载。
+
 ## 分组输入与缺参交互
 
 新增工具process_neutron_reflection_groups，必填groups、user_id、session_id、mission_name。
@@ -58,6 +68,7 @@ groups每项字段：
 |字段|说明|
 |---|---|
 |runs|必填，至少一个直通与一个反射RUN，格式RUN加七位数字；组内不能重复|
+|data_root|可选课题/年份数据目录，其下为RUN/RUN，必须位于管理员data_root之下|
 |group_name|可选显示名称；输出目录使用自动生成group_001等标识|
 |data_source|可选管理员别名，默认default|
 |direct_run|用户明确提供直通身份时填写，必须属于本组|

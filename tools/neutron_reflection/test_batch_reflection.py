@@ -56,6 +56,26 @@ class ConfigCompatibilityTests(DataFixture):
 
 
 class PreflightTests(DataFixture):
+    def test_authorized_proposal_year_root(self):
+        run_root = self.root / "P08TEST" / "2026"
+        run_root.mkdir(parents=True)
+        for n, angle in ((177, .7), (178, 0)):
+            run = f"RUN{n:07d}"
+            (run_root / run).mkdir()
+            (run_root / run / run).write_text(json.dumps({
+                "summary": {"json": {"devices": {"Rz": angle}}},
+            }))
+        plans, questions = prepare_groups([{
+            "runs": ["RUN0000177", "RUN0000178"], "data_root": str(run_root),
+        }], self.paths)
+        self.assertEqual(questions, [])
+        self.assertEqual(plans[0]["data_root"], str(run_root))
+
+    def test_explicit_root_cannot_escape_admin_mount(self):
+        with self.assertRaisesRegex(ValueError, "超出"):
+            prepare_groups([{"runs": ["RUN0000177", "RUN0000178"],
+                             "data_root": str(self.root.parent)}], self.paths)
+
     def test_original_pair_auto_classified(self):
         reflection, direct = self.write_run(963, .770115), self.write_run(964, 0)
         plans, questions = prepare_groups([{"runs": [reflection, direct]}], self.paths)

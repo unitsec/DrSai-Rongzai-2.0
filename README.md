@@ -282,12 +282,14 @@ PM2_HOME=/path/to/rongzai/.pm2-dev pm2 logs run_backend --lines 50 --nostream
 | `sasview-refine` | `sasmodels` | `tools/sasview/0sasview_refine.py` |
 | `pdf-refine` | `diffpy.pdffit2_env` | `tools/pdf_refinement/0pdf_refine.py` |
 | `Irena-refine` | `sasmodels` | `tools/Irena/0Irena_fit.py` |
+| `neutron-reflection` | Python 3.12，`NEUTRON_REFLECTION_PYTHON` 指定 | `tools/neutron_reflection/reflection_mcp.py` |
 
 ```shell
 bash start_tools.sh                 # 后台启动全部工具，跳过已运行的工具
 bash start_tools.sh status          # 查看 PID、日志位置及实际 stdout 去向
 bash start_tools.sh restart         # 重启全部工具
 bash start_tools.sh restart pdf-refine gsas2-refine
+bash start_tools.sh start neutron-reflection
 bash start_tools.sh stop pdf-refine # 停止指定工具及当前子进程
 bash start_tools.sh logs pdf-refine # 实时查看最近 50 行及后续输出，Ctrl-C 仅退出查看
 bash start_tools.sh logs            # 实时查看全部工具日志（需先启动生成日志文件）
@@ -299,6 +301,15 @@ PATH 查找 conda，不再硬编码服务器上的 conda 安装路径：
 ```shell
 CONDA_EXE=/path/to/anaconda3/bin/conda bash start_tools.sh start
 ```
+
+生产反射使用现有 `/dg_workfs/domassy/rongzai/miniconda3/envs/rongzai-agent/bin/python`
+（已安装 rongzai 4.1）；可用 `NEUTRON_REFLECTION_PYTHON` 覆盖。仅启动反射不要求 conda 命令。
+磁结构服务已从此启动脚本移除，磁结构代码保留；已经运行的旧进程不会被自动停止。
+BL08A 原始数据位于 `/csnsdata/userData/BL08A/<课题>/<年份>/<RUN>`。
+权限验证沿用 `check_user_permission_for_file` 的 DoMAS/ICAT 分支，
+仅 ICAT 分支为 BL08A 返回原始数据目录 `data_root`，供反射工具使用。
+MCP 不做账号认证，只服务受信本机框架。
+端口由 `.env` 中 `MCP_NEUTRON_REFLECTION_PORT` 配置；当前生产值为 42521。
 
 日志保存在 `tmp/tools/logs/<工具名称>.log`，stdout/stderr 合并记录；
 Conda 不缓存输出，Python 使用 `-u`，因此新输出会实时写入文件。

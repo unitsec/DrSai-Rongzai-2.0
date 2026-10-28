@@ -175,6 +175,35 @@ def test_owned_session_is_still_closed(local_agent):
     provider._helper.logoutIcat.assert_called_once_with(session)
 
 
+@pytest.mark.parametrize('role', ['user', 'scientist'])
+def test_local_session_bl08a_returns_raw_paths(local_agent, monkeypatch, tmp_path, role):
+    agent, session, mkdir = local_agent
+    agent._user_cookies['rz-role'] = role
+    root = tmp_path / 'BL08A'
+    run_dir = root / 'P08TEST' / '2026' / 'RUN0000177'
+    run_dir.mkdir(parents=True)
+    monkeypatch.setattr('src.core.agent.agent.Path.iterdir', lambda _: iter([run_dir.parent]))
+    monkeypatch.setenv('BL08A_RAW_DATA_ROOT', str(root))
+    proposal = ProposalInfo('123', 'P08TEST', beamline='BL08A')
+    monkeypatch.setattr(IcatPermissionProvider, '_fetch_beamlines', Mock(return_value=['BL08A']))
+    monkeypatch.setattr(IcatPermissionProvider, '_fetch_scientist_beamlines', Mock(return_value=['BL08A']))
+    monkeypatch.setattr(IcatPermissionProvider, '_fetch_proposals_with_runs', Mock(return_value=[proposal]))
+    monkeypatch.setattr(IcatPermissionProvider, '_fetch_proposals_for_scientist', Mock(return_value=[proposal]))
+    monkeypatch.setattr(IcatHelper, 'getProposalByRunName', Mock(return_value={
+        'Investigation': {'id': 123, 'name': 'P08TEST'},
+    }))
+    mkdir.reset_mock()
+    result = check(agent, 'bl08a', 'RUN0000177')
+    assert result['status'] == 'success', result
+    assert result['raw_data_path'] == str(run_dir)
+    assert result['data_root'] == str(run_dir.parent)
+    assert 'reduction_folder_path' not in result
+    assert str(run_dir) in agent._extra_work_dirs
+    IcatHelper.loginIcat.assert_not_called()
+    session.logout.assert_not_called()
+    mkdir.assert_not_called()
+
+
 def test_icat_logout_targets_session_endpoint(monkeypatch):
     delete = Mock(return_value=Mock(status_code=204))
     monkeypatch.setattr('src.core.auth.icat.icat.requests.delete', delete)
