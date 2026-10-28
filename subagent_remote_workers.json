@@ -1,5 +1,5 @@
 {
-  "YuanYuan_Agent": {
+  "YuanyuanAgent": {
     "mode": "ddf",
     "description": "源源智能体，专注于X射线粉末衍射(XRD)的精修和中子/XRD联合精修,一切与同步辐射、X射线相关的任务都要转给源源智能体处理。"
   }

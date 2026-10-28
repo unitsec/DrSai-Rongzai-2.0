@@ -30,7 +30,7 @@ If you determine that the user wants you to refine the data yourself, follow the
       - To retrieve a .zDiffractometer file from the database, the user must provide: instrument name (e.g. BL16), detector name (e.g. group5).
       - To retrieve a .cif file from the database, the user must provide: instrument name (e.g. BL16), RUN number (e.g. RUN0021905).
       - If the information provided by the user is incomplete, ask the user.
-      - Database location: ~/rongzai-agent/datasets/. The file organization under the database is as follows:
+      - Database location: `${RONGZAI_DATASETS_DIR}/`, resolved to the configured absolute path at runtime (also shown as Shared datasets directory in the system prompt). In Shell use `"$RONGZAI_DATASETS_DIR"`; do not infer the path from `~`. The database is read-only: copy inputs to the workspace before modifying them and write results in the workspace. The file organization under the database is as follows:
          ```
          datasets/
          |--BLXXX/

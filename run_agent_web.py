@@ -1,7 +1,12 @@
 from pathlib import Path
 import asyncio, os
 import json
+import sys
 from loguru import logger
+
+_DRSAI_CORE_DIR = Path(__file__).resolve().parent.parent / "drsai/cores/python/packages/drsai/src"
+if str(_DRSAI_CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(_DRSAI_CORE_DIR))
 
 
 def _patch_worker_advertise_ip() -> None:
@@ -65,6 +70,8 @@ import asyncio
 from drsai.backend import run_worker
 from collections.abc import Mapping
 from src.core.agent.agent import RongZaiAgent, normalize_thread_id
+from src.core.agent.analysis_sandbox import check_sandbox_support
+from src.configs.constants import get_datasets_dir
 from src.configs.system_prompt import get_rongzai_system_prompt
 import os
 from dotenv import load_dotenv
@@ -356,14 +363,18 @@ async def create_agent(
         work_dir=WORKDIR,
         only_in_workspace=True,
         extra_work_dirs=[
-            str((here / "datasets").resolve()),
+            str(get_datasets_dir()),
+            str((here / "agent_skills").resolve()),
+        ],
+        read_only_work_dirs=[
+            str(get_datasets_dir()),
             str((here / "agent_skills").resolve()),
         ],
         token_limit=agent_token_limit
     )
 
 if __name__ == "__main__":
-    
+    check_sandbox_support()
     asyncio.run(
         run_worker(
             # 智能体注册信息

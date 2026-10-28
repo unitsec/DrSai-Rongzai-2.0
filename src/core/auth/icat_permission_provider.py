@@ -25,7 +25,7 @@ from .permission_provider import (
     RunInfo,
 )
 from .icat.icat_helper import IcatHelper
-from .icat.icat import IcatException
+from .icat.icat import IcatException, Session
 
 logger = logging.getLogger(__name__)
 
@@ -92,23 +92,7 @@ class IcatPermissionProvider(PermissionProvider):
                     code=ex.code
                 )
 
-            if role == 'scientist':
-                # 科学家模式：从 instrumentScientists 关系查询专属谱仪
-                beamlines = self._fetch_scientist_beamlines(icat_session)
-                proposals = self._fetch_proposals_for_scientist(icat_session, beamlines)
-            else:
-                # 用户模式：通过参与的课题关联查询谱仪
-                beamlines = self._fetch_beamlines(icat_session)
-                proposals = self._fetch_proposals_with_runs(icat_session)
-
-            logger.info(f'权限查询完成 [{username}] role={role}，谱仪: {beamlines}，课题数: {len(proposals)}')
-            return UserPermissions(
-                username=username,
-                beamlines=beamlines,
-                proposals=proposals,
-                provider=self.provider_name,
-                role=role,
-            )
+            return self.get_user_permissions_from_session(icat_session, role)
 
         except PermissionProviderError:
             raise
@@ -121,6 +105,22 @@ class IcatPermissionProvider(PermissionProvider):
         finally:
             if icat_session is not None:
                 self._helper.logoutIcat(icat_session)
+
+    def get_user_permissions_from_session(
+        self, icat_session: Session, role: str = 'user',
+    ) -> UserPermissions:
+        """Borrow a verified ICAT session; its owner controls logout."""
+        username = icat_session.getUserName()
+        if role == 'scientist':
+            beamlines = self._fetch_scientist_beamlines(icat_session)
+            proposals = self._fetch_proposals_for_scientist(icat_session, beamlines)
+        else:
+            beamlines = self._fetch_beamlines(icat_session)
+            proposals = self._fetch_proposals_with_runs(icat_session)
+        return UserPermissions(
+            username=username, beamlines=beamlines, proposals=proposals,
+            provider=self.provider_name, role=role,
+        )
 
     def check_beamline_access(self, username: str, password: str, beamline: str) -> bool:
         """

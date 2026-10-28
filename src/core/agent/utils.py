@@ -1,15 +1,13 @@
 from typing import List, Any, Optional
+from collections.abc import Callable, Sequence
 import asyncio
-import base64
-import fnmatch
 import json
 import mimetypes
 import os
-import platform
 import re
 import requests
 import shutil
-import signal
+import shlex
 import uuid
 from pathlib import Path
 from urllib.parse import quote
@@ -18,6 +16,7 @@ from drsai.modules.managers.messages import (
     FilesContent,
     FilesEvent,
 )
+from .analysis_sandbox import AnalysisSandbox, RUNTIME_PATH
 
 _DANGEROUS_RE = re.compile(
     r"(^|[\s;&|])(rm\s+-rf|rm\s+-r|mkfs|dd\s+if=|shutdown|reboot|poweroff|halt|:\s*\(\)\s*\{|chmod\s+777|chown\s+-R)",
@@ -27,13 +26,7 @@ _SCRIPT_EXEC_RE = re.compile(
     r"(^|[\s;&|])(python\s+.*\.py|python3\s+.*\.py|bash\s+.*\.sh|sh\s+.*\.sh|./.*\.sh|source\s+.*\.(?:sh|bash))",
     re.IGNORECASE,
 )
-_ABS_PATH_RE = re.compile(r"(/(?:[^\s'\"`;|&()]|\\\s)+)")
-_WIN_ABS_PATH_RE = re.compile(r"([A-Za-z]:\\(?:[^\s'\"]|\\\s)+)")
-_HOME_PATH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])~(?=/)")
-_SHELL_VAR_ASSIGNMENT_RE = re.compile(r"(?:^|[\s;])([A-Za-z_][A-Za-z0-9_]*)=(?:\"([^\"]*)\"|'([^']*)'|([^\s;]+))")
-_SHELL_VAR_REFERENCE_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 _RUN_READ_MAX_CHARS = 5_000
-_SAFE_DEVICE_PATHS = {Path("/dev/null")}
 
 def _extract_existing_image_paths_from_content(content: str) -> List[str]:
     """Extract existing local image file paths from tool result text.
@@ -174,87 +167,45 @@ def upload_to_throway(file_path: str) -> str:
 def get_operator_funcs_rongzai(
     worker_dir: str | Path,
     thread_id: str,
-    extra_dirs: list[str | Path] = None,
+    extra_dirs: Sequence[str | Path] | None = None,
     only_in_workspace: bool = True,
     is_powershell: bool = False,
     allolow_dangrous_cmd: bool = False,
-    storage_dir: str | Path = None,
+    storage_dir: str | Path | None = None,
     source_name: str = "rongzai",
-) -> list[callable]:
+    read_only_dirs: Sequence[str | Path] | None = None,
+) -> list[Callable[..., Any]]:
     WORKDIR = Path(worker_dir).resolve()
     _cwd = [WORKDIR]
     _only_in_workspace = [only_in_workspace]
     _dangerous_allowed = [allolow_dangrous_cmd]
+    readonly = {Path(path).resolve() for path in (read_only_dirs or [])}
+    background_tasks: dict[str, asyncio.Task[str]] = {}
 
     def _allowed_dirs() -> list[Path]:
-        dirs: list[Path] = [WORKDIR]
-        for item in (extra_dirs or []):
-            try:
-                dirs.append(Path(item).resolve())
-            except Exception:
-                continue
-        return dirs
+        return [WORKDIR, *(Path(item).resolve() for item in (extra_dirs or []))]
 
-    def safe_path(p: str) -> Path:
+    sandbox = AnalysisSandbox(
+        Path(worker_dir), lambda: [Path(item) for item in (extra_dirs or [])], list(readonly),
+    )
+
+    def safe_path(p: str, *, write: bool = False) -> Path:
         resolved = Path(p).resolve()
         allowed_dirs = _allowed_dirs()
         if Path(p).is_absolute():
             if _only_in_workspace[0] and not any(resolved.is_relative_to(d) for d in allowed_dirs):
                 raise ValueError(f"Path escapes workspace: {p}")
-            return resolved
-        path = (WORKDIR / p).resolve()
+            path = resolved
+        else:
+            path = (WORKDIR / p).resolve()
         if _only_in_workspace[0] and not any(path.is_relative_to(d) for d in allowed_dirs):
             raise ValueError(f"Path escapes workspace: {p}")
+        if write and any(path.is_relative_to(d) for d in readonly):
+            raise ValueError(f"Path is read-only: {p}")
         return path
 
-    def _check_cmd_paths(cmd: str) -> str | None:
-        allowed_dirs = _allowed_dirs()
-        shell_variables: dict[str, str] = {}
-        for match in _SHELL_VAR_ASSIGNMENT_RE.finditer(cmd):
-            value = next((part for part in match.groups()[1:] if part is not None), "")
-            shell_variables[match.group(1)] = value
-
-        checked_cmd = _SHELL_VAR_REFERENCE_RE.sub(
-            lambda match: shell_variables.get(match.group(1) or match.group(2), match.group(0)),
-            cmd,
-        )
-        checked_cmd = _HOME_PATH_TOKEN_RE.sub(
-            str(Path.home()),
-            checked_cmd,
-        )
-        for match in _ABS_PATH_RE.finditer(checked_cmd):
-            raw = match.group(1).rstrip('/')
-            if not raw:
-                continue
-            try:
-                resolved = Path(raw).resolve()
-            except Exception:
-                continue
-            if resolved in _SAFE_DEVICE_PATHS:
-                continue
-            if not any(resolved.is_relative_to(d) for d in allowed_dirs):
-                return f"Error: Path '{raw}' is outside the allowed workspace"
-
-        for match in _WIN_ABS_PATH_RE.finditer(checked_cmd):
-            raw = match.group(1)
-            try:
-                resolved = Path(raw).resolve()
-            except Exception:
-                continue
-            if not any(resolved.is_relative_to(d) for d in allowed_dirs):
-                return f"Error: Path '{raw}' is outside the allowed workspace"
-        return None
-
     def get_file_base64(file_path: str):
-        try:
-            if os.path.exists(file_path):
-                with open(file_path, 'rb') as file:
-                    return base64.b64encode(file.read()).decode('utf-8')
-            print(f"警告: 文件 {file_path} 不存在")
-            return None
-        except Exception as e:
-            print(f"读取文件时出错: {e}")
-            return None
+        return sandbox.read_base64(safe_path(file_path))
 
     async def run_read(
         path: str,
@@ -292,34 +243,10 @@ def get_operator_funcs_rongzai(
                 if end_line < start_line:
                     return "Error: end_line must be >= start_line"
 
-            def _read_selected_lines() -> tuple[str, bool]:
-                selected: list[str] = []
-                selected_chars = 0
-                with open(file_path, "r", encoding=encoding, errors="ignore") as f:
-                    for current_line, line in enumerate(f, start=1):
-                        if current_line < start_line:
-                            continue
-                        if end_line is not None and current_line > end_line:
-                            break
-                        chunk = ("\n" if selected else "") + line.rstrip("\n")
-                        remaining_chars = _RUN_READ_MAX_CHARS - selected_chars
-                        if len(chunk) > remaining_chars:
-                            selected.append(chunk[:remaining_chars])
-                            return "".join(selected), True
-                        selected.append(chunk)
-                        selected_chars += len(chunk)
-                return "".join(selected), False
-
-            async with asyncio.timeout(timeout):
-                content, truncated = await asyncio.to_thread(_read_selected_lines)
-                if not truncated:
-                    return content
-                notice = (
-                    f"[Truncated: The requested file content exceeds the {_RUN_READ_MAX_CHARS}-character limit, "
-                    f"so only the first {_RUN_READ_MAX_CHARS} characters are shown. To continue reading, "
-                    "strongly prefer using start_line and end_line to read the file in chunks.]"
-                )
-                return f"{content}\n\n{notice}"
+            return await sandbox.file_operation("read", {
+                "path": str(file_path), "start_line": start_line, "end_line": end_line,
+                "encoding": encoding, "max_chars": _RUN_READ_MAX_CHARS,
+            }, timeout)
         except asyncio.TimeoutError:
             return f"Error: Read operation timed out after {timeout}s"
         except Exception as e:
@@ -331,16 +258,13 @@ def get_operator_funcs_rongzai(
         """
         try:
             content_size_mb = len(content.encode('utf-8')) / (1024 * 1024)
-            fp = safe_path(path)
-            fp.parent.mkdir(parents=True, exist_ok=True)
-
-            def _write_text() -> None:
-                with open(fp, 'w', encoding='utf-8') as f:
-                    f.write(content)
-
-            async with asyncio.timeout(timeout):
-                await asyncio.to_thread(_write_text)
-                return f"Wrote {len(content)} bytes ({content_size_mb:.2f}MB) to {path}"
+            fp = safe_path(path, write=True)
+            result = await sandbox.file_operation("write", {
+                "path": str(fp), "content": content,
+            }, timeout)
+            if result.startswith("Error:"):
+                return result
+            return f"Wrote {len(content)} bytes ({content_size_mb:.2f}MB) to {path}"
         except asyncio.TimeoutError:
             return f"Error: Write operation timed out after {timeout}s (file may be partially written)"
         except Exception as e:
@@ -351,22 +275,13 @@ def get_operator_funcs_rongzai(
         Replace exact text in file.
         """
         try:
-            fp = safe_path(path)
-
-            def _read_text() -> str:
-                with open(fp, 'r', encoding='utf-8') as f:
-                    return f.read()
-
-            def _write_text(text: str) -> None:
-                with open(fp, 'w', encoding='utf-8') as f:
-                    f.write(text)
-
-            async with asyncio.timeout(timeout):
-                text = await asyncio.to_thread(_read_text)
-                if old_text not in text:
-                    return f"Error: Text not found in {path}"
-                await asyncio.to_thread(_write_text, text.replace(old_text, new_text, 1))
-                return f"Edited {path}"
+            fp = safe_path(path, write=True)
+            result = await sandbox.file_operation("edit", {
+                "path": str(fp), "old_text": old_text, "new_text": new_text,
+            }, timeout)
+            if result.startswith("Error:"):
+                return result
+            return f"Edited {path}"
         except asyncio.TimeoutError:
             return f"Error: Operation timed out after {timeout}s (file may be partially written)"
         except Exception as e:
@@ -404,32 +319,13 @@ def get_operator_funcs_rongzai(
             Search results as string
         """
         try:
-            rg_available = False
-            grep_available = False
-
-            rg_check = await asyncio.create_subprocess_exec(
-                shutil.which("rg") or "rg",
-                "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await rg_check.communicate()
-            rg_available = rg_check.returncode == 0
-
-            if not rg_available and platform.system() != "Windows":
-                grep_check = await asyncio.create_subprocess_exec(
-                    "grep",
-                    "--version",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await grep_check.communicate()
-                grep_available = grep_check.returncode == 0
+            rg_available = shutil.which("rg", path=RUNTIME_PATH)
+            grep_available = shutil.which("grep", path=RUNTIME_PATH)
 
             search_path = str(safe_path(path)) if path else str(WORKDIR)
 
             if rg_available:
-                cmd = ["rg", "--hidden", "--max-columns", "500"]
+                cmd = [rg_available, "--hidden", "--max-columns", "500"]
                 if output_mode == "files_with_matches":
                     cmd.append("-l")
                 elif output_mode == "count":
@@ -447,18 +343,9 @@ def get_operator_funcs_rongzai(
                 if glob:
                     for pattern_item in glob.split(","):
                         cmd.extend(["--glob", pattern_item.strip()])
-                cmd.extend([pattern, search_path])
-
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                async with asyncio.timeout(30):
-                    stdout, _stderr = await proc.communicate()
-                    output = stdout.decode('utf-8')
+                cmd.extend(["--", pattern, search_path])
             elif grep_available:
-                cmd = ["grep", "-r"]
+                cmd = [grep_available, "-r"]
                 if case_insensitive:
                     cmd.append("-i")
                 if show_line_numbers:
@@ -473,69 +360,15 @@ def get_operator_funcs_rongzai(
                     cmd.extend(["-A", str(context_after)])
                 if glob:
                     cmd.extend(["--include", glob])
-                cmd.extend([pattern, search_path])
-
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                async with asyncio.timeout(30):
-                    stdout, _stderr = await proc.communicate()
-                    output = stdout.decode('utf-8')
+                cmd.extend(["--", pattern, search_path])
             else:
-                def _pygrep_sync():
-                    import re as re_lib
-                    base = Path(search_path)
-                    flags = re_lib.IGNORECASE if case_insensitive else 0
-                    try:
-                        compiled = re_lib.compile(pattern, flags)
-                    except re_lib.error as e:
-                        return f"Error: Invalid regex pattern: {e}"
+                return "Error: Search requires ripgrep or grep in the analysis runtime"
 
-                    results = []
-                    for fpath in base.rglob("*"):
-                        if not fpath.is_file():
-                            continue
-                        if file_type and fpath.suffix.lstrip(".") != file_type:
-                            continue
-                        if glob and not any(fnmatch.fnmatch(fpath.name, pattern_item.strip()) for pattern_item in glob.split(",")):
-                            continue
-
-                        try:
-                            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-                                lines = f.readlines()
-                        except Exception:
-                            continue
-
-                        file_matches = []
-                        for i, line in enumerate(lines, 1):
-                            if compiled.search(line):
-                                file_matches.append((i, line.rstrip()))
-
-                        if not file_matches:
-                            continue
-
-                        rel = str(fpath.relative_to(base)) if fpath.is_relative_to(base) else str(fpath)
-                        if output_mode == "files_with_matches":
-                            results.append(rel)
-                        elif output_mode == "count":
-                            results.append(f"{rel}:{len(file_matches)}")
-                        else:
-                            for line_no, line_text in file_matches[:max_results]:
-                                if show_line_numbers:
-                                    results.append(f"{rel}:{line_no}:{line_text}")
-                                else:
-                                    results.append(f"{rel}:{line_text}")
-
-                        if len(results) >= max_results:
-                            break
-
-                    return "\n".join(results) if results else ""
-
-                output = await asyncio.to_thread(_pygrep_sync)
-                if not output:
-                    return "No matches found"
+            output = await sandbox.file_operation("grep", {
+                "path": search_path, "command": cmd,
+            }, 30)
+            if output.startswith("Error:"):
+                return output
 
             if not output:
                 return "No matches found"
@@ -565,25 +398,12 @@ def get_operator_funcs_rongzai(
             return "Error: Dangerous command detected. Use /dangerous on to authorize."
         if not _dangerous_allowed[0] and _SCRIPT_EXEC_RE.search(cmd):
             return "Error: Script execution command detected. Use /dangerous on to authorize."
-        if _only_in_workspace[0]:
-            path_err = _check_cmd_paths(cmd)
-            if path_err:
-                return path_err
-
-        wrapped = f'{cmd}\necho "__DRSAI_CWD__:$(pwd)"'
-        proc_kwargs = {
-            "cwd": str(_cwd[0]),
-            "stdout": asyncio.subprocess.PIPE,
-            "stderr": asyncio.subprocess.PIPE,
-        }
-        if platform.system() != "Windows":
-            proc_kwargs["preexec_fn"] = os.setsid
+        wrapped = f'{cmd}\n__rongzai_status=$?\nprintf "\\n__DRSAI_CWD__:%s\\n" "$PWD"\nexit "$__rongzai_status"'
 
         try:
-            proc = await asyncio.create_subprocess_shell(wrapped, **proc_kwargs)
-            async with asyncio.timeout(timeout):
-                stdout, stderr = await proc.communicate()
-            raw_output = (stdout.decode('utf-8') if stdout else '') + (stderr.decode('utf-8') if stderr else '')
+            raw_output = await sandbox.run(
+                ["/bin/bash", "--noprofile", "--norc", "-c", wrapped], _cwd[0], timeout,
+            )
 
             out_lines = []
             for line in raw_output.splitlines():
@@ -604,17 +424,6 @@ def get_operator_funcs_rongzai(
             output = "\n".join(out_lines).strip() or "(no output)"
             return output[:50000]
         except asyncio.TimeoutError:
-            try:
-                if platform.system() != "Windows":
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                else:
-                    proc.terminate()
-            except Exception:
-                pass
             return f"Error: Command timed out after {timeout}s (all child processes terminated)"
         except Exception as e:
             return f"Error: {e}"
@@ -628,7 +437,7 @@ def get_operator_funcs_rongzai(
         2. You know the command will take > 2 minutes (e.g., long builds, extensive tests)
         **For most commands, use run_bash() first!**
         Important Notes:
-            - Background tasks persist in storage and can be queried across sessions
+            - Logs persist in the workspace; task status is available in this agent instance
             - Don't use sleep commands after launching background tasks
             - Use get_bash_task(task_id) to check status and retrieve output
         """
@@ -636,25 +445,48 @@ def get_operator_funcs_rongzai(
             return "Error: Dangerous command detected. Use /dangerous on to authorize."
         if not _dangerous_allowed[0] and _SCRIPT_EXEC_RE.search(cmd):
             return "Error: Script execution command detected. Use /dangerous on to authorize."
-        if _only_in_workspace[0]:
-            path_err = _check_cmd_paths(cmd)
-            if path_err:
-                return path_err
+        try:
+            task_id = f"bash_task_{uuid.uuid4().hex}"
+            log = WORKDIR / f"{task_id}.log"
+            wrapped = f"(\n{cmd}\n) > {shlex.quote(str(log))} 2>&1"
+            proc = await sandbox.start(
+                ["/bin/bash", "--noprofile", "--norc", "-c", wrapped], _cwd[0],
+            )
 
-        task_id = f"bash_task_{os.getpid()}_{abs(hash((cmd, os.getpid()))) & 0xfffffff:07x}"
-        wrapped = f'nohup bash -lc {json.dumps(cmd)} >/tmp/{task_id}.log 2>&1 & echo $!'
-        proc = await asyncio.create_subprocess_shell(
-            wrapped,
-            cwd=str(_cwd[0]),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        pid = (stdout.decode('utf-8').strip() or "").splitlines()[-1] if stdout else ""
-        if not pid:
-            err_text = stderr.decode('utf-8').strip() if stderr else ""
-            return f"Error: failed to launch background task. {err_text}".strip()
-        return json.dumps({"task_id": task_id, "pid": pid, "cwd": str(_cwd[0])}, ensure_ascii=False)
+            async def monitor() -> str:
+                try:
+                    return await sandbox.finish(proc, timeout)
+                except TimeoutError:
+                    return f"Error: Command timed out after {timeout}s (all child processes terminated)"
+
+            task = asyncio.create_task(monitor())
+            background_tasks[task_id] = task
+            await asyncio.wait({task}, timeout=max(0.01, min(wait_time, 1.0)))
+            if task.done():
+                result = task.result()
+                if result.startswith("Error:"):
+                    return result
+            return json.dumps({
+                "task_id": task_id, "pid": proc.pid, "cwd": str(_cwd[0]),
+                "log_path": str(log),
+            }, ensure_ascii=False)
+        except Exception as e:
+            return f"Error: failed to launch sandboxed background task: {e}"
+
+    async def get_bash_task(task_id: str) -> str:
+        """Check a background analysis task and read its workspace log."""
+        task = background_tasks.get(task_id)
+        if task is None:
+            return f"Error: Unknown background task: {task_id}"
+        status = "running"
+        result = ""
+        if task.done():
+            if task.cancelled():
+                return f"Error: Background task was cancelled: {task_id}"
+            result = task.result()
+            status = "failed" if result.startswith("Error:") else "completed"
+        log = await run_read(f"{task_id}.log")
+        return json.dumps({"task_id": task_id, "status": status, "result": result, "log": log})
 
     def serve_files_for_user(files_list: list[str], descriptions_list: list[str]):
         """
@@ -675,9 +507,6 @@ def get_operator_funcs_rongzai(
             base64_files = []
             for file_path, description in zip(files_list, descriptions_list):
                 file_base64 = get_file_base64(file_path)
-                if not file_base64:
-                    continue
-                    
                 base64_file = FileInfo(
                     name = os.path.basename(file_path),
                     base64_content = file_base64,
@@ -702,7 +531,7 @@ def get_operator_funcs_rongzai(
         except Exception as e:
             return f"Error in serve_files_for_user: {e}"
     
-    return [run_bash, run_bash_background, run_read, run_write, run_edit, run_grep, serve_files_for_user]
+    return [run_bash, run_bash_background, run_read, run_write, run_edit, run_grep, get_bash_task, serve_files_for_user]
 
 
 if __name__ == "__main__":
