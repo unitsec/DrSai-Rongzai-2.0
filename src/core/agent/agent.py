@@ -2127,11 +2127,12 @@ class RongZaiAgent(DrSaiAgent):
         """
         如果用户要求处理某个谱仪的某个RUN号的数据，先检查用户是否有权限访问该RUN号对应的课题，并检查该课题下的reduction文件夹中是否有包含runNumber的文件夹。数据就在这些文件夹中。
         该工具会返回检查结果，包含用户是否有权限访问该RUN号对应的课题，以及reduction文件夹中是否有包含runNumber的文件夹。
-        一旦检查通过，你会直接获得访问reduction文件夹的权限、同级目录下的analysis文件夹的权限、对应谱仪的info文件夹的权限。
+        一旦检查通过，你会直接获得访问reduction文件夹的权限、同级目录下的analysis文件夹的权限、对应谱仪的info文件夹的权限。注意，你可能发现原始数据在/csnsdata下，而reduction和analysis文件夹在/csns_data下。这是正确的，目前就是要分开存储，不要擅自修改这些路径。
         ICAT 分支的 BL08A 另返回只读 raw_data_path 和 data_root，不要求已有规约结果。
-        反射规约完成后，将数据、图和参数写入返回的 reduction_folder_path/RUN号_时间戳/，
-        并在 info_folder_path 写 reduction_RUN号_时间戳.json，结构同下方分析 info，
-        第二层键改为 reduction_RUN号_时间戳。分析结果按下方规则写入返回的 analysis_folder_path。
+        反射规约完成后，将且只将规约数据（从原始数据得到的最终一维反射谱，每个run对应一条规约数据）写入返回的 reduction_folder_path/RUN号_时间戳/，
+        并在返回的 info_folder_path 写入 reduction_RUN号_时间戳.json，
+        JSON 结构为 {课题名: {reduction_RUN号_时间戳: {规约文件绝对路径: 文件描述}}}。
+        分析结果写入返回的 analysis_folder_path，子目录命名及分析 info JSON 格式遵循下方分析归档规则。
         规约和分析都做了就分别归档；只使用返回的目录，不写原始数据，不只留工作区副本。
         多 RUN 按已授权课题分别归档，记录直通/反射 RUN、角度和分组；写回失败必须明确报告。
         
