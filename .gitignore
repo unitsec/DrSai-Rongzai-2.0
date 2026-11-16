@@ -43,6 +43,15 @@ test_datesets/*
 *.lst
 *.csv
 
+# 忽略 pyZRietveld 的预编译二进制（单文件 100MB+，超出 GitHub 限制；
+# 需要分发时请挂 GitHub Release，不要再提交进仓库）
+tools/pyZRietveld/refineTool
+tools/pyZRietveld/refineTool_test
+tools/pyZRietveld/refineTool.cpython-*.so
+tools/pyZRietveld/*.exe
+# 本地二进制备份目录
+.git-binaries-backup/
+
 # 忽略z-rietveld源文件
 tools/pyZRietveld/Z_DensityDistribution/*
 tools/pyZRietveld/Z-Rietveld/*
