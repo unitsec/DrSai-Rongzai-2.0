@@ -174,11 +174,18 @@ HEPAI_API_KEY="XXXXXX"
 python run_agent.py
 ```
 
-## 4. check the ACO
+## 4. Reproducing the result in paper
 change the .env to make the ablation experiment
 ```shell
 RONGZAI_DISABLE_CORE_SKILL_TOOLS=1 # Set 1 to disable built-in core skill tools.
 RONGZAI_DISABLE_MEMO_WRITE_TOOL=1 # Set 1 to disable the memo-writing tool.
 ```
 
+Use the prompt under the input window on the UI; you can reproduce the experiments in the paper separately.
 
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
+
+This product includes software produced by UChicago Argonne, LLC under Contract No. DE-AC02-06CH11357 with the Department of Energy (GSAS-II; see [tools/GSAS-II-master/LICENSE](tools/GSAS-II-master/LICENSE)).

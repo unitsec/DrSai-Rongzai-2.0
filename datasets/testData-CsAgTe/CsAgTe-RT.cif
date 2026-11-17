@@ -1,0 +1,51 @@
+
+#======================================================================
+# CRYSTAL DATA
+#----------------------------------------------------------------------
+data_VESTA_phase_1
+
+_chemical_name_common                  'New structure'
+_cell_length_a                         14.645000
+_cell_length_b                         14.645000
+_cell_length_c                         4.590700
+_cell_angle_alpha                      90.000000
+_cell_angle_beta                       90.000000
+_cell_angle_gamma                      90.000000
+_cell_volume                           984.595182
+_space_group_name_H-M_alt              'P 42/m n m'
+_space_group_IT_number                 136
+
+loop_
+_space_group_symop_operation_xyz
+   'x, y, z'
+   '-x, -y, -z'
+   '-x, -y, z'
+   'x, y, -z'
+   '-y+1/2, x+1/2, z+1/2'
+   'y+1/2, -x+1/2, -z+1/2'
+   'y+1/2, -x+1/2, z+1/2'
+   '-y+1/2, x+1/2, -z+1/2'
+   '-x+1/2, y+1/2, -z+1/2'
+   'x+1/2, -y+1/2, z+1/2'
+   'x+1/2, -y+1/2, -z+1/2'
+   '-x+1/2, y+1/2, z+1/2'
+   'y, x, -z'
+   '-y, -x, z'
+   '-y, -x, -z'
+   'y, x, z'
+
+loop_
+   _atom_site_label
+   _atom_site_occupancy
+   _atom_site_fract_x
+   _atom_site_fract_y
+   _atom_site_fract_z
+   _atom_site_adp_type
+   _atom_site_U_iso_or_equiv
+   _atom_site_type_symbol
+   Te1        1.0     0.615840     0.172200     0.000000    Uiso  0.020800 Te
+   Te2        1.0     0.400290     0.400290     0.000000    Uiso  0.019833 Te
+   Cs1        1.0     0.386660     0.613340     0.500000    Uiso  0.027533 Cs
+   Ag1        1.0     0.417980     0.213890     0.000000    Uiso  0.040167 Ag
+   Ag2        1.0     0.517700     0.104500     0.500000    Uiso  0.030967 Ag
+   Ag3        1.0     0.322850     0.322850     0.500000    Uiso  0.044500 Ag

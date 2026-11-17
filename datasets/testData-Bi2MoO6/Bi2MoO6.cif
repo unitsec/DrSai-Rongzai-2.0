@@ -1,0 +1,42 @@
+
+#======================================================================
+# CRYSTAL DATA
+#----------------------------------------------------------------------
+data_VESTA_phase_1
+
+_chemical_name_common                  '3D'
+_cell_length_a                         5.506600
+_cell_length_b                         16.188000
+_cell_length_c                         5.495200
+_cell_angle_alpha                      90.000000
+_cell_angle_beta                       90.000000
+_cell_angle_gamma                      90.000000
+_cell_volume                           489.846745
+_space_group_name_H-M_alt              'P b c a'
+_space_group_IT_number                 61
+
+loop_
+_space_group_symop_operation_xyz
+   'x, y, z'
+   '-x, -y, -z'
+   '-x+1/2, -y, z+1/2'
+   'x+1/2, y, -z+1/2'
+   '-x, y+1/2, -z+1/2'
+   'x, -y+1/2, z+1/2'
+   'x+1/2, -y+1/2, -z'
+   '-x+1/2, y+1/2, z'
+
+loop_
+   _atom_site_label
+   _atom_site_occupancy
+   _atom_site_fract_x
+   _atom_site_fract_y
+   _atom_site_fract_z
+   _atom_site_adp_type
+   _atom_site_U_iso_or_equiv
+   _atom_site_type_symbol
+   O1         1.0  0.042800     0.106462     0.086993    Uiso  0.005450 O
+   Mo1        1.0     0.000000     0.000000     0.000000    Uiso  0.005070 Mo
+   Bi1        1.0     0.004151     0.174293     0.486499    Uiso  0.005070 Bi
+   O9         1.0     0.234536     0.249115     0.263311    Uiso  0.005450 O
+   O17        1.0     0.179508     0.474964     0.204245    Uiso  0.005450 O
