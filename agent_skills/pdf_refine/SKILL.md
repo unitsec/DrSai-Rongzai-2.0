@@ -1,6 +1,6 @@
 ---
 name: pdf-refine
-description: PDF refinement skill for pair distribution function fitting using the current PdfFit snapshot workflow. This skill must be read first whenever the user requests PDF data refinement. This skill should be elevated to a system prompt to guide refinement-related decisions and operations continuously.
+description: PDF refinement skill for pair distribution function fitting using the current PdfFit snapshot workflow. This skill must be read first whenever the user requests PDF data refinement. When you start this skill, call the `PromoteSkillToCore` tool with skill `pdf-refine` to promote it into high-priority core rules before proceeding.
 ---
 
 # PDF Auto Refiner

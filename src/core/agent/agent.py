@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from pathlib import Path
 from loguru import logger
 from autogen_ext.tools.mcp import McpWorkbench, SseServerParams, StdioServerParams
-from .analysis_sandbox import AnalysisSandbox
+from .analysis_runner import CommandRunner
 from collections.abc import Mapping
 from drsai import CancellationToken, FunctionCall
 from drsai.modules.baseagent import (
@@ -106,11 +106,6 @@ _ACTIVE_THREAD_IDS: Set[str] = set()
 _MCP_SKILL_PORT_DEFAULTS = {
     "MCP_GSASII_REFINE_PORT": "42506",
     "MCP_PDF_REFINE_PORT": "42507",
-    "MCP_SASVIEW_REFINE_PORT": "42508",
-    "MCP_IRENA_REFINE_PORT": "42509",
-    "MCP_ZRIETVELD_REFINE_PORT": "42510",
-    "MCP_MAGNETIC_STRUCTURE_PORT": "42511",
-    "MCP_NEUTRON_REFLECTION_PORT": "42520",
 }
 
 
@@ -583,7 +578,7 @@ class RongZaiAgent(DrSaiAgent):
         self._only_in_workspace = only_in_workspace
         self._extra_work_dirs = list(extra_work_dirs) if extra_work_dirs else []
         self._read_only_work_dirs = list(read_only_work_dirs or [])
-        self._analysis_sandbox = AnalysisSandbox(
+        self._command_runner = CommandRunner(
             self._work_dir,
             lambda: [Path(path) for path in self._extra_work_dirs],
             [Path(path) for path in self._read_only_work_dirs],
@@ -593,7 +588,7 @@ class RongZaiAgent(DrSaiAgent):
             thread_id=self._thread_id,
             extra_dirs=self._extra_work_dirs,
             only_in_workspace=self._only_in_workspace,
-            allolow_dangrous_cmd=True,  # Analysis scripts run behind the OS sandbox, not a command blacklist.
+            allolow_dangrous_cmd=True,  # Analysis scripts run as direct subprocesses.
             source_name=self._name,
             read_only_dirs=self._read_only_work_dirs,
         )
@@ -671,6 +666,7 @@ class RongZaiAgent(DrSaiAgent):
         self._core_skill_update_seq = 0
         self._core_skill_policy_prompt = "" if disable_core_skill_tools else (
             "[Core Skill Runtime Reminder]\n"
+            "If a loaded skill's description says it should be elevated or promoted to a system prompt, call PromoteSkillToCore for that skill immediately after reading it.\n"
             "When task focus changes, replace or demote obsolete core skills before promoting new ones.\n"
             "Keep only the minimum active core skills required for the current task."
         )
@@ -1942,12 +1938,12 @@ class RongZaiAgent(DrSaiAgent):
                 if not server_id:
                     return "Error: 'command' is required when type='stdio'."
                 if env:
-                    return "Error: Custom stdio environment is disabled; use the isolated analysis runtime."
-                sandbox_command, sandbox_env = self._analysis_sandbox.command(
+                    return "Error: Custom stdio environment is not supported."
+                proc_command, proc_env = self._command_runner.command(
                     [server_id, *(args or [])], self._work_dir,
                 )
                 server_params = StdioServerParams(
-                    command=sandbox_command[0], args=sandbox_command[1:], env=sandbox_env,
+                    command=proc_command[0], args=proc_command[1:], env=proc_env,
                 )
             else:
                 return "Error: 'type' must be either 'sse' or 'stdio'."
@@ -2055,7 +2051,7 @@ class RongZaiAgent(DrSaiAgent):
                     model_candidates = []
                     if primary_env:
                         model_candidates.append(primary_env)
-                    for m in ("openai/gpt-5","openai/gpt-4o", "minimax/minimax-m2.7"):
+                    for m in ("openai/gpt-5.6-luna","deepseek-ai/deepseek-v4-pro"):
                         if m not in model_candidates:
                             model_candidates.append(m)
 
@@ -2069,7 +2065,7 @@ class RongZaiAgent(DrSaiAgent):
             if not api_key:
                 return "Error: missing API key for vision model."
 
-            image_base64 = await asyncio.to_thread(self._analysis_sandbox.read_base64, p)
+            image_base64 = await asyncio.to_thread(self._command_runner.read_base64, p)
             image_ob = Image.from_base64(image_base64)
             llm_messages: List[LLMMessage] = [
                 SystemMessage(
@@ -2128,13 +2124,9 @@ class RongZaiAgent(DrSaiAgent):
         如果用户要求处理某个谱仪的某个RUN号的数据，先检查用户是否有权限访问该RUN号对应的课题，并检查该课题下的reduction文件夹中是否有包含runNumber的文件夹。数据就在这些文件夹中。
         该工具会返回检查结果，包含用户是否有权限访问该RUN号对应的课题，以及reduction文件夹中是否有包含runNumber的文件夹。
         一旦检查通过，你会直接获得访问reduction文件夹的权限、同级目录下的analysis文件夹的权限、对应谱仪的info文件夹的权限。注意，你可能发现原始数据在/csnsdata下，而reduction和analysis文件夹在/csns_data下。这是正确的，目前就是要分开存储，不要擅自修改这些路径。
-        ICAT 分支的 BL08A 另返回只读 raw_data_path 和 data_root，不要求已有规约结果。
-        反射规约完成后，将且只将规约数据（从原始数据得到的最终一维反射谱，每个run对应一条规约数据）写入返回的 reduction_folder_path/RUN号_时间戳/，
-        并在返回的 info_folder_path 写入 reduction_RUN号_时间戳.json，
-        JSON 结构为 {课题名: {reduction_RUN号_时间戳: {规约文件绝对路径: 文件描述}}}。
         分析结果写入返回的 analysis_folder_path，子目录命名及分析 info JSON 格式遵循下方分析归档规则。
         规约和分析都做了就分别归档；只使用返回的目录，不写原始数据，不只留工作区副本。
-        多 RUN 按已授权课题分别归档，记录直通/反射 RUN、角度和分组；写回失败必须明确报告。
+        多 RUN 按已授权课题分别归档；写回失败必须明确报告。
         
         注意，一旦你调用这个工具并检查通过，并且你做了数据分析，得到有价值或更好的结果，你就有一个必须做的事情：在analysis文件夹中新建一个以“RUN号_当前年月日_当前时分秒”命名的文件夹（例如“RUN0000001_20240605_153045”），将数据分析结果保存到该文件夹中。
             分析结果具体指：
@@ -2166,12 +2158,10 @@ class RongZaiAgent(DrSaiAgent):
                 - status: "success" 或 "failed"
                 - error: 错误信息（如果有）
                 - proposal: proposal编号（如果检查成功）
-                - reduction_folder_path: reduction文件夹路径（BL08A 也是规约结果归档目录）
+                - reduction_folder_path: reduction文件夹路径
                 - run_folders_path: reduction目录下包含runNumber的文件夹名称列表（如果检查成功）
                 - analysis_folder_path: analysis文件夹路径（如果检查成功）
                 - info_folder_path: info文件夹路径（如果检查成功）
-                - raw_data_path: BL08A 原始 RUN 目录（ICAT 检查成功时）
-                - data_root: BL08A 课题/年份目录，供反射工具读取 RUN 数据
         """
 
         try:
@@ -2310,60 +2300,10 @@ class RongZaiAgent(DrSaiAgent):
 
             is_production = os.getenv("SERVICE_MODE") == "PROD"
             environment_suffix = "" if is_production else "/dev"
-            is_raw_reflection = auth_provider != "domas" and beamline.strip().upper() == "BL08A"
-            if is_raw_reflection:
-                beamline = "BL08A"
             proposal_root = f"/csns_data/{beamline}/{found_proposal}"
             reduction_folder_path = f"{proposal_root}/reduction{environment_suffix}"
             analysis_folder_path = f"{proposal_root}/analysis{environment_suffix}"
             info_folder_path = f"/csns_data/{beamline}/{beamline}_info{environment_suffix}"
-
-            if is_raw_reflection:
-                runNumber = runNumber.strip().upper()
-                if re.fullmatch(r"RUN[0-9]{7}", runNumber) is None:
-                    results["error"] = "RUN 编号必须为 RUN 加七位数字"
-                    return results
-                if (
-                    not isinstance(found_proposal, str)
-                    or re.fullmatch(r"[A-Za-z0-9_.-]+", found_proposal) is None
-                    or found_proposal in {".", ".."}
-                ):
-                    logger.error("ICAT returned an invalid BL08A proposal directory")
-                    results["error"] = "ICAT 课题目录信息无效"
-                    return results
-                raw_root = Path(os.getenv(
-                    "BL08A_RAW_DATA_ROOT", "/csnsdata/userData/BL08A",
-                )).resolve()
-                proposal_dir = (raw_root / found_proposal).resolve()
-                if not proposal_dir.is_relative_to(raw_root) or not proposal_dir.is_dir():
-                    results["error"] = f"有权限，但课题 {found_proposal} 的原始数据目录不存在"
-                    return results
-                run_dirs = [
-                    (year / runNumber).resolve()
-                    for year in proposal_dir.iterdir()
-                    if re.fullmatch(r"[0-9]{4}", year.name)
-                    and year.is_dir() and (year / runNumber).is_dir()
-                ]
-                if len(run_dirs) != 1 or not run_dirs[0].is_relative_to(proposal_dir):
-                    results["error"] = f"有权限，但未找到 {runNumber} 唯一的课题/年份/RUN目录"
-                    return results
-                for folder in (reduction_folder_path, analysis_folder_path, info_folder_path):
-                    os.makedirs(folder, exist_ok=True)
-                raw_path = str(run_dirs[0])
-                for folder in (raw_path, reduction_folder_path, analysis_folder_path, info_folder_path):
-                    if folder not in self._extra_work_dirs:
-                        self._extra_work_dirs.append(folder)
-                return {
-                    "status": "success", "proposal": found_proposal,
-                    "raw_data_path": raw_path, "data_root": str(run_dirs[0].parent),
-                    "reduction_folder_path": reduction_folder_path,
-                    "analysis_folder_path": analysis_folder_path,
-                    "info_folder_path": info_folder_path,
-                    "description": (
-                        f"用户 {user_id} 有权访问 {runNumber} 对应的课题 {found_proposal}。"
-                        "原始数据只读；规约、分析结果及对应 info 必须按本工具规则写入返回的归档目录。"
-                    ),
-                }
 
             # 检查found_proposal下是否有reduction文件夹
             if not os.path.exists(reduction_folder_path):
@@ -2424,9 +2364,9 @@ class RongZaiAgent(DrSaiAgent):
             name="PromoteSkillToCore",
             description=(
                 "Promote one loaded skill into high-priority core system rules. "
-                "Use this only when strict skill compliance is important for the current task. "
-                "Only one skill can be promoted at a time, and promoting a different skill replaces the previous core skill. "
-                "You decide whether to call this tool."
+                "Call this whenever a loaded skill's description says it should be elevated or promoted to a system prompt, "
+                "or whenever strict skill compliance is required for the current task. "
+                "Only one skill can be promoted at a time; promoting a different skill replaces the previous core skill."
             ),
             parameters=parameters,
             strict=False,

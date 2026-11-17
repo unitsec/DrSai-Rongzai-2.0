@@ -1,3 +1,4 @@
+import os
 
 from autogen_core.models import ChatCompletionClient
 from autogen_core import ComponentModel
@@ -408,7 +409,10 @@ async def create_magentic_round_team(
     model_configs: Dict[str, Any] = settings_config.get("model_configs")
     model_config = model_configs.get("model_config", {})
     api_key = model_config.get("config", {}).get("api_key")
-    if api_key is None:
+    if not api_key:
+        api_key = os.getenv("HEPAI_API_KEY", "")
+        model_config.setdefault("config", {})["api_key"] = api_key
+    if not api_key:
         raise ValueError("API key not provided in model_configs")
 
     # 目前可选的mode有，besiii，drsai，custom，magentic-one，remote

@@ -5,7 +5,7 @@ PyCifRW==4.4.6
 PyOpenGL==3.1.9
 matplotlib==3.7.5
 dotenv
-mcp
+mcp>=1.15.0,<2
 ase
 spglib
 seekpath

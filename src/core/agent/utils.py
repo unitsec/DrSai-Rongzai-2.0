@@ -16,7 +16,7 @@ from drsai.modules.managers.messages import (
     FilesContent,
     FilesEvent,
 )
-from .analysis_sandbox import AnalysisSandbox, RUNTIME_PATH
+from .analysis_runner import CommandRunner, RUNTIME_PATH
 
 _DANGEROUS_RE = re.compile(
     r"(^|[\s;&|])(rm\s+-rf|rm\s+-r|mkfs|dd\s+if=|shutdown|reboot|poweroff|halt|:\s*\(\)\s*\{|chmod\s+777|chown\s+-R)",
@@ -194,7 +194,7 @@ def get_operator_funcs_rongzai(
     def _allowed_dirs() -> list[Path]:
         return [WORKDIR, *(Path(item).resolve() for item in (extra_dirs or []))]
 
-    sandbox = AnalysisSandbox(
+    runner = CommandRunner(
         Path(worker_dir), lambda: [Path(item) for item in (extra_dirs or [])], list(readonly),
     )
 
@@ -214,7 +214,7 @@ def get_operator_funcs_rongzai(
         return path
 
     def get_file_base64(file_path: str):
-        return sandbox.read_base64(safe_path(file_path))
+        return runner.read_base64(safe_path(file_path))
 
     async def run_read(
         path: str,
@@ -252,7 +252,7 @@ def get_operator_funcs_rongzai(
                 if end_line < start_line:
                     return "Error: end_line must be >= start_line"
 
-            return await sandbox.file_operation("read", {
+            return await runner.file_operation("read", {
                 "path": str(file_path), "start_line": start_line, "end_line": end_line,
                 "encoding": encoding, "max_chars": _RUN_READ_MAX_CHARS,
             }, timeout)
@@ -268,7 +268,7 @@ def get_operator_funcs_rongzai(
         try:
             content_size_mb = len(content.encode('utf-8')) / (1024 * 1024)
             fp = safe_path(path, write=True)
-            result = await sandbox.file_operation("write", {
+            result = await runner.file_operation("write", {
                 "path": str(fp), "content": content,
             }, timeout)
             if result.startswith("Error:"):
@@ -285,7 +285,7 @@ def get_operator_funcs_rongzai(
         """
         try:
             fp = safe_path(path, write=True)
-            result = await sandbox.file_operation("edit", {
+            result = await runner.file_operation("edit", {
                 "path": str(fp), "old_text": old_text, "new_text": new_text,
             }, timeout)
             if result.startswith("Error:"):
@@ -373,7 +373,7 @@ def get_operator_funcs_rongzai(
             else:
                 return "Error: Search requires ripgrep or grep in the analysis runtime"
 
-            output = await sandbox.file_operation("grep", {
+            output = await runner.file_operation("grep", {
                 "path": search_path, "command": cmd,
             }, 30)
             if output.startswith("Error:"):
@@ -410,7 +410,7 @@ def get_operator_funcs_rongzai(
         wrapped = f'{cmd}\n__rongzai_status=$?\nprintf "\\n__DRSAI_CWD__:%s\\n" "$PWD"\nexit "$__rongzai_status"'
 
         try:
-            raw_output = await sandbox.run(
+            raw_output = await runner.run(
                 ["/bin/bash", "--noprofile", "--norc", "-c", wrapped], _cwd[0], timeout,
             )
 
@@ -458,13 +458,13 @@ def get_operator_funcs_rongzai(
             task_id = f"bash_task_{uuid.uuid4().hex}"
             log = WORKDIR / f"{task_id}.log"
             wrapped = f"(\n{cmd}\n) > {shlex.quote(str(log))} 2>&1"
-            proc = await sandbox.start(
+            proc = await runner.start(
                 ["/bin/bash", "--noprofile", "--norc", "-c", wrapped], _cwd[0],
             )
 
             async def monitor() -> str:
                 try:
-                    return await sandbox.finish(proc, timeout)
+                    return await runner.finish(proc, timeout)
                 except TimeoutError:
                     return f"Error: Command timed out after {timeout}s (all child processes terminated)"
 
@@ -480,7 +480,7 @@ def get_operator_funcs_rongzai(
                 "log_path": str(log),
             }, ensure_ascii=False)
         except Exception as e:
-            return f"Error: failed to launch sandboxed background task: {e}"
+            return f"Error: failed to launch background task: {e}"
 
     async def get_bash_task(task_id: str) -> str:
         """Check a background analysis task and read its workspace log."""

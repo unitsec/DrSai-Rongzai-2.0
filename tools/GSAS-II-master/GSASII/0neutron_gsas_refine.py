@@ -923,8 +923,7 @@ def _bootstrap_moment_refinement(gpx, phases, logger, apply_info, cycle=None):
     会把 alpha、Uiso 等病态参数打到非法区域，残差直接返回 NaN，MINPACK 只能
     退回到出发点并宣布收敛 —— 精修"成功"、Rwp 却停在扰动后的坏值上，磁矩一点
     都没动（.lst 里也看不到 AMx 的任何位移）。磁分析引擎的做法正是"先只修磁矩
-    与公共标度，再逐步放开其它参数"（见 magnetic_analysis/native.py 的
-    assemble/fit 序列），本函数把这一步固化进本工具。
+    与公共标度，再逐步放开其它参数"，本函数把这一步固化进本工具。
 
     自举结束后所有被临时收窄的开关都会原样恢复（因此调用方看到的精修范围不变），
     并重新落盘，保证项目状态与调用方的标志一致；核精修（未放开磁矩）不会进入。

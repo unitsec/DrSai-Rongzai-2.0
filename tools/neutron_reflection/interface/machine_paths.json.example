@@ -1,5 +1,0 @@
-{
-  "data_root": "/absolute/path/to/raw_data",
-  "save_root": "/absolute/path/to/manual_results",
-  "param_root": "/absolute/path/to/repository/tools/neutron_reflection/interface/paramsdata"
-}

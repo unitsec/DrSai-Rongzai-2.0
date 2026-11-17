@@ -4,16 +4,11 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 STATE_DIR="$ROOT/tmp/tools"
 LOG_DIR="$STATE_DIR/logs"
-NEUTRON_REFLECTION_PYTHON=${NEUTRON_REFLECTION_PYTHON:-/dg_workfs/domassy/rongzai/miniconda3/envs/rongzai-agent/bin/python}
-NAMES=(zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine neutron-reflection)
-ENVS=(gsas2_py311 gsas2_py311 sasmodels diffpy.pdffit2_env sasmodels rongzai-agent)
+NAMES=(gsas2-refine pdf-refine)
+ENVS=(gsas2_py311 diffpy.pdffit2_env)
 SCRIPTS=(
-    tools/pyZRietveld/0zrietveld_refine.py
     tools/GSAS-II-master/GSASII/0neutron_gsas_refine.py
-    tools/sasview/0sasview_refine.py
     tools/pdf_refinement/0pdf_refine.py
-    tools/Irena/0Irena_fit.py
-    tools/neutron_reflection/reflection_mcp.py
 )
 
 usage() {
@@ -21,7 +16,7 @@ usage() {
 Usage: bash start_tools.sh [start|restart|stop|status|logs] [all|TOOL ...]
 
 Default: start all
-Tools: zrietveld-refine gsas2-refine sasview-refine pdf-refine Irena-refine neutron-reflection
+Tools: gsas2-refine pdf-refine
 start   Start missing tools; leave existing processes untouched.
 restart Stop existing tools (including manually started ones), then start them.
 stop    Stop selected tools and their current child processes.
@@ -30,7 +25,6 @@ logs    Follow selected log files (Ctrl-C only stops the viewer).
 
 Logs: tmp/tools/logs/<tool>.log (appended across restarts)
 CONDA_EXE may specify an absolute conda executable path.
-NEUTRON_REFLECTION_PYTHON may override the reflection Python interpreter.
 Stop/restart may interrupt active refinement tasks.
 After 15 seconds, remaining verified processes receive KILL; wait up to 5 more seconds.
 EOF
@@ -207,9 +201,6 @@ start_tool() {
     log="$LOG_DIR/${NAMES[$index]}.log"
     printf '\n=== %s starting %s ===\n' "$(date -Is)" "${NAMES[$index]}" >> "$log"
     local -a runner=("$conda" run --no-capture-output -n "${ENVS[$index]}" python)
-    if [[ "${NAMES[$index]}" == neutron-reflection && -n "${NEUTRON_REFLECTION_PYTHON:-}" ]]; then
-        runner=("$NEUTRON_REFLECTION_PYTHON")
-    fi
     PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" \
         nohup "${runner[@]}" -u "$ROOT/${SCRIPTS[$index]}" </dev/null >> "$log" 2>&1 9>&- &
     pid=$!
@@ -226,27 +217,12 @@ start_tool() {
 
 if [[ "$action" == start || "$action" == restart ]]; then
     conda=${CONDA_EXE:-}
-    need_conda=false
-    for index in "${selected[@]}"; do
-        if [[ "${NAMES[$index]}" != neutron-reflection || -z "$NEUTRON_REFLECTION_PYTHON" ]]; then
-            need_conda=true
-        fi
-    done
-    if "$need_conda"; then
-        if [[ -z "$conda" ]]; then conda=$(command -v conda) || fail "conda not found; set CONDA_EXE."; fi
-        [[ -x "$conda" ]] || fail "Conda executable not found: $conda"
-    fi
+    if [[ -z "$conda" ]]; then conda=$(command -v conda) || fail "conda not found; set CONDA_EXE."; fi
+    [[ -x "$conda" ]] || fail "Conda executable not found: $conda"
     for index in "${selected[@]}"; do
         [[ -f "$ROOT/${SCRIPTS[$index]}" ]] || fail "Missing script: ${SCRIPTS[$index]}"
         find_processes "$index"
         if [[ "$action" == restart ]] || ((${#PIDS[@]} == 0)); then
-            if [[ "${NAMES[$index]}" == neutron-reflection && -n "${NEUTRON_REFLECTION_PYTHON:-}" ]]; then
-                [[ "$NEUTRON_REFLECTION_PYTHON" == /* && -x "$NEUTRON_REFLECTION_PYTHON" ]] ||
-                    fail "NEUTRON_REFLECTION_PYTHON must be an executable absolute path."
-                "$NEUTRON_REFLECTION_PYTHON" -c 'from rongzai.workflows.reflection.bl08a import BL08AReflectionOffline; import mcp, scipy, xarray, h5py, dotenv' ||
-                    fail "Reflection dependencies unavailable; no processes were stopped."
-                continue
-            fi
             "$conda" run --no-capture-output -n "${ENVS[$index]}" /bin/true ||
                 fail "Conda environment ${ENVS[$index]} is unavailable; no processes were stopped."
         fi

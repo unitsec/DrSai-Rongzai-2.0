@@ -1,0 +1,119 @@
+##############################################################################
+###      FullProf-generated mCIF output file   (version: May 2019)         ###
+##############################################################################
+ 
+# Please notify any error or suggestion to: 
+#           Juan Rodriguez-Carvajal (jrc@ill.eu)
+# Improvements will be progressively added as needed.
+ 
+#      Date: 10/10/2026  Time: 19:03:32.290
+ 
+#=============================================================================
+ data_global
+#=============================================================================
+ 
+data_bfno_5banks_6k_mag
+_audit_creation_date  10/10/2026  
+_audit_creation_method  "FullProf Suite"
+ 
+_citation_journal_abbrev ?
+_citation_journal_volume ?
+_citation_page_first     ?
+_citation_page_last      ?
+_citation_article_id     ?
+_citation_year           ?
+loop_
+_citation_author_name
+?
+
+_atomic_positions_source_database_code_ICSD  ?
+_atomic_positions_source_other    .  
+
+_Neel_temperature  ?
+_magn_diffrn_temperature  ?
+_exptl_crystal_magnetic_properties_details
+;
+;
+_active_magnetic_irreps_details
+;
+;
+ 
+_magnetic_space_group_standard_setting  'no'
+_parent_space_group.name_H-M  "R-3m"
+_parent_space_group.IT_number  166
+
+_space_group_magn.number_BNS 15.90
+_space_group_magn.name_BNS   C_c2/c
+_parent_space_group.transform_Pp_abc  ''
+_parent_space_group.child_transform_Pp_abc  'a,b,2c;0,0,0'
+_magnetic_space_group.transform_BNS_Pp_abc  '1/3a+2/3b-2/3c,-a,c;0,0,0'
+_space_group_magn.number_OG  ?
+_space_group_magn.name_OG    ?
+
+
+_cell_length_a     5.65850(3)
+_cell_length_b     5.65850(3)
+_cell_length_c     55.6477(5)
+_cell_angle_alpha  90.0000
+_cell_angle_beta   90.0000
+_cell_angle_gamma  120.000
+
+
+loop_
+    _space_group_symop_magn_operation.id
+    _space_group_symop_magn_operation.xyz
+   1  x,y,z,+1
+   2  x-y,-y,-z,-1
+   3  -x,-y,-z,+1
+   4  -x+y,y,z,-1
+
+loop_
+    _space_group_symop_magn_centering.id
+    _space_group_symop_magn_centering.xyz
+   1  x,y,z,+1
+   2  x+1/3,y+2/3,z+1/3,+1
+   3  x+2/3,y+1/3,z+2/3,+1
+   4  x,y,z+1/2,-1
+   5  x+2/3,y+1/3,z+1/6,-1
+   6  x+1/3,y+2/3,z+5/6,-1
+
+loop_
+    _atom_site_label
+    _atom_site_type_symbol
+    _atom_site_fract_x
+    _atom_site_fract_y
+    _atom_site_fract_z
+    _atom_site_U_iso_or_equiv
+    _atom_site_occupancy
+    _atom_site_adp_type
+ Ba1 Ba  0.00000  0.00000  0.14395  0.00153  1.00000 Uiso
+ Ba2 Ba  0.00000  0.00000  0.06385  0.00334  1.00000 Uiso
+ Fe1 Fe  0.00000  0.00000  0.00000  0.00616  1.00000 Uiso
+ Ni1 Ni  0.00000  0.00000  0.25000  0.00952  1.00000 Uiso
+ Fe2 Fe  0.00000  0.00000  0.20411  0.00264  1.00000 Uiso
+ O1_1 O  0.14780  0.85220  0.22881  0.00690  0.98590 Uiso
+ O1_2 O  0.14780  0.29560  0.22881  0.00690  0.98590 Uiso
+ O2_1 O  0.16330  0.83670  0.31260  0.00365  0.97050 Uiso
+ O2_2 O  0.16330  0.32660  0.31260  0.00365  0.97050 Uiso
+ 
+
+loop_
+    _atom_site_moment.label
+    _atom_site_moment.crystalaxis_x
+    _atom_site_moment.crystalaxis_y
+    _atom_site_moment.crystalaxis_z
+ Fe1  0.00000  0.00000  3.33712
+ Ni1  0.00000  0.00000  0.00000
+ Fe2  0.00000  0.00000 -1.0845
+ 
+# Spherical components of magnetic moments (angles in degrees)
+# Commented because current programs as VESTA, JMOL, etc. are unable to interpret them
+#loop_
+#   _atom_site_moment.label
+#   _atom_site_moment.spherical_modulus
+#   _atom_site_moment.spherical_azimuthal
+#   _atom_site_moment.spherical_polar
+#  Fe1  3.33712  0.00000  0.00000
+#  Ni1  0.00000  0.00000  0.00000
+#  Fe2  1.08450  0.00000  180.000
+

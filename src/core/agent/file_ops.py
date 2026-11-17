@@ -1,4 +1,4 @@
-"""Standalone stdlib-only helper, executed inside the analysis sandbox."""
+"""Standalone stdlib-only helper, executed as a subprocess for file operations."""
 
 import base64
 import json

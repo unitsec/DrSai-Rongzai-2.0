@@ -35,10 +35,10 @@ def validate_password_strength(password: str, user_id: str) -> tuple[bool, str]:
       - 长度 ≥ 12 位
       - 包含 ≥3 种：小写字母、大写字母、数字、特殊符号
       - 拒绝含 user_id 全拼或常见日期格式（YYYYMMDD、YYYY-MM-DD）
-    返回 (is_valid, error_message)
+    返回 (is_valid, error_code)，error_code 由前端映射为对应语言的提示。
     """
     if len(password) < 12:
-        return False, "密码长度至少为12位"
+        return False, "password_too_short"
 
     types = 0
     if re.search(r"[a-z]", password):
@@ -50,13 +50,13 @@ def validate_password_strength(password: str, user_id: str) -> tuple[bool, str]:
     if re.search(r"[^a-zA-Z\d]", password):
         types += 1
     if types < 3:
-        return False, "密码需包含大小写字母、数字、特殊符号中至少3种"
+        return False, "password_too_weak"
 
     if user_id.lower() in password.lower():
-        return False, "密码不能包含用户名全拼"
+        return False, "password_contains_username"
 
     if re.search(r"\d{4}-?\d{2}-?\d{2}", password):
-        return False, "密码不能包含生日格式日期"
+        return False, "password_contains_date"
 
     return True, ""
 

@@ -45,7 +45,7 @@ const dict = {
   "login.form.username":           { zh: "用户名",        en: "Username" },
   "login.form.password":           { zh: "密码",          en: "Password" },
   "login.form.usernameHint":       { zh: "用户名（至少3个字符，不能是纯数字）", en: "Username (min 3 chars, not all digits)" },
-  "login.form.passwordHint":       { zh: "密码（至少6个字符）", en: "Password (min 6 chars)" },
+  "login.form.passwordHint":       { zh: "密码（至少12位，含大小写字母/数字/符号中至少3种）", en: "Password (min 12 chars, 3+ character types)" },
   "login.form.confirmPassword":    { zh: "确认密码",       en: "Confirm password" },
 
   "login.agreement.read":          { zh: "我已阅读并同意",  en: "I have read and agree to the" },
@@ -62,7 +62,10 @@ const dict = {
   "login.error.emptyRegistration": { zh: "请填写所有字段",  en: "Please fill in all fields" },
   "login.error.digitsOnly":        { zh: "用户名不能是纯数字", en: "Username cannot be all digits" },
   "login.error.usernameTooShort":  { zh: "用户名至少 3 个字符", en: "Username must be at least 3 characters" },
-  "login.error.passwordTooShort":  { zh: "密码至少 6 个字符", en: "Password must be at least 6 characters" },
+  "login.error.passwordTooShort":  { zh: "密码至少 12 个字符", en: "Password must be at least 12 characters" },
+  "login.error.passwordTooWeak":   { zh: "密码需包含大小写字母、数字、特殊符号中至少3种", en: "Password must include at least 3 of: lowercase, uppercase, digits, symbols" },
+  "login.error.passwordContainsUsername": { zh: "密码不能包含用户名", en: "Password cannot contain your username" },
+  "login.error.passwordContainsDate":     { zh: "密码不能包含日期", en: "Password cannot contain a date" },
   "login.error.passwordMismatch":  { zh: "两次输入的密码不一致", en: "Passwords do not match" },
   "login.error.registrationFailed":{ zh: "注册失败，请重试", en: "Registration failed, please try again" },
 

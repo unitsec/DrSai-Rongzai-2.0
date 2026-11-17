@@ -1,5 +1,5 @@
 from typing import Dict, List, Any  
-import asyncio, os, json
+import asyncio, os, json, re
 from pathlib import Path
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Header
@@ -16,6 +16,24 @@ load_dotenv()
 import logging
 
 logger = logging.getLogger(__name__)
+
+_ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _expand_env_placeholders(value: Any) -> Any:
+    """Recursively replace ${VAR} in string values with the matching env var.
+
+    Unset variables are left untouched so a misconfiguration stays visible.
+    """
+    if isinstance(value, str):
+        return _ENV_PLACEHOLDER_RE.sub(
+            lambda match: os.environ.get(match.group(1), match.group(0)), value
+        )
+    if isinstance(value, list):
+        return [_expand_env_placeholders(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _expand_env_placeholders(item) for key, item in value.items()}
+    return value
 
 def _truthy_env(value: str | None) -> bool:
     if value is None:
@@ -202,6 +220,7 @@ def get_default_agent_mode_config(
             if p.is_file():
                 with p.open("r", encoding="utf-8") as f:
                     default_agents = json.load(f)
+                    default_agents = _expand_env_placeholders(default_agents)
                 for agent in default_agents:
                     if not agent.get("config"):
                         agent.update(

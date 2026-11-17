@@ -98,8 +98,21 @@ const LoginPage: React.FC = () => {
             setError(t("login.error.usernameTooShort"));
             return;
         }
-        if (regPassword.length < 6) {
+        if (regPassword.length < 12) {
             setError(t("login.error.passwordTooShort"));
+            return;
+        }
+        const pwTypes = [/[a-z]/, /[A-Z]/, /\d/, /[^a-zA-Z\d]/].filter(re => re.test(regPassword)).length;
+        if (pwTypes < 3) {
+            setError(t("login.error.passwordTooWeak"));
+            return;
+        }
+        if (regUsername && regPassword.toLowerCase().includes(regUsername.toLowerCase())) {
+            setError(t("login.error.passwordContainsUsername"));
+            return;
+        }
+        if (/\d{4}-?\d{2}-?\d{2}/.test(regPassword)) {
+            setError(t("login.error.passwordContainsDate"));
             return;
         }
         if (regPassword !== regConfirmPassword) {
@@ -115,7 +128,13 @@ const LoginPage: React.FC = () => {
                 setLoginUsername(regUsername);
             }
         } catch (err: any) {
-            setError(err.message || t("login.error.registrationFailed"));
+            const pwdErrKeys: Record<string, any> = {
+                password_too_short: "login.error.passwordTooShort",
+                password_too_weak: "login.error.passwordTooWeak",
+                password_contains_username: "login.error.passwordContainsUsername",
+                password_contains_date: "login.error.passwordContainsDate",
+            };
+            setError(pwdErrKeys[err.message] ? t(pwdErrKeys[err.message]) : (err.message || t("login.error.registrationFailed")));
         } finally {
             setRegisterLoading(false);
         }
