@@ -1,7 +1,0 @@
-numpy
-scipy
-ase
-spglib
-seekpath
-threadpoolctl
-requests
